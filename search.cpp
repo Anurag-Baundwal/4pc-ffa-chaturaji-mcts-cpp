@@ -167,7 +167,7 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
               });
 
     std::map<Player, double> reward_map;
-    double rewards[] = {2.0, 0.5, -0.5, -2.0}; // Rank 1 to 4 rewards
+    double rewards[] = {+1, +0, -0.25, -1}; // Rank 1 to 4 rewards
 
     // Assign rewards based on rank
     for (size_t i = 0; i < sorted_scores.size() && i < 4; ++i) {
