@@ -126,7 +126,9 @@ int main(int argc, char* argv[]) {
         // Game loop (example: play N moves)
         int max_moves_to_play = 100;
         for (int i = 0; i < max_moves_to_play; ++i) {
-            std::cout << "\nTurn " << i + 1 << " | Player: " << static_cast<int>(board.get_current_player()) << std::endl;
+            std::cout << "\nMove " << i + 1 << std::endl;
+            std::cout << "Board state: " << std::endl;
+
             board.print_board();
 
             if (board.is_game_over()) {
