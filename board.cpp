@@ -1022,206 +1022,187 @@ void Board::resign() {
 
 // --- Utility ---
 
-void Board::print_board() const {
-  // Simple character representation
-  // TODO: Add colors later using platform-specific APIs or libraries if needed
-  std::cout << "   a b c d e f g h" << std::endl;
-  std::cout << "  -----------------" << std::endl;
-  for (int r = 0; r < BOARD_SIZE; ++r) {
-    std::cout << 8 - r << " |"; // Print rank number (chess style)
-    for (int c = 0; c < BOARD_SIZE; ++c) {
-      const auto &piece_opt = board_[r][c];
-      char symbol = '.';
-      if (piece_opt) {
-        const Piece &p = *piece_opt;
-        bool is_dead_but_not_king =
-            p.is_dead && p.piece_type != PieceType::DEAD_KING;
-        switch (p.piece_type) {
-        case PieceType::PAWN:
-          symbol = 'P';
-          break;
-        case PieceType::KNIGHT:
-          symbol = 'N';
-          break;
-        case PieceType::BISHOP:
-          symbol = 'B';
-          break;
-        case PieceType::ROOK:
-          symbol = 'R';
-          break;
-        case PieceType::QUEEN:
-          symbol = 'Q';
-          break;
-        case PieceType::KING:
-          symbol = 'K';
-          break;
-        case PieceType::ONE_POINT_QUEEN:
-          symbol = 'q';
-          break; // Lowercase for special queen?
-        case PieceType::DEAD_KING:
-          symbol = 'k';
-          break; // Lowercase dead king?
-        }
-        // Use lowercase for dead pieces (except dead king handled above)
-        // or differentiate by player (e.g., R/B/Y/G prefix)
-        if (is_dead_but_not_king) {
-          symbol = std::tolower(symbol);
-        } else {
-          // Optional: Show player color (e.g., uppercase for Red/Yellow,
-          // lowercase for Blue/Green?)
-          switch (p.player) {
-          case Player::RED: /* default upper */
-            break;
-          case Player::BLUE:
-            symbol = std::tolower(symbol);
-            break;             // Example: lowercase blue
-          case Player::YELLOW: /* default upper */
-            break;
-          case Player::GREEN:
-            symbol = std::tolower(symbol);
-            break; // Example: lowercase green
-                   // This might conflict with dead piece representation, need a
-            // clearer scheme Alternative: Print like R:K, B:P, Y:N, G:r etc.
-            // Let's stick to basic piece type +/- dead indicator for now.
-          }
-        }
 
-        // Better dead indicator: use lowercase for player color if dead
-        if (p.is_dead || p.piece_type == PieceType::DEAD_KING) {
-          switch (p.player) {
-          case Player::RED:
-            symbol = 'r';
-            break;
-          case Player::BLUE:
-            symbol = 'b';
-            break;
-          case Player::YELLOW:
-            symbol = 'y';
-            break;
-          case Player::GREEN:
-            symbol = 'g';
-            break;
-          }
-          switch (p.piece_type) { // Append piece type initial
-          case PieceType::PAWN:
-            symbol += 100 + 'P';
-            break; // Use offset to distinguish from player char
-          case PieceType::KNIGHT:
-            symbol += 100 + 'N';
-            break;
-          case PieceType::BISHOP:
-            symbol += 100 + 'B';
-            break;
-          case PieceType::ROOK:
-            symbol += 100 + 'R';
-            break;
-          case PieceType::QUEEN:
-            symbol += 100 + 'Q';
-            break;
-          case PieceType::KING:
-            symbol += 100 + 'K';
-            break; // Should become DEAD_KING
-          case PieceType::ONE_POINT_QUEEN:
-            symbol += 100 + 'q';
-            break;
-          case PieceType::DEAD_KING:
-            symbol += 100 + 'k';
-            break;
-          }
-          // This is getting complicated. Let's revert to simpler P/N/B/R/K/Q/q
-          // and k (dead king), with lowercase p/n/b/r for other dead pieces.
-          // Colors ignored for now.
-          symbol = '.'; // Reset symbol
-          switch (p.piece_type) {
-          case PieceType::PAWN:
-            symbol = p.is_dead ? 'p' : 'P';
-            break;
-          case PieceType::KNIGHT:
-            symbol = p.is_dead ? 'n' : 'N';
-            break;
-          case PieceType::BISHOP:
-            symbol = p.is_dead ? 'b' : 'B';
-            break;
-          case PieceType::ROOK:
-            symbol = p.is_dead ? 'r' : 'R';
-            break;
-          case PieceType::QUEEN:
-            symbol = p.is_dead ? 'q' : 'Q';
-            break;
-          case PieceType::KING:
-            symbol = 'K';
-            break; // Never 'dead' in this sense
-          case PieceType::ONE_POINT_QUEEN:
-            symbol = p.is_dead ? 'o' : 'O';
-            break; // 'O' for One-point?
-          case PieceType::DEAD_KING:
-            symbol = 'k';
-            break;
-          }
+// --- ANSI Color Codes ---
+const std::string ANSI_RESET = "\033[0m";
+const std::string ANSI_RED = "\033[31m";
+const std::string ANSI_GREEN = "\033[32m";
+const std::string ANSI_YELLOW = "\033[33m";
+const std::string ANSI_BLUE = "\033[34m";
+
+// --- Unicode Chess Symbols (as UTF-8 strings) ---
+// Ensure your terminal supports UTF-8 and these symbols
+const std::string UNICODE_KING = "♔";
+const std::string UNICODE_QUEEN = "♕";
+const std::string UNICODE_ROOK = "♖";
+const std::string UNICODE_BISHOP = "♗";
+const std::string UNICODE_KNIGHT = "♘";
+const std::string UNICODE_PAWN = "♙";
+
+void Board::print_board() const {
+    // Define colored piece strings (combine color, symbol, reset)
+    // Red pieces
+    const std::string red_king = ANSI_RED + UNICODE_KING + ANSI_RESET;
+    const std::string red_queen = ANSI_RED + UNICODE_QUEEN + ANSI_RESET;
+    const std::string red_rook = ANSI_RED + UNICODE_ROOK + ANSI_RESET;
+    const std::string red_bishop = ANSI_RED + UNICODE_BISHOP + ANSI_RESET;
+    const std::string red_knight = ANSI_RED + UNICODE_KNIGHT + ANSI_RESET;
+    const std::string red_pawn = ANSI_RED + UNICODE_PAWN + ANSI_RESET;
+
+    // Yellow pieces
+    const std::string yellow_king = ANSI_YELLOW + UNICODE_KING + ANSI_RESET;
+    const std::string yellow_queen = ANSI_YELLOW + UNICODE_QUEEN + ANSI_RESET;
+    const std::string yellow_rook = ANSI_YELLOW + UNICODE_ROOK + ANSI_RESET;
+    const std::string yellow_bishop = ANSI_YELLOW + UNICODE_BISHOP + ANSI_RESET;
+    const std::string yellow_knight = ANSI_YELLOW + UNICODE_KNIGHT + ANSI_RESET;
+    const std::string yellow_pawn = ANSI_YELLOW + UNICODE_PAWN + ANSI_RESET;
+
+    // Blue pieces
+    const std::string blue_king = ANSI_BLUE + UNICODE_KING + ANSI_RESET;
+    const std::string blue_queen = ANSI_BLUE + UNICODE_QUEEN + ANSI_RESET;
+    const std::string blue_rook = ANSI_BLUE + UNICODE_ROOK + ANSI_RESET;
+    const std::string blue_bishop = ANSI_BLUE + UNICODE_BISHOP + ANSI_RESET;
+    const std::string blue_knight = ANSI_BLUE + UNICODE_KNIGHT + ANSI_RESET;
+    const std::string blue_pawn = ANSI_BLUE + UNICODE_PAWN + ANSI_RESET;
+
+    // Green pieces
+    const std::string green_king = ANSI_GREEN + UNICODE_KING + ANSI_RESET;
+    const std::string green_queen = ANSI_GREEN + UNICODE_QUEEN + ANSI_RESET;
+    const std::string green_rook = ANSI_GREEN + UNICODE_ROOK + ANSI_RESET;
+    const std::string green_bishop = ANSI_GREEN + UNICODE_BISHOP + ANSI_RESET;
+    const std::string green_knight = ANSI_GREEN + UNICODE_KNIGHT + ANSI_RESET;
+    const std::string green_pawn = ANSI_GREEN + UNICODE_PAWN + ANSI_RESET;
+
+    // Dead pieces (no color)
+    const std::string dead_king = UNICODE_KING;
+    const std::string dead_queen = UNICODE_QUEEN;
+    const std::string dead_rook = UNICODE_ROOK;
+    const std::string dead_bishop = UNICODE_BISHOP;
+    const std::string dead_knight = UNICODE_KNIGHT;
+    const std::string dead_pawn = UNICODE_PAWN;
+
+    // Print header row (column numbers 0-7) - Matching python's "   0  1  2  3  4  5  6  7"
+    std::cout << "   a  b  c  d  e  f  g  h" << std::endl;
+
+    // Print board rows
+    for (int r = 0; r < BOARD_SIZE; ++r) {
+        // Print row number (0-7) followed by a space - Matching python's `print(row, end=" ")`
+        std::cout << 8-r << " ";
+        for (int c = 0; c < BOARD_SIZE; ++c) {
+            const auto& piece_opt = board_[r][c];
+            std::string symbol = " "; // Default empty square content
+
+            if (piece_opt) {
+                const Piece& p = *piece_opt;
+                bool use_dead_symbol = p.is_dead || p.piece_type == PieceType::DEAD_KING;
+
+                if (use_dead_symbol) {
+                    // Select dead symbol (no color)
+                    switch (p.piece_type) {
+                        case PieceType::PAWN:           symbol = dead_pawn; break;
+                        case PieceType::KNIGHT:         symbol = dead_knight; break;
+                        case PieceType::BISHOP:         symbol = dead_bishop; break;
+                        case PieceType::ROOK:           symbol = dead_rook; break;
+                        case PieceType::QUEEN:          symbol = dead_queen; break;
+                        case PieceType::KING:           symbol = dead_king; break;
+                        case PieceType::ONE_POINT_QUEEN:symbol = dead_queen; break;
+                        case PieceType::DEAD_KING:      symbol = dead_king; break;
+                    }
+                } else {
+                    // Select colored symbol for active pieces
+                    switch (p.player) {
+                        case Player::RED:
+                            switch (p.piece_type) {
+                                case PieceType::PAWN:   symbol = red_pawn; break;
+                                case PieceType::KNIGHT: symbol = red_knight; break;
+                                case PieceType::BISHOP: symbol = red_bishop; break;
+                                case PieceType::ROOK:   symbol = red_rook; break;
+                                case PieceType::QUEEN:  symbol = red_queen; break;
+                                case PieceType::KING:   symbol = red_king; break;
+                                case PieceType::ONE_POINT_QUEEN: symbol = red_queen; break;
+                            }
+                            break;
+                        case Player::BLUE:
+                             switch (p.piece_type) {
+                                case PieceType::PAWN:   symbol = blue_pawn; break;
+                                case PieceType::KNIGHT: symbol = blue_knight; break;
+                                case PieceType::BISHOP: symbol = blue_bishop; break;
+                                case PieceType::ROOK:   symbol = blue_rook; break;
+                                case PieceType::QUEEN:  symbol = blue_queen; break;
+                                case PieceType::KING:   symbol = blue_king; break;
+                                case PieceType::ONE_POINT_QUEEN: symbol = blue_queen; break;
+                            }
+                            break;
+                        case Player::YELLOW:
+                             switch (p.piece_type) {
+                                case PieceType::PAWN:   symbol = yellow_pawn; break;
+                                case PieceType::KNIGHT: symbol = yellow_knight; break;
+                                case PieceType::BISHOP: symbol = yellow_bishop; break;
+                                case PieceType::ROOK:   symbol = yellow_rook; break;
+                                case PieceType::QUEEN:  symbol = yellow_queen; break;
+                                case PieceType::KING:   symbol = yellow_king; break;
+                                case PieceType::ONE_POINT_QUEEN: symbol = yellow_queen; break;
+                            }
+                            break;
+                        case Player::GREEN:
+                             switch (p.piece_type) {
+                                case PieceType::PAWN:   symbol = green_pawn; break;
+                                case PieceType::KNIGHT: symbol = green_knight; break;
+                                case PieceType::BISHOP: symbol = green_bishop; break;
+                                case PieceType::ROOK:   symbol = green_rook; break;
+                                case PieceType::QUEEN:  symbol = green_queen; break;
+                                case PieceType::KING:   symbol = green_king; break;
+                                case PieceType::ONE_POINT_QUEEN: symbol = green_queen; break;
+                            }
+                            break;
+                    }
+                }
+            }
+            // Print the square content with brackets - Matching python's `print(f"[{symbol}]", end="")`
+            std::cout << "[" << symbol << "]";
         }
-      }
-      std::cout << symbol << "|";
+        std::cout << std::endl; // Newline after each row
+        // Removed the horizontal separator line here
     }
-    std::cout << 8 - r << std::endl; // Print rank number again
-    std::cout << "  -----------------" << std::endl;
-  }
-  std::cout << "   a b c d e f g h" << std::endl;
-  // Print game info
-  std::cout << "Turn: ";
-  switch (current_player_) {
-  case Player::RED:
-    std::cout << "RED";
-    break;
-  case Player::BLUE:
-    std::cout << "BLUE";
-    break;
-  case Player::YELLOW:
-    std::cout << "YELLOW";
-    break;
-  case Player::GREEN:
-    std::cout << "GREEN";
-    break;
-  }
-  std::cout << " | 50-move: " << fifty_move_counter_ << std::endl;
-  std::cout << "Points: ";
-  for (const auto &pair : player_points_) {
-    switch (pair.first) {
-    case Player::RED:
-      std::cout << "R:" << pair.second;
-      break;
-    case Player::BLUE:
-      std::cout << " B:" << pair.second;
-      break;
-    case Player::YELLOW:
-      std::cout << " Y:" << pair.second;
-      break;
-    case Player::GREEN:
-      std::cout << " G:" << pair.second;
-      break;
+     // Removed the bottom coordinate line and separator line
+
+    // --- Print existing game info (kept below the board) ---
+    std::cout << "Turn: ";
+    switch (current_player_) {
+    case Player::RED:    std::cout << ANSI_RED << "RED" << ANSI_RESET; break;
+    case Player::BLUE:   std::cout << ANSI_BLUE << "BLUE" << ANSI_RESET; break;
+    case Player::YELLOW: std::cout << ANSI_YELLOW << "YELLOW" << ANSI_RESET; break;
+    case Player::GREEN:  std::cout << ANSI_GREEN << "GREEN" << ANSI_RESET; break;
     }
-  }
-  std::cout << std::endl;
-  std::cout << "Active: ";
-  for (Player p : active_players_) {
-    switch (p) {
-    case Player::RED:
-      std::cout << "R ";
-      break;
-    case Player::BLUE:
-      std::cout << "B ";
-      break;
-    case Player::YELLOW:
-      std::cout << "Y ";
-      break;
-    case Player::GREEN:
-      std::cout << "G ";
-      break;
+    std::cout << std::endl;
+    std::cout << "Active Players: ";
+    for (Player p : active_players_) {
+        switch (p) {
+            case Player::RED:    std::cout << ANSI_RED << "R " << ANSI_RESET; break;
+            case Player::BLUE:   std::cout << ANSI_BLUE << "B " << ANSI_RESET; break;
+            case Player::YELLOW: std::cout << ANSI_YELLOW << "Y " << ANSI_RESET; break;
+            case Player::GREEN:  std::cout << ANSI_GREEN << "G " << ANSI_RESET; break;
+        }
     }
-  }
-  std::cout << std::endl;
-  if (termination_reason_) {
-    std::cout << "Game Over: " << *termination_reason_ << std::endl;
-  }
+    std::cout << std::endl;
+    std::cout << "Points: ";
+    bool first_point = true;
+    for (const auto& pair : player_points_) {
+        if (!first_point) std::cout << " ";
+        first_point = false;
+        switch (pair.first) {
+            case Player::RED:    std::cout << ANSI_RED << "R:" << pair.second << ANSI_RESET; break;
+            case Player::BLUE:   std::cout << ANSI_BLUE << "B:" << pair.second << ANSI_RESET; break;
+            case Player::YELLOW: std::cout << ANSI_YELLOW << "Y:" << pair.second << ANSI_RESET; break;
+            case Player::GREEN:  std::cout << ANSI_GREEN << "G:" << pair.second << ANSI_RESET; break;
+        }
+    }
+    std::cout << std::endl;
+    // std::cout << "50-move counter: " << fifty_move_counter_ << std::endl;
+    std::cout << std::endl;
+    if (termination_reason_) {
+        std::cout << "Game Over: " << *termination_reason_ << std::endl;
+    }
 }
 
 Board::PositionKey Board::get_position_key() const {

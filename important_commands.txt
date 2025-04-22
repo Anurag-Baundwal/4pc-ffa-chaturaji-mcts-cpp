@@ -10,3 +10,6 @@ If training doesn't start, copy all dlls from C:\Users\dell3\Downloads\libtorch-
 
 To simulate a game using the trained model:
 .\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20250421_163036\chaturaji_iter_1.pt" --sims 1000
+
+To ensure print_board displays the pieces in the terminal properly, run the following command before simulating a game:
+chcp 65001
