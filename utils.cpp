@@ -3,6 +3,7 @@
 #include <vector>
 #include <map>
 #include <sstream>
+#include <algorithm>
 
 namespace chaturaji_cpp {
 
@@ -25,8 +26,9 @@ const std::map<PieceType, int> PIECE_TYPE_TO_INDEX = []{
 torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
     // Create tensor options: float, target device
     auto options = torch::TensorOptions().dtype(torch::kFloat32).device(device);
-    // Initialize zero tensor: shape [40, 8, 8] (Channels, Height, Width)
-    torch::Tensor tensor = torch::zeros({40, BOARD_SIZE, BOARD_SIZE}, options);
+    // Initialize zero tensor: shape [41, 8, 8] (Channels, Height, Width)
+    constexpr int NUM_CHANNELS = 41; // Define total channels
+    torch::Tensor tensor = torch::zeros({NUM_CHANNELS, BOARD_SIZE, BOARD_SIZE}, options);
 
     const auto& grid = board.get_board_grid();
     const auto& points = board.get_player_points();
@@ -49,11 +51,6 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
 
                     // Safety check channel bounds
                     if (channel >= 0 && channel < 32) {
-                        // Only set tensor value for non-dead pieces in the main layers
-                        // Dead pieces don't occupy standard piece channels in the python code's tensor apparently.
-                        // Re-checking python: Yes, it checks `if piece:` then sets channel `player*8 + type`. It doesn't explicitly check `is_dead`.
-                        // Let's include dead pieces in their respective channels for now, consistent with a direct translation.
-                        // If the NN was trained *without* dead pieces in these channels, this needs adjustment.
                          tensor[channel][r][c] = 1.0f;
                     } else {
                          // Handle error or warning: Invalid channel calculated
@@ -81,11 +78,29 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
         if(it != points.end()){
             player_points = static_cast<float>(it->second);
         }
-        // Normalize points like in Python
+        // Normalize points
         tensor[36 + i].fill_(player_points / 100.0f);
     }
 
-    // Add the batch dimension: [1, 40, 8, 8]
+        // --- NEW: 50-Move Rule Counter Channel (40) ---
+    // Calculate moves since last pawn move or capture
+    int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
+
+    // Normalize the count (e.g., scale to 0.0 - 1.0 range based on the 50 move limit)
+    // Clip the value between 0.0 and 1.0, as values beyond the limit don't usually carry extra meaning for the NN.
+    float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+
+    // Check if the tensor has the expected number of channels before accessing channel 40
+    // This check uses the constant defined earlier.
+    if (tensor.size(0) == NUM_CHANNELS) {
+         tensor[40].fill_(normalized_count); // Fill the entire 8x8 plane of the 41st channel (index 40)
+    } else {
+        // This should not happen if the tensor was initialized correctly above.
+        throw std::runtime_error("Internal error: Tensor channel dimension mismatch when adding 50-move counter.");
+    }
+    // --- END NEW BLOCK ---
+
+    // Add the batch dimension: [1, 41, 8, 8]
     return tensor.unsqueeze(0);
 }
 

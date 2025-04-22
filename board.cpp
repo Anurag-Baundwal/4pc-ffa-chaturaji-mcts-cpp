@@ -2,6 +2,7 @@
 #include <algorithm> // For std::find, std::max_element
 #include <cmath>     // For std::round
 #include <iostream>
+#include <limits>  // For numeric_limits in get_last_active_player
 #include <numeric> // For std::accumulate (optional)
 #include <sstream>
 #include <stdexcept>
@@ -29,8 +30,8 @@ const int PROMOTION_COL_GREEN = 0;
 
 // --- Constructor ---
 Board::Board()
-    : current_player_(Player::RED), fifty_move_counter_(0),
-      termination_reason_(std::nullopt) {
+    : current_player_(Player::RED), full_move_number_(1),
+      move_number_of_last_reset_(0), termination_reason_(std::nullopt) {
   // Initialize board_ to all nullopt (empty squares)
   for (auto &row : board_) {
     row.fill(std::nullopt);
@@ -52,10 +53,10 @@ Board::Board(const Board &other)
       player_points_(other.player_points_),
       current_player_(other.current_player_),
       position_history_(other.position_history_),
-      fifty_move_counter_(other.fifty_move_counter_),
+      full_move_number_(other.full_move_number_),
+      move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(other.termination_reason_),
-      game_history_(other.game_history_),
-      undo_stack_(other.undo_stack_) {}
+      game_history_(other.game_history_), undo_stack_(other.undo_stack_) {}
 
 // --- Move Constructor ---
 Board::Board(Board &&other) noexcept
@@ -64,14 +65,14 @@ Board::Board(Board &&other) noexcept
       player_points_(std::move(other.player_points_)),
       current_player_(other.current_player_),
       position_history_(std::move(other.position_history_)),
-      fifty_move_counter_(other.fifty_move_counter_),
+      full_move_number_(other.full_move_number_),
+      move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(std::move(other.termination_reason_)),
       game_history_(std::move(other.game_history_)),
-      // --- FIX: Move the undo_stack_ instead of previous_board_state_ ---
-      undo_stack_(std::move(other.undo_stack_))
-{
-  // Reset other state after move if necessary (unique_ptr handles its resource)
-  other.fifty_move_counter_ = 0;
+      undo_stack_(std::move(other.undo_stack_)) {
+  // Reset other state after move if necessary
+  other.full_move_number_ = 1; // Reset moved-from object
+  other.move_number_of_last_reset_ = 0;
 }
 
 // --- Copy Assignment Operator ---
@@ -82,11 +83,11 @@ Board &Board::operator=(const Board &other) {
     player_points_ = other.player_points_;
     current_player_ = other.current_player_;
     position_history_ = other.position_history_;
-    fifty_move_counter_ = other.fifty_move_counter_;
+    full_move_number_ = other.full_move_number_;
+    move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = other.termination_reason_;
     game_history_ = other.game_history_;
-    // Deep copy the previous state
-    undo_stack_ = other.undo_stack_;
+    undo_stack_ = other.undo_stack_; // Deep copy handled by stack's op=
   }
   return *this;
 }
@@ -99,16 +100,38 @@ Board &Board::operator=(Board &&other) noexcept {
     player_points_ = std::move(other.player_points_);
     current_player_ = other.current_player_;
     position_history_ = std::move(other.position_history_);
-    fifty_move_counter_ = other.fifty_move_counter_;
+    full_move_number_ = other.full_move_number_;
+    move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = std::move(other.termination_reason_);
     game_history_ = std::move(other.game_history_);
-    // --- FIX: Move assign the undo_stack_ ---
     undo_stack_ = std::move(other.undo_stack_);
 
     // Reset other state if necessary
-    other.fifty_move_counter_ = 0;
+    other.full_move_number_ = 1;
+    other.move_number_of_last_reset_ = 0;
   }
   return *this;
+}
+
+// --- Helper to find the last player in sequence ---
+Player Board::get_last_active_player() const {
+  if (active_players_.empty()) {
+    // This case should ideally not happen in a valid game state
+    // Return a default or throw, depending on desired error handling
+    // Returning RED as a placeholder, but behavior is undefined.
+    // Consider throwing std::runtime_error("No active players found.");
+    return Player::RED; // Or throw
+  }
+  // Find the player with the maximum enum value (GREEN > YELLOW > BLUE > RED)
+  Player last_player = Player::RED; // Start with the lowest
+  int max_val = -1;
+  for (Player p : active_players_) {
+    if (static_cast<int>(p) > max_val) {
+      max_val = static_cast<int>(p);
+      last_player = p;
+    }
+  }
+  return last_player;
 }
 
 // --- Core Game Logic ---
@@ -410,14 +433,13 @@ void Board::get_king_moves(int row, int col, std::vector<Move> &moves) const {
 
 // --- Move Execution ---
 
-// Inside board.cpp
-
 std::optional<Piece> Board::make_move(const Move &move) {
   // --- Create Undo Information ---
   UndoInfo undo_info;
   undo_info.move = move;
   undo_info.original_player = current_player_;
-  undo_info.original_fifty_move_counter = fifty_move_counter_;
+  undo_info.original_full_move_number = full_move_number_;
+  undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
   undo_info.eliminated_player = std::nullopt; // Assume no elimination initially
   undo_info.was_history_cleared = false; // Assume history not cleared initially
 
@@ -443,6 +465,7 @@ std::optional<Piece> Board::make_move(const Move &move) {
       board_[tr][tc]; // Store potential captured piece (or nullopt)
   bool is_capture = undo_info.captured_piece.has_value();
   bool is_pawn_move = (moving_piece.piece_type == PieceType::PAWN);
+  bool is_resetting_move = is_pawn_move || is_capture;
 
   // --- Perform Move on Board ---
   board_[fr][fc] = std::nullopt; // Clear the 'from' square
@@ -456,8 +479,8 @@ std::optional<Piece> Board::make_move(const Move &move) {
   // --- Handle Capture Logic & Scoring ---
   if (undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
-    if (!captured.is_dead) { // Points only for 'live' captures? No, python code
-                             // adds for dead too.
+
+    if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
       player_points_[moving_piece.player] += get_piece_capture_value(captured);
 
       // Check for King capture and elimination
@@ -466,19 +489,34 @@ std::optional<Piece> Board::make_move(const Move &move) {
             captured.player); // Modifies board_ and active_players_
         undo_info.eliminated_player = captured.player; // Record elimination
       }
-    } else { // Handle capturing dead pieces (including DEAD_KING)
-      player_points_[moving_piece.player] += get_piece_capture_value(captured);
-      // No elimination needed if capturing a dead piece
     }
   }
 
-  // --- Update Fifty-Move Counter & Position History ---
-  if (is_pawn_move || is_capture) {
-    fifty_move_counter_ = 0;
+  // --- Update 50-Move Rule State & Position History ---
+  // Check if the player whose turn it WAS is the last active player *before*
+  // elimination check
+  Player player_who_moved = current_player_; // Player before advance_turn
+  Player last_active_player_in_sequence =
+      get_last_active_player(); // Last player among currently active ones
+
+  bool was_last_player_turn =
+      (player_who_moved == last_active_player_in_sequence);
+
+  // Increment full move number *after* the last player moves
+  if (was_last_player_turn) {
+    full_move_number_++;
+  }
+
+  if (is_resetting_move) {
+    // Reset: Record the move number during which the reset occurred.
+    move_number_of_last_reset_ =
+        full_move_number_;     // Use the current (potentially incremented) full
+                               // move number
     position_history_.clear(); // Reset history on irreversible moves
     undo_info.was_history_cleared = true;
   } else {
-    fifty_move_counter_++;
+    // Non-resetting move, counter effectively increases by duration
+    // No direct counter to increment here.
   }
 
   // --- Update Histories ---
@@ -486,17 +524,14 @@ std::optional<Piece> Board::make_move(const Move &move) {
   game_history_.push_back(move);                   // Add move to game log
 
   // --- Push Undo Info ---
-  undo_stack_.push_back(
-      undo_info); // Add undo info AFTER state changes are complete
+  undo_stack_.push_back(undo_info);
 
   // --- Advance Turn ---
-  advance_turn(); // Advances current_player_
+  advance_turn(); // Advances current_player_, skipping inactive
 
   // --- Return Captured Piece ---
   return undo_info.captured_piece; // Return the piece captured in this move
 }
-
-// Inside board.cpp
 
 void Board::undo_move() {
   if (undo_stack_.empty()) {
@@ -520,31 +555,23 @@ void Board::undo_move() {
 
   // --- Restore Histories ---
   if (!game_history_.empty()) {
-    game_history_.pop_back(); // Remove last move log entry
+    game_history_.pop_back();
   }
-  // Position history restoration is tricky if it was cleared.
-  // The standard approach only requires popping the last hash.
-  // If was_history_cleared is true, the repetition count might be slightly off
-  // compared to the deep copy version for positions *before* the irreversible
-  // move. This is a common trade-off for efficiency.
   if (!position_history_.empty()) {
+    // Careful: if history was cleared, just popping isn't technically correct
+    // for repetition checks before the clear. But standard for undo.
     position_history_.pop_back();
   }
-  // TODO: If perfect history restoration after clearing is needed,
-  // the UndoInfo would need to store the *entire* previous history,
-  // partially defeating the purpose. Or, change the repetition check logic.
+  // If perfect history restoration is needed, UndoInfo needs more data.
 
-  // --- Restore Fifty-Move Counter ---
-  fifty_move_counter_ = undo_info.original_fifty_move_counter;
+  // --- Restore 50-Move Rule State ---
+  full_move_number_ = undo_info.original_full_move_number;
+  move_number_of_last_reset_ = undo_info.original_move_number_of_last_reset;
 
   // --- Reverse Board Changes ---
-  // Get the piece that ended up on the 'to' square (might be promoted)
   Piece moving_piece = board_[tr][tc].value();
-  // Restore its original type if it was promoted
   moving_piece.piece_type = undo_info.original_moving_piece_type;
-  // Place it back on the 'from' square
   board_[fr][fc] = moving_piece;
-  // Restore the 'to' square (put back captured piece or make it empty)
   board_[tr][tc] = undo_info.captured_piece;
 
   // --- Reverse Elimination (if necessary) ---
@@ -557,19 +584,20 @@ void Board::undo_move() {
       for (int c = 0; c < BOARD_SIZE; ++c) {
         auto &piece_opt = board_[r][c];
         if (piece_opt && piece_opt->player == player_to_revive) {
-          if (piece_opt->piece_type == PieceType::DEAD_KING) {
-            // Check if this dead king is the one captured by this move.
-            // This check prevents accidental revival if multiple dead kings
-            // of the same player existed (highly unlikely but possible).
-            // The captured piece was at [tr][tc] before this undo restored it.
-            if (r == tr && c == tc) {
+          if (piece_opt && piece_opt->player == player_to_revive) {
+            // If the piece being put back *was* the king captured...
+            if (r == tr && c == tc &&
+                piece_opt->piece_type == PieceType::DEAD_KING) {
               piece_opt->piece_type = PieceType::KING;
+              piece_opt->is_dead = false; // Ensure king is alive
+            } else if (piece_opt->piece_type != PieceType::KING &&
+                       piece_opt->piece_type != PieceType::DEAD_KING) {
+              // Revive other pieces
+              piece_opt->is_dead = false;
             }
-            // Keep is_dead = false for the King/Dead King itself
-          } else {
-            // Revive other pieces of that player
-            piece_opt->is_dead = false;
           }
+          // Do not revive other DEAD_KINGs that weren't part of this move's
+          // capture
         }
       }
     }
@@ -580,8 +608,10 @@ void Board::undo_move() {
     const Piece &captured = undo_info.captured_piece.value();
     // Subtract the points that were added
     // Points were added to the player whose turn it *was* (original_player)
+    if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
     player_points_[undo_info.original_player] -=
         get_piece_capture_value(captured);
+    }
   }
 
   // --- Clear Termination Reason (state might no longer be terminal) ---
@@ -611,7 +641,11 @@ const Board::PlayerPointMap &Board::get_player_points() const {
   return player_points_;
 }
 Player Board::get_current_player() const { return current_player_; }
-int Board::get_fifty_move_counter() const { return fifty_move_counter_; }
+int Board::get_full_move_number() const { return full_move_number_; }
+int Board::get_move_number_of_last_reset() const {
+  return move_number_of_last_reset_;
+}
+
 const std::optional<std::string> &Board::get_termination_reason() const {
   return termination_reason_;
 }
@@ -632,40 +666,49 @@ bool Board::is_game_over() const {
     return true;
   }
 
-  if (fifty_move_counter_ >=
-      100) { // Standard chess is 50 moves by *each* player
-             // Python code increments per *player turn*. So 50 turns = 100
-             // half-moves for 2p. For 4p, 50 turns means 50 increments. Let's
-             // stick to Python logic first: 50 increments. If standard rule
-             // interpretation needed, change condition to fifty_move_counter_
-             // >= 50 * active_players_.size() maybe? Reverting to Python's
-             // direct counter >= 50 for now.
-    termination_reason_ = "fifty_move_rule";
-    return true;
-  }
+  // --- NEW 50-Move Rule Check ---
+  int moves_since_last_reset = full_move_number_ - move_number_of_last_reset_;
 
+  if (moves_since_last_reset >= 50) {
+    // Rule check triggers only if the 50th move was just completed by the last
+    // player in sequence. We need the player who *made* the move that
+    // potentially triggers the check. This state is available in the last entry
+    // of the undo stack.
+    if (!undo_stack_.empty()) {
+      Player player_who_just_moved = undo_stack_.back().original_player;
+      Player last_active_player =
+          get_last_active_player(); // Check against current active players
+
+      if (player_who_just_moved == last_active_player) {
+        termination_reason_ = "fifty_move_rule";
+        return true;
+      }
+    } else {
+      // Cannot check who moved if undo stack is empty (e.g., checking before
+      // first move?) This shouldn't happen if called after make_move.
+    }
+  }
+  // --- End 50-Move Rule Check ---
+
+  // --- Threefold Repetition Check ---
   PositionKey current_key = get_position_key();
   int count = 0;
+  // Count occurrences in history *including* the current one implicitly added
+  // by make_move before check Or, count *before* adding the current one to
+  // history (standard approach) The current code adds to history in make_move
+  // *before* calling is_game_over might be called. Let's count occurrences in
+  // the history vector:
   for (const auto &key : position_history_) {
     if (key == current_key) {
       count++;
     }
   }
+  // Standard rule: third occurrence triggers draw
   if (count >= 3) {
     termination_reason_ = "threefold_repetition";
     return true;
   }
-
-  // Check for stalemate (no legal moves for current player) - Optional but good
-  // NOTE: The Python code doesn't explicitly check stalemate before declaring
-  // game over, it seems to rely on the engine returning no moves and then
-  // resigning. We can add an explicit check here if desired. if
-  // (get_pseudo_legal_moves(current_player_).empty()) {
-  //     // This could be stalemate or checkmate. Need check detection for
-  //     checkmate.
-  //     // For now, let's follow Python and let the engine handle no-move
-  //     scenarios.
-  // }
+  // --- End Threefold Repetition Check ---
 
   return false;
 }
@@ -1022,7 +1065,6 @@ void Board::resign() {
 
 // --- Utility ---
 
-
 // --- ANSI Color Codes ---
 const std::string ANSI_RESET = "\033[0m";
 const std::string ANSI_RED = "\033[31m";
@@ -1040,169 +1082,269 @@ const std::string UNICODE_KNIGHT = "♘";
 const std::string UNICODE_PAWN = "♙";
 
 void Board::print_board() const {
-    // Define colored piece strings (combine color, symbol, reset)
-    // Red pieces
-    const std::string red_king = ANSI_RED + UNICODE_KING + ANSI_RESET;
-    const std::string red_queen = ANSI_RED + UNICODE_QUEEN + ANSI_RESET;
-    const std::string red_rook = ANSI_RED + UNICODE_ROOK + ANSI_RESET;
-    const std::string red_bishop = ANSI_RED + UNICODE_BISHOP + ANSI_RESET;
-    const std::string red_knight = ANSI_RED + UNICODE_KNIGHT + ANSI_RESET;
-    const std::string red_pawn = ANSI_RED + UNICODE_PAWN + ANSI_RESET;
+  // Define colored piece strings (combine color, symbol, reset)
+  // Red pieces
+  const std::string red_king = ANSI_RED + UNICODE_KING + ANSI_RESET;
+  const std::string red_queen = ANSI_RED + UNICODE_QUEEN + ANSI_RESET;
+  const std::string red_rook = ANSI_RED + UNICODE_ROOK + ANSI_RESET;
+  const std::string red_bishop = ANSI_RED + UNICODE_BISHOP + ANSI_RESET;
+  const std::string red_knight = ANSI_RED + UNICODE_KNIGHT + ANSI_RESET;
+  const std::string red_pawn = ANSI_RED + UNICODE_PAWN + ANSI_RESET;
 
-    // Yellow pieces
-    const std::string yellow_king = ANSI_YELLOW + UNICODE_KING + ANSI_RESET;
-    const std::string yellow_queen = ANSI_YELLOW + UNICODE_QUEEN + ANSI_RESET;
-    const std::string yellow_rook = ANSI_YELLOW + UNICODE_ROOK + ANSI_RESET;
-    const std::string yellow_bishop = ANSI_YELLOW + UNICODE_BISHOP + ANSI_RESET;
-    const std::string yellow_knight = ANSI_YELLOW + UNICODE_KNIGHT + ANSI_RESET;
-    const std::string yellow_pawn = ANSI_YELLOW + UNICODE_PAWN + ANSI_RESET;
+  // Yellow pieces
+  const std::string yellow_king = ANSI_YELLOW + UNICODE_KING + ANSI_RESET;
+  const std::string yellow_queen = ANSI_YELLOW + UNICODE_QUEEN + ANSI_RESET;
+  const std::string yellow_rook = ANSI_YELLOW + UNICODE_ROOK + ANSI_RESET;
+  const std::string yellow_bishop = ANSI_YELLOW + UNICODE_BISHOP + ANSI_RESET;
+  const std::string yellow_knight = ANSI_YELLOW + UNICODE_KNIGHT + ANSI_RESET;
+  const std::string yellow_pawn = ANSI_YELLOW + UNICODE_PAWN + ANSI_RESET;
 
-    // Blue pieces
-    const std::string blue_king = ANSI_BLUE + UNICODE_KING + ANSI_RESET;
-    const std::string blue_queen = ANSI_BLUE + UNICODE_QUEEN + ANSI_RESET;
-    const std::string blue_rook = ANSI_BLUE + UNICODE_ROOK + ANSI_RESET;
-    const std::string blue_bishop = ANSI_BLUE + UNICODE_BISHOP + ANSI_RESET;
-    const std::string blue_knight = ANSI_BLUE + UNICODE_KNIGHT + ANSI_RESET;
-    const std::string blue_pawn = ANSI_BLUE + UNICODE_PAWN + ANSI_RESET;
+  // Blue pieces
+  const std::string blue_king = ANSI_BLUE + UNICODE_KING + ANSI_RESET;
+  const std::string blue_queen = ANSI_BLUE + UNICODE_QUEEN + ANSI_RESET;
+  const std::string blue_rook = ANSI_BLUE + UNICODE_ROOK + ANSI_RESET;
+  const std::string blue_bishop = ANSI_BLUE + UNICODE_BISHOP + ANSI_RESET;
+  const std::string blue_knight = ANSI_BLUE + UNICODE_KNIGHT + ANSI_RESET;
+  const std::string blue_pawn = ANSI_BLUE + UNICODE_PAWN + ANSI_RESET;
 
-    // Green pieces
-    const std::string green_king = ANSI_GREEN + UNICODE_KING + ANSI_RESET;
-    const std::string green_queen = ANSI_GREEN + UNICODE_QUEEN + ANSI_RESET;
-    const std::string green_rook = ANSI_GREEN + UNICODE_ROOK + ANSI_RESET;
-    const std::string green_bishop = ANSI_GREEN + UNICODE_BISHOP + ANSI_RESET;
-    const std::string green_knight = ANSI_GREEN + UNICODE_KNIGHT + ANSI_RESET;
-    const std::string green_pawn = ANSI_GREEN + UNICODE_PAWN + ANSI_RESET;
+  // Green pieces
+  const std::string green_king = ANSI_GREEN + UNICODE_KING + ANSI_RESET;
+  const std::string green_queen = ANSI_GREEN + UNICODE_QUEEN + ANSI_RESET;
+  const std::string green_rook = ANSI_GREEN + UNICODE_ROOK + ANSI_RESET;
+  const std::string green_bishop = ANSI_GREEN + UNICODE_BISHOP + ANSI_RESET;
+  const std::string green_knight = ANSI_GREEN + UNICODE_KNIGHT + ANSI_RESET;
+  const std::string green_pawn = ANSI_GREEN + UNICODE_PAWN + ANSI_RESET;
 
-    // Dead pieces (no color)
-    const std::string dead_king = UNICODE_KING;
-    const std::string dead_queen = UNICODE_QUEEN;
-    const std::string dead_rook = UNICODE_ROOK;
-    const std::string dead_bishop = UNICODE_BISHOP;
-    const std::string dead_knight = UNICODE_KNIGHT;
-    const std::string dead_pawn = UNICODE_PAWN;
+  // Dead pieces (no color)
+  const std::string dead_king = UNICODE_KING;
+  const std::string dead_queen = UNICODE_QUEEN;
+  const std::string dead_rook = UNICODE_ROOK;
+  const std::string dead_bishop = UNICODE_BISHOP;
+  const std::string dead_knight = UNICODE_KNIGHT;
+  const std::string dead_pawn = UNICODE_PAWN;
 
-    // Print header row (column numbers 0-7) - Matching python's "   0  1  2  3  4  5  6  7"
-    std::cout << "   a  b  c  d  e  f  g  h" << std::endl;
+  // Print header row (column numbers 0-7) - Matching python's "   0  1  2  3  4
+  // 5  6  7"
+  std::cout << "   a  b  c  d  e  f  g  h" << std::endl;
 
-    // Print board rows
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-        // Print row number (0-7) followed by a space - Matching python's `print(row, end=" ")`
-        std::cout << 8-r << " ";
-        for (int c = 0; c < BOARD_SIZE; ++c) {
-            const auto& piece_opt = board_[r][c];
-            std::string symbol = " "; // Default empty square content
+  // Print board rows
+  for (int r = 0; r < BOARD_SIZE; ++r) {
+    // Print row number (0-7) followed by a space - Matching python's
+    // `print(row, end=" ")`
+    std::cout << 8 - r << " ";
+    for (int c = 0; c < BOARD_SIZE; ++c) {
+      const auto &piece_opt = board_[r][c];
+      std::string symbol = " "; // Default empty square content
 
-            if (piece_opt) {
-                const Piece& p = *piece_opt;
-                bool use_dead_symbol = p.is_dead || p.piece_type == PieceType::DEAD_KING;
+      if (piece_opt) {
+        const Piece &p = *piece_opt;
+        bool use_dead_symbol =
+            p.is_dead || p.piece_type == PieceType::DEAD_KING;
 
-                if (use_dead_symbol) {
-                    // Select dead symbol (no color)
-                    switch (p.piece_type) {
-                        case PieceType::PAWN:           symbol = dead_pawn; break;
-                        case PieceType::KNIGHT:         symbol = dead_knight; break;
-                        case PieceType::BISHOP:         symbol = dead_bishop; break;
-                        case PieceType::ROOK:           symbol = dead_rook; break;
-                        case PieceType::QUEEN:          symbol = dead_queen; break;
-                        case PieceType::KING:           symbol = dead_king; break;
-                        case PieceType::ONE_POINT_QUEEN:symbol = dead_queen; break;
-                        case PieceType::DEAD_KING:      symbol = dead_king; break;
-                    }
-                } else {
-                    // Select colored symbol for active pieces
-                    switch (p.player) {
-                        case Player::RED:
-                            switch (p.piece_type) {
-                                case PieceType::PAWN:   symbol = red_pawn; break;
-                                case PieceType::KNIGHT: symbol = red_knight; break;
-                                case PieceType::BISHOP: symbol = red_bishop; break;
-                                case PieceType::ROOK:   symbol = red_rook; break;
-                                case PieceType::QUEEN:  symbol = red_queen; break;
-                                case PieceType::KING:   symbol = red_king; break;
-                                case PieceType::ONE_POINT_QUEEN: symbol = red_queen; break;
-                            }
-                            break;
-                        case Player::BLUE:
-                             switch (p.piece_type) {
-                                case PieceType::PAWN:   symbol = blue_pawn; break;
-                                case PieceType::KNIGHT: symbol = blue_knight; break;
-                                case PieceType::BISHOP: symbol = blue_bishop; break;
-                                case PieceType::ROOK:   symbol = blue_rook; break;
-                                case PieceType::QUEEN:  symbol = blue_queen; break;
-                                case PieceType::KING:   symbol = blue_king; break;
-                                case PieceType::ONE_POINT_QUEEN: symbol = blue_queen; break;
-                            }
-                            break;
-                        case Player::YELLOW:
-                             switch (p.piece_type) {
-                                case PieceType::PAWN:   symbol = yellow_pawn; break;
-                                case PieceType::KNIGHT: symbol = yellow_knight; break;
-                                case PieceType::BISHOP: symbol = yellow_bishop; break;
-                                case PieceType::ROOK:   symbol = yellow_rook; break;
-                                case PieceType::QUEEN:  symbol = yellow_queen; break;
-                                case PieceType::KING:   symbol = yellow_king; break;
-                                case PieceType::ONE_POINT_QUEEN: symbol = yellow_queen; break;
-                            }
-                            break;
-                        case Player::GREEN:
-                             switch (p.piece_type) {
-                                case PieceType::PAWN:   symbol = green_pawn; break;
-                                case PieceType::KNIGHT: symbol = green_knight; break;
-                                case PieceType::BISHOP: symbol = green_bishop; break;
-                                case PieceType::ROOK:   symbol = green_rook; break;
-                                case PieceType::QUEEN:  symbol = green_queen; break;
-                                case PieceType::KING:   symbol = green_king; break;
-                                case PieceType::ONE_POINT_QUEEN: symbol = green_queen; break;
-                            }
-                            break;
-                    }
-                }
+        if (use_dead_symbol) {
+          // Select dead symbol (no color)
+          switch (p.piece_type) {
+          case PieceType::PAWN:
+            symbol = dead_pawn;
+            break;
+          case PieceType::KNIGHT:
+            symbol = dead_knight;
+            break;
+          case PieceType::BISHOP:
+            symbol = dead_bishop;
+            break;
+          case PieceType::ROOK:
+            symbol = dead_rook;
+            break;
+          case PieceType::QUEEN:
+            symbol = dead_queen;
+            break;
+          case PieceType::KING:
+            symbol = dead_king;
+            break;
+          case PieceType::ONE_POINT_QUEEN:
+            symbol = dead_queen;
+            break;
+          case PieceType::DEAD_KING:
+            symbol = dead_king;
+            break;
+          }
+        } else {
+          // Select colored symbol for active pieces
+          switch (p.player) {
+          case Player::RED:
+            switch (p.piece_type) {
+            case PieceType::PAWN:
+              symbol = red_pawn;
+              break;
+            case PieceType::KNIGHT:
+              symbol = red_knight;
+              break;
+            case PieceType::BISHOP:
+              symbol = red_bishop;
+              break;
+            case PieceType::ROOK:
+              symbol = red_rook;
+              break;
+            case PieceType::QUEEN:
+              symbol = red_queen;
+              break;
+            case PieceType::KING:
+              symbol = red_king;
+              break;
+            case PieceType::ONE_POINT_QUEEN:
+              symbol = red_queen;
+              break;
             }
-            // Print the square content with brackets - Matching python's `print(f"[{symbol}]", end="")`
-            std::cout << "[" << symbol << "]";
+            break;
+          case Player::BLUE:
+            switch (p.piece_type) {
+            case PieceType::PAWN:
+              symbol = blue_pawn;
+              break;
+            case PieceType::KNIGHT:
+              symbol = blue_knight;
+              break;
+            case PieceType::BISHOP:
+              symbol = blue_bishop;
+              break;
+            case PieceType::ROOK:
+              symbol = blue_rook;
+              break;
+            case PieceType::QUEEN:
+              symbol = blue_queen;
+              break;
+            case PieceType::KING:
+              symbol = blue_king;
+              break;
+            case PieceType::ONE_POINT_QUEEN:
+              symbol = blue_queen;
+              break;
+            }
+            break;
+          case Player::YELLOW:
+            switch (p.piece_type) {
+            case PieceType::PAWN:
+              symbol = yellow_pawn;
+              break;
+            case PieceType::KNIGHT:
+              symbol = yellow_knight;
+              break;
+            case PieceType::BISHOP:
+              symbol = yellow_bishop;
+              break;
+            case PieceType::ROOK:
+              symbol = yellow_rook;
+              break;
+            case PieceType::QUEEN:
+              symbol = yellow_queen;
+              break;
+            case PieceType::KING:
+              symbol = yellow_king;
+              break;
+            case PieceType::ONE_POINT_QUEEN:
+              symbol = yellow_queen;
+              break;
+            }
+            break;
+          case Player::GREEN:
+            switch (p.piece_type) {
+            case PieceType::PAWN:
+              symbol = green_pawn;
+              break;
+            case PieceType::KNIGHT:
+              symbol = green_knight;
+              break;
+            case PieceType::BISHOP:
+              symbol = green_bishop;
+              break;
+            case PieceType::ROOK:
+              symbol = green_rook;
+              break;
+            case PieceType::QUEEN:
+              symbol = green_queen;
+              break;
+            case PieceType::KING:
+              symbol = green_king;
+              break;
+            case PieceType::ONE_POINT_QUEEN:
+              symbol = green_queen;
+              break;
+            }
+            break;
+          }
         }
-        std::cout << std::endl; // Newline after each row
-        // Removed the horizontal separator line here
+      }
+      // Print the square content with brackets - Matching python's
+      // `print(f"[{symbol}]", end="")`
+      std::cout << "[" << symbol << "]";
     }
-     // Removed the bottom coordinate line and separator line
+    std::cout << std::endl; // Newline after each row
+                            // Removed the horizontal separator line here
+  }
+  // Removed the bottom coordinate line and separator line
 
-    // --- Print existing game info (kept below the board) ---
-    std::cout << "Turn: ";
-    switch (current_player_) {
-    case Player::RED:    std::cout << ANSI_RED << "RED" << ANSI_RESET; break;
-    case Player::BLUE:   std::cout << ANSI_BLUE << "BLUE" << ANSI_RESET; break;
-    case Player::YELLOW: std::cout << ANSI_YELLOW << "YELLOW" << ANSI_RESET; break;
-    case Player::GREEN:  std::cout << ANSI_GREEN << "GREEN" << ANSI_RESET; break;
+  // --- Print existing game info (kept below the board) ---
+  std::cout << "Turn: ";
+  switch (current_player_) {
+  case Player::RED:
+    std::cout << ANSI_RED << "RED" << ANSI_RESET;
+    break;
+  case Player::BLUE:
+    std::cout << ANSI_BLUE << "BLUE" << ANSI_RESET;
+    break;
+  case Player::YELLOW:
+    std::cout << ANSI_YELLOW << "YELLOW" << ANSI_RESET;
+    break;
+  case Player::GREEN:
+    std::cout << ANSI_GREEN << "GREEN" << ANSI_RESET;
+    break;
+  }
+  std::cout << std::endl;
+  std::cout << "Active Players: ";
+  for (Player p : active_players_) {
+    switch (p) {
+    case Player::RED:
+      std::cout << ANSI_RED << "R " << ANSI_RESET;
+      break;
+    case Player::BLUE:
+      std::cout << ANSI_BLUE << "B " << ANSI_RESET;
+      break;
+    case Player::YELLOW:
+      std::cout << ANSI_YELLOW << "Y " << ANSI_RESET;
+      break;
+    case Player::GREEN:
+      std::cout << ANSI_GREEN << "G " << ANSI_RESET;
+      break;
     }
-    std::cout << std::endl;
-    std::cout << "Active Players: ";
-    for (Player p : active_players_) {
-        switch (p) {
-            case Player::RED:    std::cout << ANSI_RED << "R " << ANSI_RESET; break;
-            case Player::BLUE:   std::cout << ANSI_BLUE << "B " << ANSI_RESET; break;
-            case Player::YELLOW: std::cout << ANSI_YELLOW << "Y " << ANSI_RESET; break;
-            case Player::GREEN:  std::cout << ANSI_GREEN << "G " << ANSI_RESET; break;
-        }
+  }
+  std::cout << std::endl;
+  std::cout << "Points: ";
+  bool first_point = true;
+  for (const auto &pair : player_points_) {
+    if (!first_point) std::cout << " ";
+    first_point = false;
+    switch (pair.first) {
+    case Player::RED:
+      std::cout << ANSI_RED << "R:" << pair.second << ANSI_RESET;
+      break;
+    case Player::BLUE:
+      std::cout << ANSI_BLUE << "B:" << pair.second << ANSI_RESET;
+      break;
+    case Player::YELLOW:
+      std::cout << ANSI_YELLOW << "Y:" << pair.second << ANSI_RESET;
+      break;
+    case Player::GREEN:
+      std::cout << ANSI_GREEN << "G:" << pair.second << ANSI_RESET;
+      break;
     }
-    std::cout << std::endl;
-    std::cout << "Points: ";
-    bool first_point = true;
-    for (const auto& pair : player_points_) {
-        if (!first_point) std::cout << " ";
-        first_point = false;
-        switch (pair.first) {
-            case Player::RED:    std::cout << ANSI_RED << "R:" << pair.second << ANSI_RESET; break;
-            case Player::BLUE:   std::cout << ANSI_BLUE << "B:" << pair.second << ANSI_RESET; break;
-            case Player::YELLOW: std::cout << ANSI_YELLOW << "Y:" << pair.second << ANSI_RESET; break;
-            case Player::GREEN:  std::cout << ANSI_GREEN << "G:" << pair.second << ANSI_RESET; break;
-        }
-    }
-    std::cout << std::endl;
-    // std::cout << "50-move counter: " << fifty_move_counter_ << std::endl;
-    std::cout << std::endl;
-    if (termination_reason_) {
-        std::cout << "Game Over: " << *termination_reason_ << std::endl;
-    }
+  }
+  std::cout << std::endl;
+  // std::cout << "50-move counter: " << fifty_move_counter_ << std::endl;
+  std::cout << std::endl;
+  if (termination_reason_) {
+    std::cout << "Game Over: " << *termination_reason_ << std::endl;
+  }
 }
 
 Board::PositionKey Board::get_position_key() const {

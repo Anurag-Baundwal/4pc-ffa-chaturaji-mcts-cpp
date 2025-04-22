@@ -29,7 +29,7 @@ torch::Tensor ResBlockImpl::forward(torch::Tensor x) {
 // --- ChaturajiNN Implementation ---
 ChaturajiNNImpl::ChaturajiNNImpl() :
     // Input layer (40 input channels, 128 output channels)
-    conv1_(torch::nn::Conv2dOptions(40, 128, /*kernel_size=*/3).padding(1)),
+    conv1_(torch::nn::Conv2dOptions(41, 128, /*kernel_size=*/3).padding(1)),
     bn1_(128),
 
     // Policy head

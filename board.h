@@ -24,7 +24,8 @@ struct UndoInfo {
     std::optional<Piece> captured_piece; // The piece that was on the 'to' square (or nullopt)
     PieceType original_moving_piece_type; // Type of the piece *before* potential promotion
     Player original_player;        // Player whose turn it was *before* the move
-    int original_fifty_move_counter; // Value before the move
+    int original_full_move_number;
+    int original_move_number_of_last_reset;
     bool was_history_cleared;      // Did this move clear the position history?
     std::optional<Player> eliminated_player; // Player eliminated by this move (if any)
     // No need to store points delta; can be recalculated from captured_piece
@@ -63,7 +64,8 @@ public:
     const ActivePlayerSet& get_active_players() const;
     const PlayerPointMap& get_player_points() const;
     Player get_current_player() const;
-    int get_fifty_move_counter() const;
+    int get_full_move_number() const;
+    int get_move_number_of_last_reset() const;
     const std::optional<std::string>& get_termination_reason() const;
     const GameHistory& get_game_history() const;
     const PositionHistory& get_position_history() const; // Added accessor
@@ -93,7 +95,8 @@ private:
     PlayerPointMap player_points_;
     Player current_player_;
     PositionHistory position_history_;
-    int fifty_move_counter_;
+    int full_move_number_;
+    int move_number_of_last_reset_;
     mutable std::optional<std::string> termination_reason_; // Add mutable
     GameHistory game_history_;
 
@@ -112,6 +115,7 @@ private:
 
     // --- Private Helper for Turn Advancement ---
     void advance_turn();
+    Player get_last_active_player() const; // ADD declaration
 };
 
 } // namespace chaturaji_cpp
