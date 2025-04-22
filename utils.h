@@ -13,21 +13,22 @@ namespace chaturaji_cpp {
 /**
  * @brief Converts the current board state into a tensor representation suitable for the NN.
  *
- * Tensor dimensions: [Batch=1, Channels=40, Height=8, Width=8]
+ * Tensor dimensions: [Batch=1, Channels=33, Height=8, Width=8] <- UPDATED Channel Count
  * Channels:
- *   0-7:   Player RED pieces (P, N, B, R, Q, K, O, Dk)
- *   8-15:  Player BLUE pieces (...)
- *   16-23: Player YELLOW pieces (...)
- *   24-31: Player GREEN pieces (...)
- *   32:    Is Player RED turn (1.0) else (0.0)
- *   33:    Is Player BLUE turn (1.0) else (0.0)
- *   34:    Is Player YELLOW turn (1.0) else (0.0)
- *   35:    Is Player GREEN turn (1.0) else (0.0)
- *   36:    Player RED points / 100.0
- *   37:    Player BLUE points / 100.0
- *   38:    Player YELLOW points / 100.0
- *   39:    Player GREEN points / 100.0
- * Note: Order of piece types within the 8 channels per player needs to be consistent.
+ *   0-5:   Player RED pieces (P, N, B, R, K, Dk) 
+ *   6-11:  Player BLUE pieces (...)
+ *   12-17: Player YELLOW pieces (...)
+ *   18-23: Player GREEN pieces (...)
+ *   24:    Is Player RED turn (1.0) else (0.0)    
+ *   25:    Is Player BLUE turn (1.0) else (0.0)   
+ *   26:    Is Player YELLOW turn (1.0) else (0.0) 
+ *   27:    Is Player GREEN turn (1.0) else (0.0)  
+ *   28:    Player RED points / 100.0              
+ *   29:    Player BLUE points / 100.0             
+ *   30:    Player YELLOW points / 100.0           
+ *   31:    Player GREEN points / 100.0            
+ *   32:    50-move counter / 50.0                 
+ * Note: Order of piece types within the 6 channels per player needs to be consistent.
  *
  * @param board The board object to convert.
  * @param device The torch device (e.g., torch::kCPU, torch::kCUDA) to create the tensor on.

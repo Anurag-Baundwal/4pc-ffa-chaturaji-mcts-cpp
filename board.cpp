@@ -205,15 +205,6 @@ std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
         case PieceType::KING:
           get_king_moves(r, c, pseudo_legal_moves);
           break;
-        // Add cases for QUEEN, ONE_POINT_QUEEN if they become playable
-        case PieceType::QUEEN: // Combine Rook and Bishop logic if needed
-          get_rook_moves(r, c, pseudo_legal_moves);
-          get_bishop_moves(r, c, pseudo_legal_moves);
-          break;
-        case PieceType::ONE_POINT_QUEEN: // Same movement as Queen
-          get_rook_moves(r, c, pseudo_legal_moves);
-          get_bishop_moves(r, c, pseudo_legal_moves);
-          break;
         case PieceType::DEAD_KING: // Dead kings don't move
         default:
           break; // Should not happen for valid types
@@ -821,10 +812,6 @@ int Board::get_piece_value(const Piece &piece) const {
     return 5;
   case PieceType::ROOK:
     return 5;
-  case PieceType::QUEEN:
-    return 9; // Included though not in setup
-  case PieceType::ONE_POINT_QUEEN:
-    return 11; // Included
   case PieceType::KING:
     return 3; // Value used in evaluation
   case PieceType::DEAD_KING:
@@ -845,10 +832,6 @@ int Board::get_piece_capture_value(const Piece &piece) const {
     return 5;
   case PieceType::ROOK:
     return 5;
-  case PieceType::QUEEN:
-    return 9; // Included
-  case PieceType::ONE_POINT_QUEEN:
-    return 1; // Value from Python
   case PieceType::KING:
     return 3; // Value from Python
   case PieceType::DEAD_KING:
@@ -1075,7 +1058,6 @@ const std::string ANSI_BLUE = "\033[34m";
 // --- Unicode Chess Symbols (as UTF-8 strings) ---
 // Ensure your terminal supports UTF-8 and these symbols
 const std::string UNICODE_KING = "♔";
-const std::string UNICODE_QUEEN = "♕";
 const std::string UNICODE_ROOK = "♖";
 const std::string UNICODE_BISHOP = "♗";
 const std::string UNICODE_KNIGHT = "♘";
@@ -1085,7 +1067,6 @@ void Board::print_board() const {
   // Define colored piece strings (combine color, symbol, reset)
   // Red pieces
   const std::string red_king = ANSI_RED + UNICODE_KING + ANSI_RESET;
-  const std::string red_queen = ANSI_RED + UNICODE_QUEEN + ANSI_RESET;
   const std::string red_rook = ANSI_RED + UNICODE_ROOK + ANSI_RESET;
   const std::string red_bishop = ANSI_RED + UNICODE_BISHOP + ANSI_RESET;
   const std::string red_knight = ANSI_RED + UNICODE_KNIGHT + ANSI_RESET;
@@ -1093,7 +1074,6 @@ void Board::print_board() const {
 
   // Yellow pieces
   const std::string yellow_king = ANSI_YELLOW + UNICODE_KING + ANSI_RESET;
-  const std::string yellow_queen = ANSI_YELLOW + UNICODE_QUEEN + ANSI_RESET;
   const std::string yellow_rook = ANSI_YELLOW + UNICODE_ROOK + ANSI_RESET;
   const std::string yellow_bishop = ANSI_YELLOW + UNICODE_BISHOP + ANSI_RESET;
   const std::string yellow_knight = ANSI_YELLOW + UNICODE_KNIGHT + ANSI_RESET;
@@ -1101,7 +1081,6 @@ void Board::print_board() const {
 
   // Blue pieces
   const std::string blue_king = ANSI_BLUE + UNICODE_KING + ANSI_RESET;
-  const std::string blue_queen = ANSI_BLUE + UNICODE_QUEEN + ANSI_RESET;
   const std::string blue_rook = ANSI_BLUE + UNICODE_ROOK + ANSI_RESET;
   const std::string blue_bishop = ANSI_BLUE + UNICODE_BISHOP + ANSI_RESET;
   const std::string blue_knight = ANSI_BLUE + UNICODE_KNIGHT + ANSI_RESET;
@@ -1109,7 +1088,6 @@ void Board::print_board() const {
 
   // Green pieces
   const std::string green_king = ANSI_GREEN + UNICODE_KING + ANSI_RESET;
-  const std::string green_queen = ANSI_GREEN + UNICODE_QUEEN + ANSI_RESET;
   const std::string green_rook = ANSI_GREEN + UNICODE_ROOK + ANSI_RESET;
   const std::string green_bishop = ANSI_GREEN + UNICODE_BISHOP + ANSI_RESET;
   const std::string green_knight = ANSI_GREEN + UNICODE_KNIGHT + ANSI_RESET;
@@ -1117,7 +1095,6 @@ void Board::print_board() const {
 
   // Dead pieces (no color)
   const std::string dead_king = UNICODE_KING;
-  const std::string dead_queen = UNICODE_QUEEN;
   const std::string dead_rook = UNICODE_ROOK;
   const std::string dead_bishop = UNICODE_BISHOP;
   const std::string dead_knight = UNICODE_KNIGHT;
@@ -1156,14 +1133,8 @@ void Board::print_board() const {
           case PieceType::ROOK:
             symbol = dead_rook;
             break;
-          case PieceType::QUEEN:
-            symbol = dead_queen;
-            break;
           case PieceType::KING:
             symbol = dead_king;
-            break;
-          case PieceType::ONE_POINT_QUEEN:
-            symbol = dead_queen;
             break;
           case PieceType::DEAD_KING:
             symbol = dead_king;
@@ -1186,14 +1157,8 @@ void Board::print_board() const {
             case PieceType::ROOK:
               symbol = red_rook;
               break;
-            case PieceType::QUEEN:
-              symbol = red_queen;
-              break;
             case PieceType::KING:
               symbol = red_king;
-              break;
-            case PieceType::ONE_POINT_QUEEN:
-              symbol = red_queen;
               break;
             }
             break;
@@ -1211,14 +1176,8 @@ void Board::print_board() const {
             case PieceType::ROOK:
               symbol = blue_rook;
               break;
-            case PieceType::QUEEN:
-              symbol = blue_queen;
-              break;
             case PieceType::KING:
               symbol = blue_king;
-              break;
-            case PieceType::ONE_POINT_QUEEN:
-              symbol = blue_queen;
               break;
             }
             break;
@@ -1236,14 +1195,8 @@ void Board::print_board() const {
             case PieceType::ROOK:
               symbol = yellow_rook;
               break;
-            case PieceType::QUEEN:
-              symbol = yellow_queen;
-              break;
             case PieceType::KING:
               symbol = yellow_king;
-              break;
-            case PieceType::ONE_POINT_QUEEN:
-              symbol = yellow_queen;
               break;
             }
             break;
@@ -1261,14 +1214,8 @@ void Board::print_board() const {
             case PieceType::ROOK:
               symbol = green_rook;
               break;
-            case PieceType::QUEEN:
-              symbol = green_queen;
-              break;
             case PieceType::KING:
               symbol = green_king;
-              break;
-            case PieceType::ONE_POINT_QUEEN:
-              symbol = green_queen;
               break;
             }
             break;
@@ -1377,14 +1324,8 @@ Board::PositionKey Board::get_position_key() const {
         case PieceType::ROOK:
           piece_char = 'R';
           break;
-        case PieceType::QUEEN:
-          piece_char = 'Q';
-          break;
         case PieceType::KING:
           piece_char = 'K';
-          break;
-        case PieceType::ONE_POINT_QUEEN:
-          piece_char = 'O';
           break;
         case PieceType::DEAD_KING:
           piece_char = 'k';
@@ -1446,14 +1387,8 @@ Board::PositionKey Board::get_position_key() const {
               case PieceType::ROOK:
                 t_char = 'R';
                 break;
-              case PieceType::QUEEN:
-                t_char = 'Q';
-                break;
               case PieceType::KING:
                 t_char = 'K';
-                break;
-              case PieceType::ONE_POINT_QUEEN:
-                t_char = 'O';
                 break;
               case PieceType::DEAD_KING:
                 t_char = 'k';

@@ -19,10 +19,8 @@ enum class PieceType {
     KNIGHT = 2,
     BISHOP = 3,
     ROOK = 4,
-    QUEEN = 5,          // Keep for potential future use / evaluation function?
-    KING = 6,
-    ONE_POINT_QUEEN = 7,// Keep for potential future use / evaluation function?
-    DEAD_KING = 9
+    KING = 5,
+    DEAD_KING = 6
 };
 
 // Equivalent to Python's BoardLocation class
@@ -69,7 +67,6 @@ struct Move {
                promotion_piece_type == other.promotion_piece_type;
     }
 
-    // --- FIX: Add operator< for std::map ---
     bool operator<(const Move& other) const {
         if (from_loc < other.from_loc) return true;
         if (other.from_loc < from_loc) return false;
@@ -80,7 +77,6 @@ struct Move {
         // std::optional comparison: nullopt is less than any value
         return promotion_piece_type < other.promotion_piece_type;
     }
-    // --- END FIX ---
 };
 
 } // namespace chaturaji_cpp

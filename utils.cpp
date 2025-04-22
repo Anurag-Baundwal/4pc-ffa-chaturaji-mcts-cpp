@@ -10,8 +10,7 @@ namespace chaturaji_cpp {
 // Define the consistent order of piece types for tensor channels
 const std::vector<PieceType> PIECE_TYPE_ORDER = {
     PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK,
-    PieceType::QUEEN, PieceType::KING, PieceType::ONE_POINT_QUEEN, PieceType::DEAD_KING
-    // Ensure this order matches the Python version (8 types)
+    PieceType::KING, PieceType::DEAD_KING
 };
 // Helper map for quick lookup
 const std::map<PieceType, int> PIECE_TYPE_TO_INDEX = []{
@@ -24,86 +23,91 @@ const std::map<PieceType, int> PIECE_TYPE_TO_INDEX = []{
 
 
 torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
-    // Create tensor options: float, target device
-    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(device);
-    // Initialize zero tensor: shape [41, 8, 8] (Channels, Height, Width)
-    constexpr int NUM_CHANNELS = 41; // Define total channels
-    torch::Tensor tensor = torch::zeros({NUM_CHANNELS, BOARD_SIZE, BOARD_SIZE}, options);
+  // Create tensor options: float, target device
+  auto options = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+  // Initialize zero tensor: shape [33, 8, 8] (Channels, Height, Width) <- UPDATED Size
+  constexpr int NUM_PIECE_TYPES = 6; // Updated number of piece types
+  constexpr int NUM_PIECE_CHANNELS = 4 * NUM_PIECE_TYPES; // 4 players * 6 types = 24
+  constexpr int NUM_CHANNELS = NUM_PIECE_CHANNELS + 4 + 4 + 1; // 24 pieces + 4 player turn + 4 points + 1 50-move counter = 33
+  torch::Tensor tensor = torch::zeros({NUM_CHANNELS, BOARD_SIZE, BOARD_SIZE}, options);
 
-    const auto& grid = board.get_board_grid();
-    const auto& points = board.get_player_points();
-    Player current_player = board.get_current_player();
+  const auto& grid = board.get_board_grid();
+  const auto& points = board.get_player_points();
+  Player current_player = board.get_current_player();
 
-    // --- Piece Placement Channels (0-31) ---
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-        for (int c = 0; c < BOARD_SIZE; ++c) {
-            const auto& piece_opt = grid[r][c];
-            if (piece_opt) {
-                const Piece& piece = *piece_opt;
-                int player_idx = static_cast<int>(piece.player);
+  // --- Piece Placement Channels (0-23) --- <- UPDATED Range
+  for (int r = 0; r < BOARD_SIZE; ++r) {
+      for (int c = 0; c < BOARD_SIZE; ++c) {
+          const auto& piece_opt = grid[r][c];
+          if (piece_opt) {
+              const Piece& piece = *piece_opt;
+              int player_idx = static_cast<int>(piece.player);
 
-                // Find the index of the piece type in our defined order
-                 auto it = PIECE_TYPE_TO_INDEX.find(piece.piece_type);
-                 if (it != PIECE_TYPE_TO_INDEX.end()) {
-                     int type_idx = it->second;
-                    // Calculate channel index: Player offset + Piece type offset
-                    int channel = player_idx * PIECE_TYPE_ORDER.size() + type_idx;
+              // Find the index of the piece type in our defined order
+               auto it = PIECE_TYPE_TO_INDEX.find(piece.piece_type);
+               if (it != PIECE_TYPE_TO_INDEX.end()) {
+                   int type_idx = it->second;
+                  // Calculate channel index: Player offset + Piece type offset
+                  // Use the updated PIECE_TYPE_ORDER.size() which is now 6
+                  int channel = player_idx * PIECE_TYPE_ORDER.size() + type_idx;
 
-                    // Safety check channel bounds
-                    if (channel >= 0 && channel < 32) {
-                         tensor[channel][r][c] = 1.0f;
-                    } else {
-                         // Handle error or warning: Invalid channel calculated
-                         // std::cerr << "Warning: Invalid piece channel calculated: " << channel << std::endl;
-                    }
-                 } else {
-                      // Handle error or warning: Piece type not found in order map
-                      // std::cerr << "Warning: Piece type not found in PIECE_TYPE_ORDER map." << std::endl;
-                 }
-            }
-        }
-    }
+                  // Safety check channel bounds (0 to 23) <- UPDATED Range
+                  if (channel >= 0 && channel < NUM_PIECE_CHANNELS) {
+                       tensor[channel][r][c] = 1.0f;
+                  } else {
+                       // Handle error or warning: Invalid channel calculated
+                       std::cerr << "Warning: Invalid piece channel calculated: " << channel << std::endl;
+                  }
+               } else {
+                    // Handle error or warning: Piece type not found in order map
+                    // This can happen if a PieceType exists in the enum but not PIECE_TYPE_ORDER
+                    std::cerr << "Warning: Piece type " << static_cast<int>(piece.piece_type) << " not found in PIECE_TYPE_ORDER map." << std::endl;
+               }
+          }
+      }
+  }
 
-    // --- Current Player Channels (32-35) ---
-    int current_player_channel = 32 + static_cast<int>(current_player);
-    if (current_player_channel >= 32 && current_player_channel < 36) {
-         tensor[current_player_channel].fill_(1.0f); // Fill entire 8x8 plane
-    }
+  // --- Current Player Channels (24-27) --- <- UPDATED Range
+  int current_player_channel_offset = NUM_PIECE_CHANNELS; // Starts at 24
+  int current_player_channel = current_player_channel_offset + static_cast<int>(current_player);
+  if (current_player_channel >= current_player_channel_offset && current_player_channel < (current_player_channel_offset + 4)) {
+       tensor[current_player_channel].fill_(1.0f); // Fill entire 8x8 plane
+  }
 
-    // --- Player Points Channels (36-39) ---
-    for (int i = 0; i < 4; ++i) {
-        Player p = static_cast<Player>(i);
-        float player_points = 0.0f;
-        auto it = points.find(p);
-        if(it != points.end()){
-            player_points = static_cast<float>(it->second);
-        }
-        // Normalize points
-        tensor[36 + i].fill_(player_points / 100.0f);
-    }
+  // --- Player Points Channels (28-31) --- <- UPDATED Range
+  int points_channel_offset = current_player_channel_offset + 4; // Starts at 28
+  for (int i = 0; i < 4; ++i) {
+      Player p = static_cast<Player>(i);
+      float player_points = 0.0f;
+      auto it = points.find(p);
+      if(it != points.end()){
+          player_points = static_cast<float>(it->second);
+      }
+      // Normalize points
+      tensor[points_channel_offset + i].fill_(player_points / 100.0f);
+  }
 
-        // --- NEW: 50-Move Rule Counter Channel (40) ---
-    // Calculate moves since last pawn move or capture
-    int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
+  // --- 50-Move Rule Counter Channel (32) --- <- UPDATED Index
+  int counter_channel_offset = points_channel_offset + 4; // Starts at 32
+  // Calculate moves since last pawn move or capture
+  int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
 
-    // Normalize the count (e.g., scale to 0.0 - 1.0 range based on the 50 move limit)
-    // Clip the value between 0.0 and 1.0, as values beyond the limit don't usually carry extra meaning for the NN.
-    float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+  // Normalize the count (e.g., scale to 0.0 - 1.0 range based on the 50 move limit)
+  // Clip the value between 0.0 and 1.0, as values beyond the limit don't usually carry extra meaning for the NN.
+  float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
 
-    // Check if the tensor has the expected number of channels before accessing channel 40
-    // This check uses the constant defined earlier.
-    if (tensor.size(0) == NUM_CHANNELS) {
-         tensor[40].fill_(normalized_count); // Fill the entire 8x8 plane of the 41st channel (index 40)
-    } else {
-        // This should not happen if the tensor was initialized correctly above.
-        throw std::runtime_error("Internal error: Tensor channel dimension mismatch when adding 50-move counter.");
-    }
-    // --- END NEW BLOCK ---
+  // Check if the tensor has the expected number of channels before accessing the last channel
+  if (tensor.size(0) == NUM_CHANNELS && counter_channel_offset == NUM_CHANNELS - 1) {
+       tensor[counter_channel_offset].fill_(normalized_count); // Fill the entire 8x8 plane of the last channel
+  } else {
+      // This should not happen if the tensor was initialized correctly and offsets calculated correctly.
+      throw std::runtime_error("Internal error: Tensor channel dimension mismatch when adding 50-move counter. Expected "
+                               + std::to_string(NUM_CHANNELS) + " channels, offset calculation led to " + std::to_string(counter_channel_offset));
+  }
 
-    // Add the batch dimension: [1, 41, 8, 8]
-    return tensor.unsqueeze(0);
+  // Add the batch dimension: [1, 33, 8, 8] <- UPDATED Size
+  return tensor.unsqueeze(0);
 }
-
 
 int move_to_policy_index(const Move& move) {
     int fr_row = move.from_loc.row;
@@ -164,9 +168,7 @@ std::string get_san_string(const Move& move, const Board& board) {
         case PieceType::KNIGHT: ss << 'N'; break;
         case PieceType::BISHOP: ss << 'B'; break;
         case PieceType::ROOK:   ss << 'R'; break;
-        case PieceType::QUEEN:  ss << 'Q'; break;
         case PieceType::KING:   ss << 'K'; break;
-        case PieceType::ONE_POINT_QUEEN: ss << 'O'; break; // Or 'Q'? 'O' used in tensor
         case PieceType::PAWN: /* No letter */ break;
         case PieceType::DEAD_KING: ss << 'k'; break; // Unlikely to move, but...
         default: ss << '?'; break;
@@ -200,8 +202,6 @@ std::string get_san_string(const Move& move, const Board& board) {
             case PieceType::KNIGHT: ss << 'N'; break;
             case PieceType::BISHOP: ss << 'B'; break;
             case PieceType::ROOK:   ss << 'R'; break;
-            case PieceType::QUEEN:  ss << 'Q'; break;
-            case PieceType::ONE_POINT_QUEEN: ss << 'O'; break; // Or 'Q'?
             default: ss << '?'; break; // Should only promote to certain types
          }
      }
@@ -225,8 +225,6 @@ std::string get_uci_string(const Move& move) {
             case PieceType::KNIGHT: ss << 'n'; break;
             case PieceType::BISHOP: ss << 'b'; break;
             case PieceType::ROOK:   ss << 'r'; break;
-            case PieceType::QUEEN:  ss << 'q'; break;
-            case PieceType::ONE_POINT_QUEEN: ss << 'o'; break; // Consistent 'o'?
             default: break; // Unknown promotion?
          }
     }

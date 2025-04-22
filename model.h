@@ -27,6 +27,7 @@ struct ChaturajiNNImpl : torch::nn::Module {
 
 private:
     // Input convolutional layer
+    // Input channels updated to 33
     torch::nn::Conv2d conv1_{nullptr};
     torch::nn::BatchNorm2d bn1_{nullptr};
 
