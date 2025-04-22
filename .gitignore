@@ -1,0 +1,8 @@
+.vs
+.vscode
+bazel*
+models
+todo.txt
+code_summary*
+code_archive
+MODULE.bazel*

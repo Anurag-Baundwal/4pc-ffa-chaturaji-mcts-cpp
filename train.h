@@ -1,0 +1,58 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <torch/torch.h>
+
+#include "model.h"      // Needs network definition
+#include "self_play.h"  // Needs ReplayBuffer type definition
+#include "types.h"      // Basic types
+#include "utils.h"      // move_to_policy_index
+
+namespace chaturaji_cpp {
+
+// --- Training Dataset ---
+
+// --- FIX: Revert to default inheritance and Example type ---
+class ChaturajiDataset : public torch::data::datasets::Dataset<ChaturajiDataset> {
+// --- END FIX ---
+public:
+    // Constructor takes data from the replay buffer
+    explicit ChaturajiDataset(const std::vector<GameDataStep>& data);
+
+    // --- FIX: Return standard Example<Tensor, Tensor> ---
+    // State tensor goes into .data
+    // Concatenated policy + value tensor goes into .target
+    torch::data::Example<torch::Tensor, torch::Tensor> get(size_t index) override;
+    // --- END FIX ---
+
+    // Returns the size of the dataset
+    torch::optional<size_t> size() const override;
+
+private:
+    // Convert policy map to target tensor
+    torch::Tensor policy_to_tensor(const std::map<Move, double>& policy_map) const;
+
+    // Store pre-processed tensors for efficiency
+    std::vector<torch::Tensor> states_;   // Board state tensors [C, H, W]
+    std::vector<torch::Tensor> policies_; // Target policy tensors [4096]
+    std::vector<torch::Tensor> values_;   // Target value tensors [1]
+};
+
+
+// --- Training Function ---
+// (Training function declaration remains the same)
+void train(
+    int num_iterations = 50,
+    int num_games_per_iteration = 50, // Matches python code
+    int num_epochs_per_iteration = 25, // Matches python code
+    int batch_size = 4096,           // Matches python code
+    double learning_rate = 0.001,
+    double weight_decay = 1e-4,
+    int simulations_per_move = 50,   // Matches python code
+    const std::string& model_save_dir = "/content/drive/MyDrive/models", // Default from python NB
+    const std::string& initial_model_path = "" // Path to load initial model from
+);
+
+
+} // namespace chaturaji_cpp
