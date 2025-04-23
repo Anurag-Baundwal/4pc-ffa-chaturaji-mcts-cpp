@@ -1,11 +1,11 @@
 #pragma once // Use pragma once for include guard (common practice)
 
 #include <optional> // For optional promotion piece type
-#include <functional> // For std::hash needed later
+#include <functional> // For std::hash
+#include <cstdint>    // For uint64_t
 
 namespace chaturaji_cpp {
 
-// Equivalent to Python's Player Enum
 enum class Player {
     RED = 0,
     BLUE = 1,
@@ -13,7 +13,6 @@ enum class Player {
     GREEN = 3
 };
 
-// Equivalent to Python's PieceType Enum
 enum class PieceType {
     PAWN = 1,
     KNIGHT = 2,
@@ -23,7 +22,8 @@ enum class PieceType {
     DEAD_KING = 6
 };
 
-// Equivalent to Python's BoardLocation class
+using ZobristKey = uint64_t;
+
 struct BoardLocation {
     int row = -1;
     int col = -1;
@@ -47,11 +47,10 @@ struct BoardLocation {
     }
 };
 
-// Equivalent to Python's Move class
 struct Move {
     BoardLocation from_loc;
     BoardLocation to_loc;
-    std::optional<PieceType> promotion_piece_type; // Use optional for promotion
+    std::optional<PieceType> promotion_piece_type;
 
     // Default constructor
     Move() = default;

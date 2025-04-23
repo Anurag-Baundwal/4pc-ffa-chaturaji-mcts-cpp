@@ -6,7 +6,8 @@
 #include <optional>
 #include <array>
 #include <string>
-#include <memory> // For std::unique_ptr if needed later, or std::optional
+#include <memory>   // For std::unique_ptr if needed later, or std::optional
+#include <cstdint>  // For ZobristKey (uint64_t)
 
 #include "types.h"
 #include "piece.h"
@@ -28,6 +29,7 @@ struct UndoInfo {
     int original_move_number_of_last_reset;
     bool was_history_cleared;      // Did this move clear the position history?
     std::optional<Player> eliminated_player; // Player eliminated by this move (if any)
+    ZobristKey previous_hash;      // Hash *before* the move was made
     // No need to store points delta; can be recalculated from captured_piece
     // No need to store previous position history; just pop the last hash during undo
 };
@@ -36,7 +38,7 @@ class Board {
 public:
     // --- Typedefs for clarity ---
     using BoardGrid = std::array<std::array<std::optional<Piece>, BOARD_SIZE>, BOARD_SIZE>;
-    using PositionKey = std::string; // Simple string representation for now
+    using PositionKey = ZobristKey;
     using PositionHistory = std::vector<PositionKey>;
     using GameHistory = std::vector<Move>;
     using PlayerPointMap = std::map<Player, int>;
@@ -71,7 +73,7 @@ public:
     const PositionHistory& get_position_history() const; // Added accessor
 
     // --- Game Status ---
-    bool is_game_over() const; // Add const // Checks and sets termination_reason if true
+    bool is_game_over() const;             // Checks and sets termination_reason if true
     PlayerPointMap get_game_result() const; // Calculates final scores based on state
     std::optional<Player> get_winner() const; // Determines winner based on game result
 
@@ -97,14 +99,12 @@ private:
     PositionHistory position_history_;
     int full_move_number_;
     int move_number_of_last_reset_;
-    mutable std::optional<std::string> termination_reason_; // Add mutable
+    mutable std::optional<std::string> termination_reason_;
     GameHistory game_history_;
+    ZobristKey current_hash_;
 
     // --- NEW: Stack for Undo Information ---
     std::vector<UndoInfo> undo_stack_; // Use vector as a stack
-
-    // Removed the old deep copy mechanism:
-    // std::unique_ptr<Board> previous_board_state_;
 
     // --- Private Helper Methods for Move Generation ---
     void get_pawn_moves(int row, int col, std::vector<Move>& moves) const;

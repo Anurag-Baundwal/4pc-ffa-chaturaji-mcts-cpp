@@ -1,15 +1,96 @@
 #include "board.h"
 #include <algorithm> // For std::find, std::max_element
+#include <array>     // For Zobrist key storage
 #include <cmath>     // For std::round
+#include <cstdint>   // For ZobristKey
 #include <iostream>
 #include <limits>  // For numeric_limits in get_last_active_player
 #include <numeric> // For std::accumulate (optional)
+#include <random>  // For Zobrist key generation
 #include <sstream>
 #include <stdexcept>
 #include <utility> // For std::move
 #include <vector>
 
 namespace chaturaji_cpp {
+
+namespace { // Anonymous namespace to limit scope to this file
+
+const int NUM_PIECE_TYPES_FOR_HASH = 6; // P, N, B, R, K, DK
+const int NUM_PLAYERS = 4;
+const int NUM_SQUARES = 64;
+const int NUM_ALIVE_STATES = 2; // 0 = alive (is_dead=false), 1 = dead (is_dead=true)
+
+struct ZobristData {
+  std::array<std::array<std::array<std::array<ZobristKey, NUM_SQUARES>, NUM_ALIVE_STATES>, NUM_PLAYERS>, NUM_PIECE_TYPES_FOR_HASH> piece_keys;
+  std::array<ZobristKey, NUM_PLAYERS> turn_keys;
+  // Add keys for castling, en passant if needed in a different game
+
+  ZobristData() {
+    // Use a high-quality random number generator
+    std::mt19937_64 rng(0xBADFACE); // Fixed seed for reproducibility
+    std::uniform_int_distribution<ZobristKey> dist(0, std::numeric_limits<ZobristKey>::max());
+
+    // Generate keys for each piece type, player, and square
+    for (int type_idx = 0; type_idx < NUM_PIECE_TYPES_FOR_HASH; ++type_idx) {
+      for (int player_idx = 0; player_idx < NUM_PLAYERS; ++player_idx) {
+        for (int alive_idx = 0; alive_idx < NUM_ALIVE_STATES; ++alive_idx) {
+          for (int sq_idx = 0; sq_idx < NUM_SQUARES; ++sq_idx) {
+            piece_keys[type_idx][player_idx][alive_idx][sq_idx] = dist(rng);
+          }
+        }
+      }
+    }
+
+    // Generate keys for whose turn it is
+    for (int player_idx = 0; player_idx < NUM_PLAYERS; ++player_idx) {
+      turn_keys[player_idx] = dist(rng);
+    }
+  }
+
+  // Helper to get piece key safely, mapping PieceType to array index
+  ZobristKey get_piece_key(PieceType type, Player player, bool is_dead, int square_index) const {
+    if (square_index < 0 || square_index >= NUM_SQUARES) {
+      throw std::out_of_range(
+          "Square index out of range for Zobrist key lookup.");
+    }
+    int type_idx = static_cast<int>(type) - 1; // Map PAWN(1)..DEAD_KING(6) to 0..5
+    if (type_idx < 0 || type_idx >= NUM_PIECE_TYPES_FOR_HASH) {
+      throw std::out_of_range("PieceType out of range for Zobrist key lookup.");
+    }
+    int player_idx = static_cast<int>(player); // Player enum 0..3 maps directly
+    if (player_idx < 0 || player_idx >= NUM_PLAYERS) {
+      throw std::out_of_range("Player out of range for Zobrist key lookup.");
+    }
+    int alive_idx = is_dead ? 1 : 0; // Map bool to 0 or 1
+    
+    // Special handling for DEAD_KING: The implementation keeps its is_dead flag false,
+    // so we always use the 'alive' key index (0) for DEAD_KING pieces.
+    // Its unique state is distinguished by the PieceType index itself.
+    if (type == PieceType::DEAD_KING) {
+      alive_idx = 0;
+  }
+
+    return piece_keys[type_idx][player_idx][alive_idx][square_index]; 
+    }
+
+  // Helper to get turn key safely
+  ZobristKey get_turn_key(Player player) const {
+    int player_idx = static_cast<int>(player);
+    if (player_idx < 0 || player_idx >= NUM_PLAYERS) {
+      throw std::out_of_range("Player out of range for Zobrist key lookup.");
+    }
+    return turn_keys[player_idx];
+  }
+};
+
+// Meyers' Singleton: Ensures safe initialization on first access
+const ZobristData &get_zobrist_data() {
+  static const ZobristData instance; // Initialized only once
+  return instance;
+}
+
+} // end anonymous namespace
 
 // --- Static Data ---
 // Helper for iterating directions (used in Bishop, Rook, King moves)
@@ -43,8 +124,28 @@ Board::Board()
     active_players_.insert(p);
   }
   setup_initial_board();
-  // Add initial position hash? Maybe not needed if first move resets counter.
-  // position_history_.push_back(get_position_key());
+
+  // --- Calculate Initial Zobrist Hash --- 
+  const auto& zobrist_data = get_zobrist_data();
+  current_hash_ = 0; // Start fresh
+
+  // Hash pieces
+  for (int r = 0; r < BOARD_SIZE; ++r) {
+      for (int c = 0; c < BOARD_SIZE; ++c) {
+          if (board_[r][c]) {
+              const Piece& piece = *board_[r][c];
+              int sq_idx = r * BOARD_SIZE + c;
+              current_hash_ ^= zobrist_data.get_piece_key(piece.piece_type, piece.player, piece.is_dead, sq_idx);
+          }
+      }
+  }
+
+  // Hash current player's turn
+  current_hash_ ^= zobrist_data.get_turn_key(current_player_);
+  // --- END Initial Zobrist Hash Calculation ---
+
+  // Add initial position hash to history? Maybe not needed if first move resets counter.
+  // position_history_.push_back(get_position_key()); // <-- Leave commented for now, will be ZobristKey later
 }
 
 // --- Copy Constructor ---
@@ -56,7 +157,9 @@ Board::Board(const Board &other)
       full_move_number_(other.full_move_number_),
       move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(other.termination_reason_),
-      game_history_(other.game_history_), undo_stack_(other.undo_stack_) {}
+      game_history_(other.game_history_),
+      current_hash_(other.current_hash_),
+      undo_stack_(other.undo_stack_) {}
 
 // --- Move Constructor ---
 Board::Board(Board &&other) noexcept
@@ -69,10 +172,12 @@ Board::Board(Board &&other) noexcept
       move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(std::move(other.termination_reason_)),
       game_history_(std::move(other.game_history_)),
+      current_hash_(other.current_hash_),
       undo_stack_(std::move(other.undo_stack_)) {
   // Reset other state after move if necessary
   other.full_move_number_ = 1; // Reset moved-from object
   other.move_number_of_last_reset_ = 0;
+  other.current_hash_ = 0; // RESET moved-from hash
 }
 
 // --- Copy Assignment Operator ---
@@ -87,6 +192,7 @@ Board &Board::operator=(const Board &other) {
     move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = other.termination_reason_;
     game_history_ = other.game_history_;
+    current_hash_ = other.current_hash_;
     undo_stack_ = other.undo_stack_; // Deep copy handled by stack's op=
   }
   return *this;
@@ -104,11 +210,13 @@ Board &Board::operator=(Board &&other) noexcept {
     move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = std::move(other.termination_reason_);
     game_history_ = std::move(other.game_history_);
+    current_hash_ = other.current_hash_;
     undo_stack_ = std::move(other.undo_stack_);
 
     // Reset other state if necessary
     other.full_move_number_ = 1;
     other.move_number_of_last_reset_ = 0;
+    other.current_hash_ = 0;
   }
   return *this;
 }
@@ -425,103 +533,107 @@ void Board::get_king_moves(int row, int col, std::vector<Move> &moves) const {
 // --- Move Execution ---
 
 std::optional<Piece> Board::make_move(const Move &move) {
-  // --- Create Undo Information ---
+  // --- Setup ---
   UndoInfo undo_info;
   undo_info.move = move;
   undo_info.original_player = current_player_;
   undo_info.original_full_move_number = full_move_number_;
   undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
-  undo_info.eliminated_player = std::nullopt; // Assume no elimination initially
-  undo_info.was_history_cleared = false; // Assume history not cleared initially
+  undo_info.eliminated_player = std::nullopt;
+  undo_info.was_history_cleared = false;
+  undo_info.previous_hash = current_hash_; // Store hash BEFORE any changes
 
-  // --- Get Move Details ---
-  int fr = move.from_loc.row;
-  int fc = move.from_loc.col;
-  int tr = move.to_loc.row;
-  int tc = move.to_loc.col;
+  const auto& zobrist_data = get_zobrist_data();
+  int fr = move.from_loc.row, fc = move.from_loc.col;
+  int tr = move.to_loc.row, tc = move.to_loc.col;
+  int from_sq_idx = fr * BOARD_SIZE + fc;
+  int to_sq_idx = tr * BOARD_SIZE + tc;
 
   // --- Validate Moving Piece ---
   if (!board_[fr][fc]) {
-    // This check should ideally be done before calling make_move
-    // But adding robustness here.
-    throw std::runtime_error(
-        "Attempting to move from an empty square in make_move.");
+    throw std::runtime_error("Attempting to move from an empty square in make_move.");
   }
-  Piece moving_piece = board_[fr][fc].value(); // Get a copy of the piece
-  undo_info.original_moving_piece_type =
-      moving_piece.piece_type; // Store pre-promotion type
+  Piece moving_piece = board_[fr][fc].value(); // Make a copy to potentially modify
+  undo_info.original_moving_piece_type = moving_piece.piece_type;
 
   // --- Store Captured Piece Info ---
-  undo_info.captured_piece =
-      board_[tr][tc]; // Store potential captured piece (or nullopt)
+  undo_info.captured_piece = board_[tr][tc];
   bool is_capture = undo_info.captured_piece.has_value();
   bool is_pawn_move = (moving_piece.piece_type == PieceType::PAWN);
   bool is_resetting_move = is_pawn_move || is_capture;
 
-  // --- Perform Move on Board ---
-  board_[fr][fc] = std::nullopt; // Clear the 'from' square
-  board_[tr][tc] = moving_piece; // Place the moving piece on the 'to' square
+  // --- ZOBRIST UPDATE: Part 1 (Remove pieces/turn from old state) ---
+  // 1a. XOR out the moving piece from its original square. It's always alive here.
+  current_hash_ ^= zobrist_data.get_piece_key(moving_piece.piece_type, moving_piece.player, false, from_sq_idx);
 
-  // --- Handle Promotion ---
+  // 1b. XOR out the captured piece (if any) from the destination square. Use its actual dead status.
+  if (is_capture) {
+      const Piece& captured = undo_info.captured_piece.value();
+      current_hash_ ^= zobrist_data.get_piece_key(captured.piece_type, captured.player, captured.is_dead, to_sq_idx);
+  }
+  // 1c. Turn XOR is handled by advance_turn later.
+  // --- END ZOBRIST UPDATE Part 1 ---
+
+  // --- Perform Board Changes ---
+  board_[fr][fc] = std::nullopt; // Clear the 'from' square
+
+  // Handle Promotion (Modify the *copy* before placing it)
   if (move.promotion_piece_type) {
-    board_[tr][tc]->piece_type = move.promotion_piece_type.value();
+    moving_piece.piece_type = move.promotion_piece_type.value(); // Update type on the copy
   }
 
-  // --- Handle Capture Logic & Scoring ---
-  if (undo_info.captured_piece) {
-    const Piece &captured = undo_info.captured_piece.value();
+  // Place the (potentially promoted) piece on the 'to' square
+  board_[tr][tc] = moving_piece;
+  // Get a reference *to the piece now on the board*
+  Piece& final_piece_at_to = board_[tr][tc].value();
 
+  // --- Handle Captures & Elimination ---
+  if (is_capture) {
+    const Piece &captured = undo_info.captured_piece.value();
+    // Check standard capture rules (cannot capture already dead pieces, except DEAD_KING for points?)
+    // Python code allowed capturing DEAD_KING for points. Let's assume that rule.
     if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
       player_points_[moving_piece.player] += get_piece_capture_value(captured);
 
-      // Check for King capture and elimination
+      // If a King was captured, eliminate the player
       if (captured.piece_type == PieceType::KING) {
-        eliminate_player(
-            captured.player); // Modifies board_ and active_players_
-        undo_info.eliminated_player = captured.player; // Record elimination
+        // eliminate_player handles marking pieces dead/DEAD_KING and updating the hash accordingly
+        eliminate_player(captured.player);
+        undo_info.eliminated_player = captured.player;
       }
     }
   }
 
-  // --- Update 50-Move Rule State & Position History ---
-  // Check if the player whose turn it WAS is the last active player *before*
-  // elimination check
-  Player player_who_moved = current_player_; // Player before advance_turn
-  Player last_active_player_in_sequence =
-      get_last_active_player(); // Last player among currently active ones
+  // --- ZOBRIST UPDATE: Part 2 (Add piece to new state) ---
+  // 2a. XOR in the final piece (potentially promoted) at its destination square. It's always alive here.
+  current_hash_ ^= zobrist_data.get_piece_key(final_piece_at_to.piece_type, final_piece_at_to.player, false, to_sq_idx);
+  // 2b. Turn XOR is handled by advance_turn later.
+  // --- END ZOBRIST UPDATE Part 2 ---
 
-  bool was_last_player_turn =
-      (player_who_moved == last_active_player_in_sequence);
+  // --- Update Game State Counters & History ---
+  Player player_who_moved = current_player_;
+  Player last_active_player_in_sequence = get_last_active_player();
+  bool was_last_player_turn = (player_who_moved == last_active_player_in_sequence);
 
-  // Increment full move number *after* the last player moves
   if (was_last_player_turn) {
     full_move_number_++;
   }
 
   if (is_resetting_move) {
-    // Reset: Record the move number during which the reset occurred.
-    move_number_of_last_reset_ =
-        full_move_number_;     // Use the current (potentially incremented) full
-                               // move number
-    position_history_.clear(); // Reset history on irreversible moves
+    move_number_of_last_reset_ = full_move_number_;
+    position_history_.clear(); // Reset repetition history
     undo_info.was_history_cleared = true;
-  } else {
-    // Non-resetting move, counter effectively increases by duration
-    // No direct counter to increment here.
   }
 
-  // --- Update Histories ---
-  position_history_.push_back(get_position_key()); // Add current state hash
-  game_history_.push_back(move);                   // Add move to game log
+  // Add current position hash to history (Type change needed in Phase 3)
+  position_history_.push_back(get_position_key());   // get_position_key() now returns the current_hash_ (ZobristKey)
+  game_history_.push_back(move);
 
-  // --- Push Undo Info ---
-  undo_stack_.push_back(undo_info);
+  // --- Final Steps ---
+  undo_stack_.push_back(undo_info); // Push undo info including previous hash
+  advance_turn();                   // Advances turn and updates hash for player change
 
-  // --- Advance Turn ---
-  advance_turn(); // Advances current_player_, skipping inactive
-
-  // --- Return Captured Piece ---
-  return undo_info.captured_piece; // Return the piece captured in this move
+  return undo_info.captured_piece;
 }
 
 void Board::undo_move() {
@@ -540,87 +652,109 @@ void Board::undo_move() {
   int tr = move.to_loc.row;
   int tc = move.to_loc.col;
 
-  // --- Restore Player Turn ---
-  // Note: This needs to be done before potentially un-eliminating players
+  // --- 1. Restore Player Turn, Game State Counters, and Histories ---
+  // These are independent of the board state itself and restored first.
   current_player_ = undo_info.original_player;
-
-  // --- Restore Histories ---
-  if (!game_history_.empty()) {
-    game_history_.pop_back();
-  }
-  if (!position_history_.empty()) {
-    // Careful: if history was cleared, just popping isn't technically correct
-    // for repetition checks before the clear. But standard for undo.
-    position_history_.pop_back();
-  }
-  // If perfect history restoration is needed, UndoInfo needs more data.
-
-  // --- Restore 50-Move Rule State ---
   full_move_number_ = undo_info.original_full_move_number;
   move_number_of_last_reset_ = undo_info.original_move_number_of_last_reset;
 
-  // --- Reverse Board Changes ---
-  Piece moving_piece = board_[tr][tc].value();
-  moving_piece.piece_type = undo_info.original_moving_piece_type;
-  board_[fr][fc] = moving_piece;
+  if (!game_history_.empty()) game_history_.pop_back();
+  // Restore position history (important if it wasn't cleared)
+  if (!position_history_.empty() && !undo_info.was_history_cleared) {
+      position_history_.pop_back(); // Still string for now
+  } else if (undo_info.was_history_cleared) {
+      // If history *was* cleared by the move we are undoing,
+      // we cannot reconstruct the history before that point easily.
+      // The position_history_ vector remains empty, which is correct.
+  }
+
+  // --- 2. Reverse Board Piece Changes ---
+  // Get the piece that moved (it's currently at board_[tr][tc])
+  // Need a copy *before* potentially overwriting board_[tr][tc] with captured piece
+  Piece piece_that_moved = board_[tr][tc].value();
+  // Revert its type *before* placing it back (undo promotion)
+  piece_that_moved.piece_type = undo_info.original_moving_piece_type;
+  // Place it back on the 'from' square
+  board_[fr][fc] = piece_that_moved;
+  // Restore the captured piece (or nullopt) to the 'to' square
   board_[tr][tc] = undo_info.captured_piece;
 
-  // --- Reverse Elimination (if necessary) ---
+  // --- 3. Reverse Elimination (Restore Player and Piece States) ---
+  // This must happen *before* hash restoration, as it changes the board state
+  // that the restored hash needs to match.
   if (undo_info.eliminated_player) {
     Player player_to_revive = *undo_info.eliminated_player;
-    active_players_.insert(player_to_revive);
+    active_players_.insert(player_to_revive); // Add player back to active set
 
-    // Find the Dead King and revert it, and revert other dead pieces
+    // Iterate through the board to find pieces of the revived player
     for (int r = 0; r < BOARD_SIZE; ++r) {
       for (int c = 0; c < BOARD_SIZE; ++c) {
         auto &piece_opt = board_[r][c];
         if (piece_opt && piece_opt->player == player_to_revive) {
-          if (piece_opt && piece_opt->player == player_to_revive) {
-            // If the piece being put back *was* the king captured...
-            if (r == tr && c == tc &&
-                piece_opt->piece_type == PieceType::DEAD_KING) {
-              piece_opt->piece_type = PieceType::KING;
-              piece_opt->is_dead = false; // Ensure king is alive
-            } else if (piece_opt->piece_type != PieceType::KING &&
-                       piece_opt->piece_type != PieceType::DEAD_KING) {
-              // Revive other pieces
-              piece_opt->is_dead = false;
+            // If this piece is the KING that was originally captured (and is now a DEAD_KING on the board at the 'to' square)
+            // Note: We check the *original captured piece info* to confirm it *was* the king.
+            if (undo_info.captured_piece &&
+                undo_info.captured_piece->player == player_to_revive &&
+                undo_info.captured_piece->piece_type == PieceType::KING &&
+                r == tr && c == tc && // Check location matches the capture square
+                piece_opt->piece_type == PieceType::DEAD_KING) // Check current type on board
+            {
+                 piece_opt->piece_type = PieceType::KING; // Revert type
+                 piece_opt->is_dead = false;              // Ensure alive status
             }
-          }
-          // Do not revive other DEAD_KINGs that weren't part of this move's
-          // capture
+            // If this is any *other* piece of the revived player that was marked dead
+            else if (piece_opt->is_dead && piece_opt->piece_type != PieceType::DEAD_KING)
+            {
+                 piece_opt->is_dead = false; // Mark as alive again
+            }
         }
       }
     }
+    // No explicit hash changes needed here; the hash restoration below handles it.
   }
 
-  // --- Reverse Point Changes (if capture occurred) ---
+  // --- 4. Reverse Point Changes ---
   if (undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
-    // Subtract the points that were added
-    // Points were added to the player whose turn it *was* (original_player)
     if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
-    player_points_[undo_info.original_player] -=
-        get_piece_capture_value(captured);
+      // Subtract points from the player who made the original move
+      player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
     }
   }
 
-  // --- Clear Termination Reason (state might no longer be terminal) ---
-  termination_reason_ = std::nullopt;
+  // --- 5. Restore Zobrist Hash ---
+  // This sets the hash to the exact value it had *before* the move was made.
+  current_hash_ = undo_info.previous_hash;
+
+  // --- 6. Clear Termination Reason ---
+  termination_reason_ = std::nullopt; // State may no longer be terminal
 }
 
+// --- advance_turn() Correctly handles turn XORing ---
 void Board::advance_turn() {
+  const auto& zobrist_data = get_zobrist_data();
+  Player old_player = current_player_;
+
   int next_player_val = (static_cast<int>(current_player_) + 1) % 4;
   current_player_ = static_cast<Player>(next_player_val);
 
   // Skip eliminated players
   while (active_players_.find(current_player_) == active_players_.end()) {
-    // Check if only one player is left (should be caught by is_game_over, but
-    // safety check)
-    if (active_players_.size() <= 1) break;
+    if (active_players_.size() <= 1) break; // Avoid infinite loop if only 0 or 1 players left
     next_player_val = (static_cast<int>(current_player_) + 1) % 4;
     current_player_ = static_cast<Player>(next_player_val);
   }
+
+  // Update hash for turn change, carefully handling game end states
+  if (active_players_.size() > 0) { // Only update turn hash if the game isn't completely empty
+      current_hash_ ^= zobrist_data.get_turn_key(old_player); // XOR out old player
+      // Only XOR in new player if they are actually active (handles game ending exactly on turn change)
+      if(active_players_.count(current_player_)){
+         current_hash_ ^= zobrist_data.get_turn_key(current_player_); // XOR in new player
+      }
+  }
+  // Note: If game ends because the last player was eliminated, old_player was XORed out
+  // by eliminate_player, and no new player is XORed in here. Correct.
 }
 
 // --- Game State Accessors --- (Implement getters)
@@ -682,13 +816,11 @@ bool Board::is_game_over() const {
   // --- End 50-Move Rule Check ---
 
   // --- Threefold Repetition Check ---
-  PositionKey current_key = get_position_key();
+  // Note: The current hash (current_key) is *already* in the history
+  // because it was added at the end of make_move *before* is_game_over might be called.
+  // So we need to find >= 3 occurrences.
+  PositionKey current_key = current_hash_; // Get the current hash value
   int count = 0;
-  // Count occurrences in history *including* the current one implicitly added
-  // by make_move before check Or, count *before* adding the current one to
-  // history (standard approach) The current code adds to history in make_move
-  // *before* calling is_game_over might be called. Let's count occurrences in
-  // the history vector:
   for (const auto &key : position_history_) {
     if (key == current_key) {
       count++;
@@ -1014,34 +1146,61 @@ Board::PlayerPointMap Board::evaluate() const {
 
 void Board::eliminate_player(Player player) {
   if (active_players_.count(player)) {
+    const auto& zobrist_data = get_zobrist_data();
+
     for (int r = 0; r < BOARD_SIZE; ++r) {
       for (int c = 0; c < BOARD_SIZE; ++c) {
         auto &piece_opt = board_[r][c];
+        // Only process pieces belonging to the eliminated player that are currently alive
         if (piece_opt && piece_opt->player == player && !piece_opt->is_dead) {
-          if (piece_opt->piece_type == PieceType::KING) {
-            piece_opt->piece_type = PieceType::DEAD_KING;
-            // Keep is_dead = false for the Dead King itself, as it stays on
-            // board
-          } else {
-            piece_opt->is_dead = true;
-          }
+            int sq_idx = r * BOARD_SIZE + c;
+            PieceType original_type = piece_opt->piece_type;
+
+            // --- Hash out the OLD state (always is_dead=false before elimination) ---
+            current_hash_ ^= zobrist_data.get_piece_key(original_type, player, false, sq_idx);
+
+            if (original_type == PieceType::KING) {
+                // King transforms to DEAD_KING
+                piece_opt->piece_type = PieceType::DEAD_KING;
+                // Keep piece_opt->is_dead = false; (as per DEAD_KING convention)
+                // --- Hash in the NEW state (DEAD_KING, is_dead=false convention) ---
+                current_hash_ ^= zobrist_data.get_piece_key(PieceType::DEAD_KING, player, false, sq_idx);
+            } else {
+                // Other pieces are marked dead
+                piece_opt->is_dead = true;
+                // --- Hash in the NEW state (Original Type, is_dead=true) ---
+                current_hash_ ^= zobrist_data.get_piece_key(original_type, player, true, sq_idx);
+            }
         }
       }
     }
-    active_players_.erase(player);
-    // No need to adjust points here, points are for captures
+    active_players_.erase(player); // Remove from active set
+    // Note: Turn hash update is handled by advance_turn if called (e.g., in resign)
   }
 }
 
 void Board::resign() {
-  if (active_players_.count(current_player_)) {
-    eliminate_player(current_player_);
-    // Only advance turn if game is not over
-    if (active_players_.size() > 1) {
-      advance_turn();
+  Player resigning_player = current_player_; // Store before potentially changing turn
+  if (active_players_.count(resigning_player)) {
+    eliminate_player(resigning_player); // Eliminate the player (handles piece hash updates)
+
+    // Check if the game ends *immediately* due to this resignation
+    // (i.e., only 1 player remains active AFTER elimination)
+    bool game_just_ended = (active_players_.size() <= 1);
+
+    if (!game_just_ended) {
+        // Game continues, advance turn (handles turn hash update)
+        advance_turn();
     } else {
-      // If resigning makes the game end, set termination reason
-      is_game_over(); // This should set the reason to elimination
+        // Game ended. Need to XOR out the resigning player's turn key,
+        // because advance_turn won't be called or won't XOR in a new player.
+        // eliminate_player does *not* handle the turn key.
+        const auto& zobrist_data = get_zobrist_data();
+        current_hash_ ^= zobrist_data.get_turn_key(resigning_player);
+
+        // Set termination reason
+        // Call is_game_over() to ensure reason is set correctly based on active_players count
+        is_game_over();
     }
   }
 }
@@ -1294,134 +1453,9 @@ void Board::print_board() const {
   }
 }
 
-Board::PositionKey Board::get_position_key() const {
-  // Simple string representation for hashing
-  // Format: Board_Grid/Current_Player/Active_Players/Fifty_Counter
-  // NOTE: Including fifty_move_counter is NOT standard for threefold
-  // repetition. Repetition normally only cares about the piece positions and
-  // castling/enpassant rights (and whose turn it is). Sticking closely to
-  // Python code which includes it implicitly by adding to history every turn.
-  // For a more standard check, only hash board + current player + potentially
-  // irreversible move rights.
-  std::stringstream ss;
-  for (int r = 0; r < BOARD_SIZE; ++r) {
-    for (int c = 0; c < BOARD_SIZE; ++c) {
-      const auto &p = board_[r][c];
-      if (!p) {
-        ss << '.';
-      } else {
-        char piece_char = '?';
-        switch (p->piece_type) {
-        case PieceType::PAWN:
-          piece_char = 'P';
-          break;
-        case PieceType::KNIGHT:
-          piece_char = 'N';
-          break;
-        case PieceType::BISHOP:
-          piece_char = 'B';
-          break;
-        case PieceType::ROOK:
-          piece_char = 'R';
-          break;
-        case PieceType::KING:
-          piece_char = 'K';
-          break;
-        case PieceType::DEAD_KING:
-          piece_char = 'k';
-          break; // Distinguish dead king
-        }
-        // Add player indicator, lowercase for dead non-king pieces
-        switch (p->player) {
-        case Player::RED:
-          ss << (p->is_dead ? (char)std::tolower(piece_char) : piece_char);
-          break;
-        case Player::BLUE:
-          ss << (p->is_dead ? (char)std::tolower(piece_char) : piece_char);
-          break; // Need different indicators!
-        case Player::YELLOW:
-          ss << (p->is_dead ? (char)std::tolower(piece_char) : piece_char);
-          break;
-        case Player::GREEN:
-          ss << (p->is_dead ? (char)std::tolower(piece_char) : piece_char);
-          break;
-        }
-        // Let's use R/B/Y/G prefixes + piece type char + 'd' if dead
-        ss.str(""); // Clear stringstream
-        ss.clear(); // Clear error flags
-        for (int r_ = 0; r_ < BOARD_SIZE; ++r_) {
-          for (int c_ = 0; c_ < BOARD_SIZE; ++c_) {
-            const auto &p_ = board_[r_][c_];
-            if (!p_) {
-              ss << "__.";
-            } // 3 chars per square
-            else {
-              char p_char = '?';
-              switch (p_->player) {
-              case Player::RED:
-                p_char = 'R';
-                break;
-              case Player::BLUE:
-                p_char = 'B';
-                break;
-              case Player::YELLOW:
-                p_char = 'Y';
-                break;
-              case Player::GREEN:
-                p_char = 'G';
-                break;
-              }
-              ss << p_char;
-
-              char t_char = '?';
-              switch (p_->piece_type) {
-              case PieceType::PAWN:
-                t_char = 'P';
-                break;
-              case PieceType::KNIGHT:
-                t_char = 'N';
-                break;
-              case PieceType::BISHOP:
-                t_char = 'B';
-                break;
-              case PieceType::ROOK:
-                t_char = 'R';
-                break;
-              case PieceType::KING:
-                t_char = 'K';
-                break;
-              case PieceType::DEAD_KING:
-                t_char = 'k';
-                break;
-              }
-              ss << t_char;
-              ss << (p_->is_dead ? 'd' : '.'); // Dead marker
-            }
-          }
-          ss << '/'; // Row separator
-        }
-        ss << '|';                               // Section separator
-        ss << static_cast<int>(current_player_); // Whose turn
-
-        // Technically, threefold repetition also depends on irreversible move
-        // rights (castling, en passant) which aren't present here. But player
-        // elimination *is* irreversible. Include active players in the hash?
-        ss << '|';
-        for (Player p : active_players_)
-          ss << static_cast<int>(p);
-
-        return ss.str(); // Use this comprehensive string
-      }
-    }
-    ss << '/'; // Row separator
-  }
-  ss << '|';                               // Section separator
-  ss << static_cast<int>(current_player_); // Whose turn
-  // ss << '|';
-  // ss << fifty_move_counter_; // Should this be part of the hash? Python's
-  // history implies yes.
-
-  return ss.str();
+Board::PositionKey Board::get_position_key() const {  
+    // Simply return the pre-calculated and updated Zobrist hash
+    return current_hash_;
 }
 
 } // namespace chaturaji_cpp
