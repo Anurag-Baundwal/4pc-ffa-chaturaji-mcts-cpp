@@ -140,3 +140,18 @@ cc_binary(
         ":libtorch_configured", # Depends on the selector library
     ],
 )
+
+# === Testing ===
+
+cc_test(
+    name = "zobrist_test",
+    srcs = ["zobrist_test.cpp"],
+    copts = MSVC_CXX17_COPTS, # Use your common compiler options
+    deps = [
+        ":chaturaji_board", # Depends on the board library
+        ":chaturaji_types", # Depends on types
+        # Add other dependencies if needed (e.g., utils if used)
+    ],
+    # Link statically if preferred, or rely on runtime DLLs
+    linkstatic = True,
+)

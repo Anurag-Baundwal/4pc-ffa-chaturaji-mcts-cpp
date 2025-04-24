@@ -13,3 +13,8 @@ To simulate a game using the trained model:
 
 To ensure print_board displays the pieces in the terminal properly, run the following command before simulating a game:
 chcp 65001
+
+To run zobrist hashing test
+
+bazel build //:zobrist_test 
+bazel test //:zobrist_test --test_output=all
