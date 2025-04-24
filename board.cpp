@@ -157,7 +157,6 @@ Board::Board(const Board &other)
       full_move_number_(other.full_move_number_),
       move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(other.termination_reason_),
-      game_history_(other.game_history_),
       current_hash_(other.current_hash_),
       undo_stack_(other.undo_stack_) {}
 
@@ -171,7 +170,6 @@ Board::Board(Board &&other) noexcept
       full_move_number_(other.full_move_number_),
       move_number_of_last_reset_(other.move_number_of_last_reset_),
       termination_reason_(std::move(other.termination_reason_)),
-      game_history_(std::move(other.game_history_)),
       current_hash_(other.current_hash_),
       undo_stack_(std::move(other.undo_stack_)) {
   // Reset other state after move if necessary
@@ -191,7 +189,6 @@ Board &Board::operator=(const Board &other) {
     full_move_number_ = other.full_move_number_;
     move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = other.termination_reason_;
-    game_history_ = other.game_history_;
     current_hash_ = other.current_hash_;
     undo_stack_ = other.undo_stack_; // Deep copy handled by stack's op=
   }
@@ -209,7 +206,6 @@ Board &Board::operator=(Board &&other) noexcept {
     full_move_number_ = other.full_move_number_;
     move_number_of_last_reset_ = other.move_number_of_last_reset_;
     termination_reason_ = std::move(other.termination_reason_);
-    game_history_ = std::move(other.game_history_);
     current_hash_ = other.current_hash_;
     undo_stack_ = std::move(other.undo_stack_);
 
@@ -636,7 +632,6 @@ std::optional<Piece> Board::make_move(const Move &move) {
   // This is the state the repetition check needs to look for.
   position_history_.push_back(get_position_key()); // get_position_key() returns current_hash_
 
-  game_history_.push_back(move);
   
   // Check for game over *after* move is fully made and turn advanced
   // Note: is_game_over will check the *current* hash against the history *just added*.
@@ -673,13 +668,10 @@ void Board::undo_move() {
   // Let's assume resignation undo_info has default Move (from/to = -1,-1).
   bool is_resignation_undo = (undo_info.move.from_loc.row == -1); // Heuristic
   if (!is_resignation_undo) {
-    if (!game_history_.empty()) {
-        game_history_.pop_back(); 
-    }
     if (!position_history_.empty()) {
         position_history_.pop_back();
     }
-}
+  }
 
   // --- 2. Reverse Board Piece Changes (ONLY for regular moves) ---
   if (!is_resignation_undo) { // Check if it's NOT a resignation undo
@@ -812,9 +804,6 @@ int Board::get_move_number_of_last_reset() const {
 
 const std::optional<std::string> &Board::get_termination_reason() const {
   return termination_reason_;
-}
-const Board::GameHistory &Board::get_game_history() const {
-  return game_history_;
 }
 const Board::PositionHistory &Board::get_position_history() const {
   return position_history_;

@@ -69,7 +69,6 @@ public:
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
     const std::optional<std::string>& get_termination_reason() const;
-    const GameHistory& get_game_history() const;
     const PositionHistory& get_position_history() const; // Added accessor
 
     // --- Game Status ---
@@ -100,7 +99,6 @@ private:
     int full_move_number_;
     int move_number_of_last_reset_;
     mutable std::optional<std::string> termination_reason_;
-    GameHistory game_history_;
     ZobristKey current_hash_;
 
     // --- NEW: Stack for Undo Information ---
