@@ -623,15 +623,28 @@ std::optional<Piece> Board::make_move(const Move &move) {
     move_number_of_last_reset_ = full_move_number_;
     position_history_.clear(); // Reset repetition history
     undo_info.was_history_cleared = true;
+  } else {
+    undo_info.was_history_cleared = false; // Explicitly set to false
   }
-
-  // Add current position hash to history (Type change needed in Phase 3)
-  position_history_.push_back(get_position_key());   // get_position_key() now returns the current_hash_ (ZobristKey)
-  game_history_.push_back(move);
 
   // --- Final Steps ---
   undo_stack_.push_back(undo_info); // Push undo info including previous hash
   advance_turn();                   // Advances turn and updates hash for player change
+
+  
+  // --- NOW Push the hash of the *resulting* state (including the next player's turn) ---
+  // This is the state the repetition check needs to look for.
+  position_history_.push_back(get_position_key()); // get_position_key() returns current_hash_
+
+  game_history_.push_back(move);
+  
+  // Check for game over *after* move is fully made and turn advanced
+  // Note: is_game_over will check the *current* hash against the history *just added*.
+  // This might be slightly off compared to some rulesets that check *before* adding the latest hash.
+  // However, for a simple back-and-forth repetition, this should work as the state will appear 3 times *in* the history including the current state.
+  // If a rule requires checking history *excluding* the current state, this logic would need adjustment.
+  // Let's stick to the simpler "count occurrences in history including current state" interpretation for now.
+  is_game_over(); // Call to update termination_reason_ if needed
 
   return undo_info.captured_piece;
 }
@@ -645,6 +658,10 @@ void Board::undo_move() {
   UndoInfo undo_info = undo_stack_.back();
   undo_stack_.pop_back();
 
+  // --- 5. Restore Zobrist Hash First ---
+  // This sets the hash to the exact value it had *before* the move was made (including the old player's turn).
+  current_hash_ = undo_info.previous_hash;
+
   // --- 1. Restore Player Turn, Game State Counters, and Histories ---
   // These are independent of the board state itself and restored first.
   current_player_ = undo_info.original_player;
@@ -657,9 +674,9 @@ void Board::undo_move() {
   bool is_resignation_undo = (undo_info.move.from_loc.row == -1); // Heuristic
   if (!is_resignation_undo) {
     if (!game_history_.empty()) {
-        game_history_.pop_back();
+        game_history_.pop_back(); 
     }
-    if (!position_history_.empty() && !undo_info.was_history_cleared) {
+    if (!position_history_.empty()) {
         position_history_.pop_back();
     }
 }
@@ -747,10 +764,6 @@ void Board::undo_move() {
       player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
     }
   }
-
-  // --- 5. Restore Zobrist Hash ---
-  // This sets the hash to the exact value it had *before* the move was made.
-  current_hash_ = undo_info.previous_hash;
 
   // --- 6. Clear Termination Reason ---
   termination_reason_ = std::nullopt; // State may no longer be terminal
