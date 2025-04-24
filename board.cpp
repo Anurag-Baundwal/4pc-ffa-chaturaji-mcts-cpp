@@ -144,8 +144,8 @@ Board::Board()
   current_hash_ ^= zobrist_data.get_turn_key(current_player_);
   // --- END Initial Zobrist Hash Calculation ---
 
-  // Add initial position hash to history? Maybe not needed if first move resets counter.
-  // position_history_.push_back(get_position_key()); // <-- Leave commented for now, will be ZobristKey later
+  // Add initial position hash to history
+  position_history_.push_back(current_hash_);
 }
 
 // --- Copy Constructor ---
