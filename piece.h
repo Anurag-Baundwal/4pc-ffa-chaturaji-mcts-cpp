@@ -35,6 +35,11 @@ public:
                piece_type == other.piece_type &&
                is_dead == other.is_dead;
     }
+    
+    // Inequality operator
+    bool operator!=(const Piece& other) const {
+      return !(*this == other); // Define in terms of operator==
+    }
 };
 
 } // namespace chaturaji_cpp
