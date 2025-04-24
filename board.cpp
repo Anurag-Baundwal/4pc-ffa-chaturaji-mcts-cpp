@@ -645,39 +645,59 @@ void Board::undo_move() {
   UndoInfo undo_info = undo_stack_.back();
   undo_stack_.pop_back();
 
-  // --- Retrieve Move Details ---
-  const Move &move = undo_info.move;
-  int fr = move.from_loc.row;
-  int fc = move.from_loc.col;
-  int tr = move.to_loc.row;
-  int tc = move.to_loc.col;
-
   // --- 1. Restore Player Turn, Game State Counters, and Histories ---
   // These are independent of the board state itself and restored first.
   current_player_ = undo_info.original_player;
   full_move_number_ = undo_info.original_full_move_number;
   move_number_of_last_reset_ = undo_info.original_move_number_of_last_reset;
 
-  if (!game_history_.empty()) game_history_.pop_back();
-  // Restore position history (important if it wasn't cleared)
-  if (!position_history_.empty() && !undo_info.was_history_cleared) {
-      position_history_.pop_back(); // Still string for now
-  } else if (undo_info.was_history_cleared) {
-      // If history *was* cleared by the move we are undoing,
-      // we cannot reconstruct the history before that point easily.
-      // The position_history_ vector remains empty, which is correct.
-  }
+  // History restoration (only pop if it wasn't a resignation or clearing move)
+  // We need a way to distinguish resignation undo_info. Maybe check if move is default?
+  // Let's assume resignation undo_info has default Move (from/to = -1,-1).
+  bool is_resignation_undo = (undo_info.move.from_loc.row == -1); // Heuristic
+  if (!is_resignation_undo) {
+    if (!game_history_.empty()) {
+        game_history_.pop_back();
+    }
+    if (!position_history_.empty() && !undo_info.was_history_cleared) {
+        position_history_.pop_back();
+    }
+}
 
-  // --- 2. Reverse Board Piece Changes ---
-  // Get the piece that moved (it's currently at board_[tr][tc])
-  // Need a copy *before* potentially overwriting board_[tr][tc] with captured piece
-  Piece piece_that_moved = board_[tr][tc].value();
-  // Revert its type *before* placing it back (undo promotion)
-  piece_that_moved.piece_type = undo_info.original_moving_piece_type;
-  // Place it back on the 'from' square
-  board_[fr][fc] = piece_that_moved;
-  // Restore the captured piece (or nullopt) to the 'to' square
-  board_[tr][tc] = undo_info.captured_piece;
+  // --- 2. Reverse Board Piece Changes (ONLY for regular moves) ---
+  if (!is_resignation_undo) { // Check if it's NOT a resignation undo
+    const Move &move = undo_info.move;
+    int fr = move.from_loc.row;
+    int fc = move.from_loc.col;
+    int tr = move.to_loc.row;
+    int tc = move.to_loc.col;
+
+    // This part should only execute for actual moves.
+    if (board_[tr][tc]) { // Check if 'to' square has a piece (it should for a move)
+        Piece piece_that_moved = board_[tr][tc].value();
+        piece_that_moved.piece_type = undo_info.original_moving_piece_type;
+        board_[fr][fc] = piece_that_moved;
+        board_[tr][tc] = undo_info.captured_piece;
+    } else {
+        // This might indicate an issue if we expected a piece on the 'to' square
+        // For now, just handle the potential nullopt on 'to' gracefully.
+         if (undo_info.captured_piece) { // If there *was* a capture
+              board_[tr][tc] = undo_info.captured_piece; // Put captured piece back
+               board_[fr][fc] = Piece(undo_info.original_player, undo_info.original_moving_piece_type); // Reconstruct moving piece? Needs care. Best to ensure board_[tr][tc] isn't nullopt above. Let's refine.
+
+               // Safer approach: Assume tr/tc must contain the moved piece
+               throw std::runtime_error("Undo error: Expected moved piece on target square, found none.");
+          } else {
+              // No capture, moving piece wasn't on target? Error.
+               throw std::runtime_error("Undo error: Expected moved piece on target square for non-capture.");
+          }
+          // Let's simplify assuming board_[tr][tc] always holds the piece after a valid move.
+          // The initial check 'if (board_[tr][tc])' should be sufficient if make_move is correct.
+          // Error if it's nullopt:
+          // throw std::runtime_error("Undo error: Target square is unexpectedly empty.");
+    }
+  }
+  // If it *is* a resignation undo, we skip piece movement reversal.
 
   // --- 3. Reverse Elimination (Restore Player and Piece States) ---
   // This must happen *before* hash restoration, as it changes the board state
@@ -691,30 +711,36 @@ void Board::undo_move() {
       for (int c = 0; c < BOARD_SIZE; ++c) {
         auto &piece_opt = board_[r][c];
         if (piece_opt && piece_opt->player == player_to_revive) {
-            // If this piece is the KING that was originally captured (and is now a DEAD_KING on the board at the 'to' square)
-            // Note: We check the *original captured piece info* to confirm it *was* the king.
-            if (undo_info.captured_piece &&
-                undo_info.captured_piece->player == player_to_revive &&
-                undo_info.captured_piece->piece_type == PieceType::KING &&
-                r == tr && c == tc && // Check location matches the capture square
-                piece_opt->piece_type == PieceType::DEAD_KING) // Check current type on board
-            {
-                 piece_opt->piece_type = PieceType::KING; // Revert type
-                 piece_opt->is_dead = false;              // Ensure alive status
-            }
-            // If this is any *other* piece of the revived player that was marked dead
-            else if (piece_opt->is_dead && piece_opt->piece_type != PieceType::DEAD_KING)
-            {
-                 piece_opt->is_dead = false; // Mark as alive again
-            }
+          // Check if this is the KING that was captured (only applies to undoing king capture moves)
+          // For resignation undo, captured_piece is nullopt, so this branch is skipped.
+          if (!is_resignation_undo && // Only check for king capture undo
+            undo_info.captured_piece &&
+            undo_info.captured_piece->player == player_to_revive &&
+            undo_info.captured_piece->piece_type == PieceType::KING &&
+            r == undo_info.move.to_loc.row && c == undo_info.move.to_loc.col &&
+            piece_opt->piece_type == PieceType::DEAD_KING) {
+            piece_opt->piece_type = PieceType::KING;
+            piece_opt->is_dead = false;
+          }
+          // Check if this is *any* piece marked dead during elimination (applies to both resign undo and king capture undo)
+          // Need to handle DEAD_KING specially - it should revert to KING only if it *was* the king on the 'to' square of a capture move.
+          // For resign undo, the king wasn't captured, it just became DEAD_KING in place (or stayed KING if not on board?).
+          // Let's simplify: Find the piece that *should* be the king and revert it.
+          else if (piece_opt->piece_type == PieceType::DEAD_KING) { // If it's the marker piece
+            piece_opt->piece_type = PieceType::KING; // Revert to KING
+            piece_opt->is_dead = false; // Ensure alive
+          }
+          // Re-activate other pieces that were just marked dead
+          else if (piece_opt->is_dead) // Check is_dead flag for non-kings
+            piece_opt->is_dead = false;
         }
       }
     }
     // No explicit hash changes needed here; the hash restoration below handles it.
   }
 
-  // --- 4. Reverse Point Changes ---
-  if (undo_info.captured_piece) {
+  // --- 4. Reverse Point Changes (Only for regular (non-resignation) moves) ---
+  if (!is_resignation_undo && undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
     if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
       // Subtract points from the player who made the original move
@@ -1182,7 +1208,23 @@ void Board::eliminate_player(Player player) {
 void Board::resign() {
   Player resigning_player = current_player_; // Store before potentially changing turn
   if (active_players_.count(resigning_player)) {
-    eliminate_player(resigning_player); // Eliminate the player (handles piece hash updates)
+    // --- Create Undo Info for Resignation ---
+    UndoInfo resign_undo_info;
+    // Store info *before* any changes
+    resign_undo_info.original_player = resigning_player; // Player whose turn it was
+    resign_undo_info.original_full_move_number = full_move_number_;
+    resign_undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
+    resign_undo_info.previous_hash = current_hash_;
+    resign_undo_info.eliminated_player = resigning_player; // Mark the player who resigned/was eliminated
+    resign_undo_info.was_history_cleared = false; // Resign doesn't clear history
+    // Use a special sentinel value for the move or leave it default? Let's leave default for now.
+    // resign_undo_info.move = Move(); // Default move
+    resign_undo_info.captured_piece = std::nullopt; // No capture involved
+    // original_moving_piece_type isn't relevant for resign, leave default
+    // resign_undo_info.original_moving_piece_type = PieceType::PAWN; // Default
+
+    // --- Now perform the elimination ---
+    eliminate_player(resigning_player); // Handles piece hash updates
 
     // Check if the game ends *immediately* due to this resignation
     // (i.e., only 1 player remains active AFTER elimination)
@@ -1202,6 +1244,8 @@ void Board::resign() {
         // Call is_game_over() to ensure reason is set correctly based on active_players count
         is_game_over();
     }
+    // --- Push the resignation-specific undo info ---
+    undo_stack_.push_back(resign_undo_info);
   }
 }
 
