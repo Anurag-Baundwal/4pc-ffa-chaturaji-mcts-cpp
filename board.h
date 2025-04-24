@@ -49,6 +49,11 @@ public:
     Board(const Board& other); // Copy constructor
     Board(Board&& other) noexcept; // Move constructor
 
+    // --- Static Factory for MCTS Child Boards ---
+    // Creates a lightweight board state from parent for MCTS expansion.
+    // Copies essential state, but initializes history/undo stacks as empty.
+    static Board create_mcts_child_board(const Board& parent_board, const Move& move);
+    
     // --- Operators ---
     Board& operator=(const Board& other); // Copy assignment
     Board& operator=(Board&& other) noexcept; // Move assignment

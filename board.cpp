@@ -217,6 +217,35 @@ Board &Board::operator=(Board &&other) noexcept {
   return *this;
 }
 
+Board Board::create_mcts_child_board(const Board& parent_board, const Move& move) {
+  // 1. Create a new board object. Default constructor ensures vectors are empty.
+  Board child_board; // This board starts "clean" in terms of history/undo
+
+  // 2. Copy essential state from the parent
+  child_board.board_ = parent_board.board_; // Deep copy of the grid (fixed size, fast)
+  child_board.active_players_ = parent_board.active_players_; // Copy the set
+  child_board.player_points_ = parent_board.player_points_; // Copy the map
+  child_board.current_player_ = parent_board.current_player_; // Player *before* the move
+  child_board.full_move_number_ = parent_board.full_move_number_;
+  child_board.move_number_of_last_reset_ = parent_board.move_number_of_last_reset_;
+  child_board.current_hash_ = parent_board.current_hash_; // Hash *before* the move
+
+  // termination_reason_ and game_history_ (if kept) are not copied for MCTS nodes
+
+  // 3. Apply the move to the newly copied state
+  // make_move will update current_player_, full_move_number_,
+  // move_number_of_last_reset_, current_hash_, and push ONE UndoInfo
+  // onto child_board.undo_stack_ (which was empty).
+  // It also adds the new hash to child_board.position_history_ (which was empty).
+  child_board.make_move(move);
+
+  // The state of child_board is now the state *after* 'move' was applied,
+  // but its history/undo stack only contains information about *that single move*
+  // (and the resulting hash in position_history).
+
+  return child_board; // Return the newly created and updated board state
+}
+
 // --- Helper to find the last player in sequence ---
 Player Board::get_last_active_player() const {
   if (active_players_.empty()) {

@@ -81,9 +81,9 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
         const Move& move = pair.first;
         double prior_prob = pair.second;
 
-        // Create a new board state by making the move
-        Board next_board = board_state_; // Copy current board
-        next_board.make_move(move);    // Apply the move
+        // Create a new board state by making the move using the lightweight factory
+        // This avoids copying the potentially large history/undo vectors from the parent.
+        Board next_board = Board::create_mcts_child_board(board_state_, move);
 
         // Create the new child node
         children_.push_back(std::make_unique<MCTSNode>(std::move(next_board), this, move, prior_prob));
