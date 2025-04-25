@@ -82,7 +82,7 @@ std::optional<Move> get_best_move_mcts(
             if (!node) {
                  // This indicates an issue, maybe log an error or break
                  // std::cerr << "Error: select_child returned nullptr from non-leaf node." << std::endl;
-                 goto next_simulation; // Skip to next simulation iteration
+                 continue;
             }
             search_path.push_back(node);
         }
@@ -133,7 +133,6 @@ std::optional<Move> get_best_move_mcts(
         // The `update` method recursively calls parent->update, so just updating the leaf is sufficient.
         node->update(value);
 
-        next_simulation:; // Label for goto
     } // End of simulations loop
 
     // Choose the best move based on visit counts

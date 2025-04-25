@@ -61,7 +61,7 @@ void SelfPlay::generate_game() {
             // Selection
             while (!node->is_leaf()) {
                 node = node->select_child(mcts_c_puct_);
-                 if (!node) goto next_sim; // Error case
+                 if (!node) continue; // Error case
                 search_path.push_back(node);
             }
 
@@ -92,7 +92,6 @@ void SelfPlay::generate_game() {
             // Backpropagation
             node->update(value);
 
-            next_sim:;
         } // End simulations loop
 
         // Determine temperature
