@@ -9,12 +9,12 @@
 #include <torch/optim/adam.h>     // For Adam optimizer
 
 // --- Conditionally include AMP header ---
-#if AT_CUDA_ENABLED()
+#if AT_CUDA_ENABLED
 #include <torch/cuda_amp.h>
 #define USE_AMP_IF_AVAILABLE true
-#else // AT_CUDA_ENABLED()
+#else // AT_CUDA_ENABLED
 #define USE_AMP_IF_AVAILABLE false
-#endif // AT_CUDA_ENABLED()
+#endif // AT_CUDA_ENABLED
 // --- END ---
 
 #include <iostream>
@@ -150,12 +150,12 @@ void train(
         network->train();
 
         // --- Conditional AMP setup (remains the same) ---
-        #if AT_CUDA_ENABLED()
+        #if AT_CUDA_ENABLED
         bool use_amp_runtime = device.is_cuda() && USE_AMP_IF_AVAILABLE;
         torch::amp::GradScaler scaler(use_amp_runtime);
-        #else // AT_CUDA_ENABLED()
+        #else // AT_CUDA_ENABLED
         const bool use_amp_runtime = false;
-        #endif // AT_CUDA_ENABLED()
+        #endif // AT_CUDA_ENABLED
 
         for (int epoch = 0; epoch < num_epochs_per_iteration; ++epoch) {
             double total_loss = 0.0;
@@ -182,14 +182,14 @@ void train(
 
                 // --- Forward pass (remains the same) ---
                 torch::Tensor policy_pred, value_pred;
-                #if AT_CUDA_ENABLED()
+                #if AT_CUDA_ENABLED
                 {
                     torch::amp::autocast autocast_guard(use_amp_runtime);
                     std::tie(policy_pred, value_pred) = network->forward(states);
                 }
-                #else // AT_CUDA_ENABLED()
+                #else // AT_CUDA_ENABLED
                  std::tie(policy_pred, value_pred) = network->forward(states);
-                #endif // AT_CUDA_ENABLED()
+                #endif // AT_CUDA_ENABLED
 
                 // --- FIX: Calculate losses using split targets ---
                 auto policy_log_softmax = torch::log_softmax(policy_pred, /*dim=*/1);
@@ -200,7 +200,7 @@ void train(
 
 
                 // --- Backward pass (remains the same) ---
-                #if AT_CUDA_ENABLED()
+                #if AT_CUDA_ENABLED
                 if (use_amp_runtime) {
                     scaler.scale(loss).backward();
                     scaler.step(optimizer);
@@ -209,10 +209,10 @@ void train(
                     loss.backward();
                     optimizer.step();
                 }
-                #else // AT_CUDA_ENABLED()
+                #else // AT_CUDA_ENABLED
                 loss.backward();
                 optimizer.step();
-                #endif // AT_CUDA_ENABLED()
+                #endif // AT_CUDA_ENABLED
 
 
                 total_loss += loss.item<double>();
