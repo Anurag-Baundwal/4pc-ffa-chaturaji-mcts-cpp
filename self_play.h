@@ -36,7 +36,7 @@ public:
         ChaturajiNN network, // Pass the model module directly
         torch::Device device,
         int simulations_per_move = 100,
-        size_t buffer_size = 10000,
+        size_t buffer_size = 250000,
         double c_puct = 1.0,
         int temperature_decay_move = 5
     );
