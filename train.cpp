@@ -8,14 +8,14 @@
 #include <torch/data/datasets/base.h> // For Dataset
 #include <torch/optim/adam.h>     // For Adam optimizer
 
-// --- Conditionally include AMP header ---
-#if AT_CUDA_ENABLED
-#include <torch/cuda_amp.h>
-#define USE_AMP_IF_AVAILABLE true
-#else // AT_CUDA_ENABLED
-#define USE_AMP_IF_AVAILABLE false
-#endif // AT_CUDA_ENABLED
-// --- END ---
+// --- REMOVED AMP Header ---
+// #if AT_CUDA_ENABLED
+// #include <torch/cuda_amp.h> // This header does not exist in Libtorch distribution
+// #define USE_AMP_IF_AVAILABLE true
+// #else // AT_CUDA_ENABLED
+// #define USE_AMP_IF_AVAILABLE false
+// #endif // AT_CUDA_ENABLED
+// --- END REMOVAL ---
 
 #include <iostream>
 #include <vector>
@@ -149,13 +149,13 @@ void train(
         std::cout << "Starting training for " << num_epochs_per_iteration << " epochs..." << std::endl;
         network->train();
 
-        // --- Conditional AMP setup (remains the same) ---
-        #if AT_CUDA_ENABLED
-        bool use_amp_runtime = device.is_cuda() && USE_AMP_IF_AVAILABLE;
-        torch::amp::GradScaler scaler(use_amp_runtime);
-        #else // AT_CUDA_ENABLED
-        const bool use_amp_runtime = false;
-        #endif // AT_CUDA_ENABLED
+        // // --- Conditional AMP setup (Not avaialble in Libtorch) ---
+        // #if AT_CUDA_ENABLED
+        // bool use_amp_runtime = device.is_cuda() && USE_AMP_IF_AVAILABLE;
+        // torch::amp::GradScaler scaler(use_amp_runtime);
+        // #else // AT_CUDA_ENABLED
+        // const bool use_amp_runtime = false;
+        // #endif // AT_CUDA_ENABLED
 
         for (int epoch = 0; epoch < num_epochs_per_iteration; ++epoch) {
             double total_loss = 0.0;
@@ -180,18 +180,11 @@ void train(
 
                 optimizer.zero_grad();
 
-                // --- Forward pass (remains the same) ---
+                // --- Forward pass (NO AMP CONTEXT NEEDED) ---
                 torch::Tensor policy_pred, value_pred;
-                #if AT_CUDA_ENABLED
-                {
-                    torch::amp::autocast autocast_guard(use_amp_runtime);
-                    std::tie(policy_pred, value_pred) = network->forward(states);
-                }
-                #else // AT_CUDA_ENABLED
-                 std::tie(policy_pred, value_pred) = network->forward(states);
-                #endif // AT_CUDA_ENABLED
+                std::tie(policy_pred, value_pred) = network->forward(states);
 
-                // --- FIX: Calculate losses using split targets ---
+                // --- Calculate losses ---
                 auto policy_log_softmax = torch::log_softmax(policy_pred, /*dim=*/1);
                 auto policy_loss = -torch::sum(policy_target * policy_log_softmax, /*dim=*/1).mean(); // Use policy_target
                 auto value_loss = torch::mse_loss(value_pred, value_target); // Use value_target
@@ -199,21 +192,10 @@ void train(
                 auto loss = policy_loss + value_loss;
 
 
-                // --- Backward pass (remains the same) ---
-                #if AT_CUDA_ENABLED
-                if (use_amp_runtime) {
-                    scaler.scale(loss).backward();
-                    scaler.step(optimizer);
-                    scaler.update();
-                } else {
-                    loss.backward();
-                    optimizer.step();
-                }
-                #else // AT_CUDA_ENABLED
+                // --- Backward pass (STANDARD, NO AMP/SCALER) ---
                 loss.backward();
                 optimizer.step();
-                #endif // AT_CUDA_ENABLED
-
+                // --- END STANDARD BACKWARD ---
 
                 total_loss += loss.item<double>();
                 total_policy_loss += policy_loss.item<double>();
