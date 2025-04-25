@@ -2,7 +2,7 @@
 .vscode
 bazel*
 models
-todo.txt
+todo*.txt
 code_summary*
 code_archive
 other_stuff
