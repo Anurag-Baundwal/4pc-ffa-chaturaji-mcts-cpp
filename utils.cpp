@@ -109,6 +109,11 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   return tensor.unsqueeze(0);
 }
 
+torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device) {
+  // Simply call the original function and squeeze the batch dimension
+  return board_to_tensor(board, device).squeeze(0);
+}
+
 int move_to_policy_index(const Move& move) {
     int fr_row = move.from_loc.row;
     int fr_col = move.from_loc.col;

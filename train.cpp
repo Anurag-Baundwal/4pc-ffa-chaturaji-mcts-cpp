@@ -51,7 +51,7 @@ ChaturajiDataset::ChaturajiDataset(const std::vector<GameDataStep>& data) {
 // --- FIX: Implement get() to return Example<Tensor, Tensor> ---
 torch::data::Example<torch::Tensor, torch::Tensor> ChaturajiDataset::get(size_t index) {
      // Data is the state tensor
-     torch::Tensor state_tensor = states_[index];
+     torch::Tensor state_tensor = states_[index]; // Shape [C, H, W]
 
      // Target is the concatenation of policy and value
      torch::Tensor policy_tensor = policies_[index]; // Shape [4096]
@@ -91,6 +91,7 @@ void train(
     double learning_rate,
     double weight_decay,
     int simulations_per_move,
+    int mcts_batch_size, // <-- NEW parameter
     const std::string& model_save_dir_base,
     const std::string& initial_model_path)
 {
@@ -112,13 +113,21 @@ void train(
         catch (const c10::Error& e) { std::cerr << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; }
     } else { std::cout << "No initial model provided or found. Starting from scratch." << std::endl; }
     torch::optim::Adam optimizer(network->parameters(), torch::optim::AdamOptions(learning_rate).weight_decay(weight_decay));
-    SelfPlay self_play_generator(network, device, simulations_per_move);
+    
+    // --- Instantiate SelfPlay with MCTS batch size ---
+    SelfPlay self_play_generator(
+      network, device, simulations_per_move,
+      250000, // Default buffer size
+      1.0,    // Default c_puct
+      5,      // Default temp decay move
+      mcts_batch_size // <-- Pass the parameter here
+      );
 
     // --- Training Loop ---
     for (int iteration = 0; iteration < num_iterations; ++iteration) {
         // Self-play generation...
         std::cout << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl;
-        std::cout << "Generating " << num_games_per_iteration << " self-play games..." << std::endl;
+        std::cout << "Generating " << num_games_per_iteration << " self-play games (MCTS Batch Size: " << mcts_batch_size << ")..." << std::endl; // Log MCTS batch size
         auto start_selfplay = std::chrono::high_resolution_clock::now();
         self_play_generator.clear_buffer();
         for (int g = 0; g < num_games_per_iteration; ++g) {
@@ -146,7 +155,7 @@ void train(
 
 
         // --- Training Epochs ---
-        std::cout << "Starting training for " << num_epochs_per_iteration << " epochs..." << std::endl;
+        std::cout << "Starting training for " << num_epochs_per_iteration << " epochs (Training Batch Size: " << batch_size << ")..." << std::endl; // Log training batch size
         network->train();
 
         // // --- Conditional AMP setup (Not avaialble in Libtorch) ---

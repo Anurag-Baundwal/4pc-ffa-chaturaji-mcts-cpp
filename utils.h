@@ -36,6 +36,16 @@ namespace chaturaji_cpp {
  */
 torch::Tensor board_to_tensor(const Board& board, torch::Device device);
 
+/**
+ * @brief Converts the board state to a tensor without the batch dimension [C, H, W].
+ * Useful for creating batches by stacking multiple tensors.
+ *
+ * @param board The board object to convert.
+ * @param device The torch device (e.g., torch::kCPU, torch::kCUDA).
+ * @return A torch::Tensor representing the board state [Channels, Height, Width].
+ */
+torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device);
+
 // --- Move Indexing ---
 
 /**

@@ -3,6 +3,7 @@
 #include <numeric>  // For std::accumulate
 #include <cmath>    // For std::pow, std::exp, std::log
 #include <algorithm>// For std::max_element
+#include <stdexcept>// Include for runtime_error
 
 namespace chaturaji_cpp {
 
@@ -12,13 +13,15 @@ SelfPlay::SelfPlay(
     int simulations_per_move,
     size_t buffer_size,
     double c_puct,
-    int temperature_decay_move) :
+    int temperature_decay_move,
+    int mcts_batch_size) : // Added batch_size parameter)
     network_(network), // Copy/move the module handle
     device_(device),
     simulations_per_move_(simulations_per_move),
     buffer_(buffer_size), // Initialize deque with max size
     mcts_c_puct_(c_puct),
     temperature_decay_move_(temperature_decay_move),
+    mcts_batch_size_(mcts_batch_size), // Store batch size
     rng_(std::random_device{}()) // Seed the random number generator
 {
     // Ensure the passed network is valid
@@ -36,6 +39,7 @@ void SelfPlay::clear_buffer() {
     buffer_.clear();
 }
 
+// --- Refactored generate_game ---
 void SelfPlay::generate_game() {
     Board board;
     // Temporary storage for the current game's data before assigning final rewards
@@ -53,46 +57,17 @@ void SelfPlay::generate_game() {
         // Create MCTS root node for the current state
         MCTSNode root(board); // Create a copy of the board for the root
 
-        // Run MCTS simulations
-        for (int sim = 0; sim < simulations_per_move_; ++sim) {
-            MCTSNode* node = &root;
-            std::vector<MCTSNode*> search_path = {node};
-
-            // Selection
-            while (!node->is_leaf()) {
-                node = node->select_child(mcts_c_puct_);
-                 if (!node) continue; // Error case
-                search_path.push_back(node);
-            }
-
-            // Expansion & Evaluation
-            double value = 0.0; // Root's perspective
-            if (node->get_board().is_game_over()) {
-                // Terminal node value
-                std::map<Player, int> final_scores = node->get_board().get_game_result();
-                std::map<Player, double> reward_map = get_reward_map(final_scores);
-                 value = reward_map.count(root.get_board().get_current_player()) ?
-                         reward_map.at(root.get_board().get_current_player()) : -2.0;
-            } else {
-                 // Network evaluation and expansion
-                 torch::Tensor state_tensor = board_to_tensor(node->get_board(), device_);
-                 torch::Tensor policy_logits, value_tensor;
-                 {
-                     torch::NoGradGuard no_grad;
-                     std::tie(policy_logits, value_tensor) = network_->forward(state_tensor);
-                 }
-
-                 std::map<Move, double> policy_probs = process_policy(policy_logits, node->get_board());
-                 if(!policy_probs.empty()){
-                    node->expand(policy_probs);
-                 }
-                 value = value_tensor.item<double>(); // Value from NN (root's perspective assumed)
-            }
-
-            // Backpropagation
-            node->update(value);
-
-        } // End simulations loop
+        // --- Run Batched MCTS Simulations ---
+        // Uses the helper function from search.cpp
+        run_mcts_simulations_batch(
+          root,
+          network_,
+          simulations_per_move_,
+          device_,
+          mcts_c_puct_,
+          mcts_batch_size_ // Pass the stored batch size
+        );
+        // --- End MCTS ---
 
         // Determine temperature
         double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
@@ -100,12 +75,13 @@ void SelfPlay::generate_game() {
         // Get action probabilities from MCTS visit counts
         std::map<Move, double> action_probs = get_action_probs(root, current_temperature);
 
+
         if (action_probs.empty()) {
-             // This can happen if the root board state itself has no legal moves (stalemate/checkmate)
-             // The main loop condition `!board.is_game_over()` should ideally catch this.
-             // If it happens here, it implies MCTS couldn't find/expand any moves.
-             // std::cerr << "Warning: No action probabilities generated from MCTS root. Game might be over." << std::endl;
-             break; // Exit game generation loop
+          // MCTS failed to produce moves, likely game over or an issue.
+          if (!board.is_game_over()) { // Check again, maybe MCTS detected it?
+             std::cerr << "Warning: No action probabilities generated from MCTS root in self-play, but board not flagged as game over. Ending game early." << std::endl;
+          }
+          break; // Exit game generation loop
         }
 
 
@@ -124,7 +100,7 @@ void SelfPlay::generate_game() {
     // Game finished, process results and add to buffer
     process_game_result(game_data_temp, board);
 
-     // Optional: Print final scores like in Python
+     // Optional: Print final scores
      std::cout << "Game finished (" << move_count << " moves). Final Scores: ";
      const auto& final_points = board.get_player_points();
      for(const auto& pair : final_points) {

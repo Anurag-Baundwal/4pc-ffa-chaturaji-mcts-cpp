@@ -95,15 +95,8 @@ void MCTSNode::update(double value) {
     visit_count_++;
     total_value_ += value; // Accumulate value (root's perspective)
 
-    // Backpropagate to parent
-    if (parent_ != nullptr) {
-        // In standard MCTS/AlphaZero, the value backpropagated is often negated
-        // for the parent, as it represents the outcome from the perspective
-        // of the *current* node's player. However, the Python code simply adds
-        // the value upwards without negation. Let's stick to the Python implementation first.
-        // If evaluation/training assumes alternating perspectives, this needs `-value`.
-        parent_->update(value); // Pass the same value up
-    }
+    // Backpropagate to parent - REMOVED FOR BATCHED MCTS
+    // The calling function (backpropagate_path) handles iteration up the tree.
 }
 
 

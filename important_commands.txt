@@ -4,12 +4,12 @@ To compile the engine:
 bazel build //:chaturaji_engine -c opt
 
 To train a model:
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games 50 --epochs 5 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10
+bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games 50 --epochs 5 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10 --mcts-batch 64
 
 If training doesn't start, copy all dlls from C:\Users\dell3\Downloads\libtorch-win-shared-with-deps-2.6.0+cpu\libtorch\lib to bazel-bin (ie folder containing engine exe) and try again
 
 To simulate a game using the trained model:
-.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20250421_163036\chaturaji_iter_1.pt" --sims 1000
+.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20250421_163036\chaturaji_iter_1.pt" --sims 1000 --mcts-batch 64
 
 To ensure print_board displays the pieces in the terminal properly, run the following command before simulating a game:
 chcp 65001

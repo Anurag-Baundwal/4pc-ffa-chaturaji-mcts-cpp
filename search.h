@@ -14,10 +14,59 @@
 namespace chaturaji_cpp {
 
 // Forward declaration if needed, though includes should suffice
-// class Board;
-// class MCTSNode;
-// class ChaturajiNN;
-// struct Move;
+class Board;
+class MCTSNode;
+class ChaturajiNN;
+struct Move;
+
+// --- Helper Structures/Functions for Batched MCTS ---
+
+/**
+ * @brief Structure to hold the state of one simulation path during MCTS.
+ */
+struct SimulationState {
+  MCTSNode* current_node = nullptr; // The current leaf node reached
+  std::vector<MCTSNode*> path;      // Path from root to current_node (for backpropagation)
+};
+
+/**
+* @brief Backpropagates a value iteratively up a stored path.
+*
+* @param path The path from the root to the leaf (inclusive).
+* @param value The value to backpropagate (from the root's perspective).
+*/
+void backpropagate_path(const std::vector<MCTSNode*>& path, double value);
+
+/**
+* @brief Performs a batch evaluation of leaf nodes using the neural network.
+*
+* @param pending_eval Vector of simulation states waiting for evaluation.
+* @param network The neural network module.
+* @param device The torch device.
+*/
+void evaluate_and_expand_batch(
+  std::vector<SimulationState>& pending_eval,
+  ChaturajiNN& network,
+  torch::Device device);
+
+/**
+* @brief Runs the core MCTS simulation loop with batching.
+* Modifies the tree under the provided root node.
+*
+* @param root The root node of the MCTS search.
+* @param network The neural network.
+* @param simulations The total number of simulations to run.
+* @param device The torch device.
+* @param c_puct The exploration constant.
+* @param batch_size The desired batch size for NN evaluations.
+*/
+void run_mcts_simulations_batch(
+  MCTSNode& root,
+  ChaturajiNN& network,
+  int simulations,
+  torch::Device device,
+  double c_puct,
+  int batch_size); // Added batch_size parameter
 
 /**
  * @brief Processes the raw policy logits from the neural network.
@@ -44,7 +93,8 @@ std::optional<Move> get_best_move_mcts(
     ChaturajiNN& network, // Pass by non-const reference as network state isn't changed, but inference isn't const
     int simulations,
     torch::Device device,
-    double c_puct = 1.0
+    double c_puct = 1.0,
+    int mcts_batch_size = 8 // <-- NEW parameter with default
 );
 
 /**

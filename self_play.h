@@ -38,7 +38,8 @@ public:
         int simulations_per_move = 100,
         size_t buffer_size = 250000,
         double c_puct = 1.0,
-        int temperature_decay_move = 5
+        int temperature_decay_move = 5,
+        int mcts_batch_size = 8 // <-- NEW parameter with default
     );
 
     /**
@@ -66,6 +67,7 @@ private:
     ReplayBuffer buffer_; // Stores (board, policy_map, player, reward) tuples
     double mcts_c_puct_;
     int temperature_decay_move_;
+    int mcts_batch_size_; // <-- Store batch size
 
     // Random number generation for temperature-based move selection
     std::mt19937 rng_; // Mersenne Twister engine

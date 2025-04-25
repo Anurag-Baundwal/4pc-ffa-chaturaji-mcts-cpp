@@ -44,12 +44,13 @@ private:
 // (Training function declaration remains the same)
 void train(
     int num_iterations = 50,
-    int num_games_per_iteration = 50, // Matches python code
-    int num_epochs_per_iteration = 25, // Matches python code
-    int batch_size = 4096,           // Matches python code
+    int num_games_per_iteration = 50, 
+    int num_epochs_per_iteration = 25,
+    int batch_size = 4096, // Training batch size
     double learning_rate = 0.001,
     double weight_decay = 1e-4,
     int simulations_per_move = 50,   // Matches python code
+    int mcts_batch_size = 16, // <-- NEW: MCTS batch size parameter
     const std::string& model_save_dir = "/content/drive/MyDrive/models", // Default from python NB
     const std::string& initial_model_path = "" // Path to load initial model from
 );

@@ -40,8 +40,9 @@ int main(int argc, char* argv[]) {
         int iterations = 50;
         int games_per_iter = 50;
         int epochs_per_iter = 25;
-        int batch_size = 4096;
+        int batch_size = 4096; // Training batch size
         int sims_per_move = 50;
+        int mcts_batch_size = 16; // <-- NEW: MCTS evaluation batch size
         std::string save_dir = "/content/drive/MyDrive/models"; // Default from Colab
         std::string load_path = "";
 
@@ -56,6 +57,8 @@ int main(int argc, char* argv[]) {
         if (!temp_str.empty()) batch_size = std::stoi(temp_str);
          temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) sims_per_move = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--mcts-batch"); // <-- NEW argument
+        if (!temp_str.empty()) mcts_batch_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--load-model");
@@ -68,6 +71,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  Epochs/Iter: " << epochs_per_iter << std::endl;
         std::cout << "  Batch Size: " << batch_size << std::endl;
         std::cout << "  Sims/Move: " << sims_per_move << std::endl;
+        std::cout << "  MCTS Batch Size: " << mcts_batch_size << std::endl; // <-- Print new param
         std::cout << "  Save Dir: " << save_dir << std::endl;
         std::cout << "  Load Model: " << (load_path.empty() ? "None" : load_path) << std::endl;
 
@@ -75,7 +79,9 @@ int main(int argc, char* argv[]) {
             chaturaji_cpp::train(
                 iterations, games_per_iter, epochs_per_iter, batch_size,
                 0.001, 1e-4, // Default LR and weight decay
-                sims_per_move, save_dir, load_path
+                sims_per_move,
+                mcts_batch_size, // <-- Pass MCTS batch size
+                save_dir, load_path
             );
         } catch (const std::exception& e) {
             std::cerr << "Training failed with exception: " << e.what() << std::endl;
@@ -88,16 +94,20 @@ int main(int argc, char* argv[]) {
 
         std::string model_path = "model.pt"; // Default model path
         int simulations = 1000; // Default simulations
+        int mcts_batch_size = 16; // <-- NEW: MCTS evaluation batch size for inference
 
         std::string temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--model");
         if (!temp_str.empty()) model_path = temp_str;
         temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) simulations = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--mcts-batch"); // <-- NEW argument
+        if (!temp_str.empty()) mcts_batch_size = std::stoi(temp_str);
 
          std::cout << "Parameters:" << std::endl;
          std::cout << "  Model Path: " << model_path << std::endl;
          std::cout << "  Simulations: " << simulations << std::endl;
+         std::cout << "  MCTS Batch Size: " << mcts_batch_size << std::endl; // <-- Print new param
 
          torch::Device device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
          std::cout << "Using device: " << device << std::endl;
@@ -139,13 +149,15 @@ int main(int argc, char* argv[]) {
                  break;
             }
 
-             std::cout << "Searching for best move (" << simulations << " sims)..." << std::endl;
+             std::cout << "Searching for best move (" << simulations << " sims, batch " << mcts_batch_size << ")..." << std::endl;
              auto start_time = std::chrono::high_resolution_clock::now();
 
-             // Get best move using MCTS
+             // Get best move using MCTS with batch size
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts(
-                 board, network, simulations, device
-             );
+              board, network, simulations, device,
+              1.0, // Default c_puct
+              mcts_batch_size // <-- Pass MCTS batch size
+              );
 
              auto end_time = std::chrono::high_resolution_clock::now();
              std::chrono::duration<double> execution_time = end_time - start_time;
