@@ -13,6 +13,7 @@ load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Import core libraries (interface and shared)
 cc_import(
     name = "torch_lib",
     interface_library = "lib/torch.lib",
@@ -28,21 +29,54 @@ cc_import(
     interface_library = "lib/c10.lib",
     shared_library = "lib/c10.dll",
 )
-# Add other cc_import statements for deps if needed
+
+# Import additional required shared libraries (DLLs)
+# These are needed at runtime and will be copied by Bazel
+cc_import(
+    name = "uv_dll",
+    shared_library = "lib/uv.dll",
+)
+cc_import(
+    name = "torch_global_deps_dll",
+    shared_library = "lib/torch_global_deps.dll",
+)
+cc_import(
+    name = "fbgemm_dll",
+    shared_library = "lib/fbgemm.dll",
+)
+cc_import(
+    name = "asmjit_dll",
+    shared_library = "lib/asmjit.dll",
+)
+cc_import(
+    name = "libiompstubs5md_dll",
+    shared_library = "lib/libiompstubs5md.dll",
+)
+cc_import(
+    name = "libiomp5md_dll",
+    shared_library = "lib/libiomp5md.dll",
+)
+
 
 cc_library(
     name = "libtorch",
     hdrs = glob(["include/**"]), # Simplified glob
-    # Provide BOTH the base 'include' and the specific API include path
     includes = [
-        "include",                          # For resolving nested includes like torch/csrc/...
-        "include/torch/csrc/api/include",   # For resolving top-level includes like torch/torch.h
-    ], # <--- CORRECTED PATHS (List of paths)
+        "include",
+        "include/torch/csrc/api/include",
+    ],
+    # Add ALL imported libraries (static/interface and shared) as dependencies.
+    # This ensures Bazel copies the shared libraries to the runfiles.
     deps = [
         ":torch_lib",
         ":torch_cpu_lib",
         ":c10_lib",
-        # Add other imported deps here if needed
+        ":uv_dll",               
+        ":torch_global_deps_dll",
+        ":fbgemm_dll",           
+        ":asmjit_dll",           
+        ":libiompstubs5md_dll",  
+        ":libiomp5md_dll",       
     ],
 )
 """,
@@ -57,36 +91,68 @@ load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Import core libraries (interface and shared).
 cc_import(
     name = "torch_lib_debug",
-    interface_library = "lib/torch_debug.lib",
-    shared_library = "lib/torch_debug.dll",
+    interface_library = "lib/torch.lib",     
+    shared_library = "lib/torch.dll",        
 )
 cc_import(
     name = "torch_cpu_lib_debug",
-    interface_library = "lib/torch_cpu_debug.lib",
-    shared_library = "lib/torch_cpu_debug.dll",
+    interface_library = "lib/torch_cpu.lib", 
+    shared_library = "lib/torch_cpu.dll",    
 )
 cc_import(
     name = "c10_lib_debug",
-    interface_library = "lib/c10_debug.lib",
-    shared_library = "lib/c10_debug.dll",
+    interface_library = "lib/c10.lib",       
+    shared_library = "lib/c10.dll",          
 )
-# Add other cc_import statements for deps if needed
+
+# Import additional required shared libraries (DLLs) for debug.
+cc_import(
+    name = "uv_dll_debug",
+    shared_library = "lib/uv.dll", 
+)
+cc_import(
+    name = "torch_global_deps_dll_debug",
+    shared_library = "lib/torch_global_deps.dll", 
+)
+cc_import(
+    name = "fbgemm_dll_debug",
+    shared_library = "lib/fbgemm.dll", 
+)
+cc_import(
+    name = "asmjit_dll_debug",
+    shared_library = "lib/asmjit.dll", 
+)
+cc_import(
+    name = "libiompstubs5md_dll_debug",
+    shared_library = "lib/libiompstubs5md.dll", 
+)
+cc_import(
+    name = "libiomp5md_dll_debug",
+    shared_library = "lib/libiomp5md.dll", # Corrected name
+)
 
 cc_library(
     name = "libtorch_debug",
     hdrs = glob(["include/**"]), # Simplified glob
-    # Provide BOTH the base 'include' and the specific API include path
     includes = [
-        "include",                          # For resolving nested includes like torch/csrc/...
-        "include/torch/csrc/api/include",   # For resolving top-level includes like torch/torch.h
-    ], # <--- CORRECTED PATHS (List of paths)
+        "include",
+        "include/torch/csrc/api/include",
+    ],
+    # Add ALL imported libraries (static/interface and shared) as dependencies.
+    # This ensures Bazel copies the shared libraries to the runfiles.
     deps = [
         ":torch_lib_debug",
         ":torch_cpu_lib_debug",
         ":c10_lib_debug",
-        # Add other imported debug deps here if needed
+        ":uv_dll_debug",               
+        ":torch_global_deps_dll_debug",
+        ":fbgemm_dll_debug",           
+        ":asmjit_dll_debug",           
+        ":libiompstubs5md_dll_debug",  
+        ":libiomp5md_dll_debug",       
     ],
 )
 """,
