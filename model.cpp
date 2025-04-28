@@ -2,6 +2,19 @@
 
 namespace chaturaji_cpp {
 
+// --- Configuration Constants ---
+// Network Body
+const int NUM_RES_BLOCKS = 16; 
+const int NUM_CHANNELS = 256; 
+
+// Policy Head
+const int POLICY_HEAD_CONV_CHANNELS = 32; 
+
+// Value Head
+const int VALUE_HEAD_CONV_CHANNELS = 8;  
+const int VALUE_FC_HIDDEN_CHANNELS = 256; 
+// --- End Configuration Constants ---
+
 // --- ResBlock Implementation ---
 ResBlockImpl::ResBlockImpl(int channels) :
     conv1_(torch::nn::Conv2dOptions(channels, channels, /*kernel_size=*/3).padding(1)),
@@ -28,29 +41,28 @@ torch::Tensor ResBlockImpl::forward(torch::Tensor x) {
 
 // --- ChaturajiNN Implementation ---
 ChaturajiNNImpl::ChaturajiNNImpl() :
-    // Input layer (33 input channels, 128 output channels) 
-    conv1_(torch::nn::Conv2dOptions(33, 128, /*kernel_size=*/3).padding(1)),
-    bn1_(128),
+    // Input layer (33 input channels, NUM_CHANNELS (256) output channels) 
+    conv1_(torch::nn::Conv2dOptions(33, NUM_CHANNELS, /*kernel_size=*/3).padding(1)),
+    bn1_(NUM_CHANNELS),
 
     // Policy head
-    policy_conv_(torch::nn::Conv2dOptions(128, 2, /*kernel_size=*/1)), // 128 in, 2 out
-    policy_bn_(2),
-    policy_fc_(torch::nn::LinearOptions(2 * 8 * 8, 4096)), // 2*8*8 = 128 input features
+    policy_conv_(torch::nn::Conv2dOptions(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, /*kernel_size=*/1)), 
+    policy_bn_(POLICY_HEAD_CONV_CHANNELS),
+    policy_fc_(torch::nn::LinearOptions(POLICY_HEAD_CONV_CHANNELS * 8 * 8, 4096)), 
 
     // Value head
-    value_conv_(torch::nn::Conv2dOptions(128, 1, /*kernel_size=*/1)), // 128 in, 1 out
-    value_bn_(1),
-    value_fc1_(torch::nn::LinearOptions(1 * 8 * 8, 128)), // 1*8*8 = 64 input features
-    value_fc2_(torch::nn::LinearOptions(128, 1)) // 1 output value
+    value_conv_(torch::nn::Conv2dOptions(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, /*kernel_size=*/1)), // 128 in, 1 out
+    value_bn_(VALUE_HEAD_CONV_CHANNELS),
+    value_fc1_(torch::nn::LinearOptions(VALUE_HEAD_CONV_CHANNELS * 8 * 8, VALUE_FC_HIDDEN_CHANNELS)), // 1*8*8 = 64 input features
+    value_fc2_(torch::nn::LinearOptions(VALUE_FC_HIDDEN_CHANNELS, 1)) // 1 output value
 {
     // Register input layer modules
     register_module("conv1", conv1_);
     register_module("bn1", bn1_);
 
     // Create and register residual blocks
-    int num_res_blocks = 3; // Matches Python code
-    for (int i = 0; i < num_res_blocks; ++i) {
-        resblocks_->push_back(ResBlock(128));
+    for (int i = 0; i < NUM_RES_BLOCKS; ++i) {
+        resblocks_->push_back(ResBlock(NUM_CHANNELS));
     }
     register_module("resblocks", resblocks_);
 
@@ -78,14 +90,14 @@ std::pair<torch::Tensor, torch::Tensor> ChaturajiNNImpl::forward(torch::Tensor x
     torch::Tensor p = policy_conv_(x);
     p = policy_bn_(p);
     p = torch::relu(p);
-    p = p.view({p.size(0), -1}); // Flatten [Batch, 2, 8, 8] -> [Batch, 128]
+    p = p.view({p.size(0), -1}); // Flatten - This automatically adapts to the new channel size from policy_conv_
     p = policy_fc_(p); // Output shape [Batch, 4096] (Logits)
 
     // --- Value Head ---
     torch::Tensor v = value_conv_(x);
     v = value_bn_(v);
     v = torch::relu(v);
-    v = v.view({v.size(0), -1}); // Flatten [Batch, 1, 8, 8] -> [Batch, 64]
+    v = v.view({v.size(0), -1}); // Flatten - This automatically adapts to the new channel size from value_conv_
     v = value_fc1_(v);
     v = torch::relu(v);
     v = value_fc2_(v); // Output shape [Batch, 1]
