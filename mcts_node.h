@@ -11,6 +11,9 @@
 
 namespace chaturaji_cpp {
 
+// Virtual Loss Constant
+const double VIRTUAL_LOSS_VALUE = 1.0; // Value subtracted for pending nodes during selection
+
 class MCTSNode {
 public:
     // --- Constructor ---
@@ -36,7 +39,7 @@ public:
 
     // --- MCTS Operations ---
     /**
-     * @brief Selects the best child node according to the PUCT formula.
+     * @brief Selects the best child node according to the PUCT formula, applying virtual loss.
      * @param c_puct Exploration constant.
      * @return Pointer to the selected child node, or nullptr if no children.
      */
@@ -50,17 +53,28 @@ public:
     void expand(const std::map<Move, double>& policy_probs);
 
     /**
-     * @brief Updates the visit count and total value of this node and backpropagates
-     *        the value up to the root.
-     * @param value The value obtained from the simulation or network evaluation (from the perspective of the player *at this node*).
+     * @brief Updates the visit count and total value of this node *only*.
+     *        Backpropagation is handled externally (e.g., by backpropagate_path).
+     * @param value The value obtained from the simulation or network evaluation (from the perspective of the player *at the root node*).
      */
-    void update(double value);
+    void update_stats(double value); // Renamed from update to avoid confusion
 
+    // ---Methods for Async Support ---
+    /**
+     * @brief Increments the count of simulations currently evaluating this node.
+     */
+    void increment_pending_visits();
+
+    /**
+     * @brief Decrements the count of simulations currently evaluating this node.
+     */
+    void decrement_pending_visits();
 
     // --- Accessors for Node Statistics ---
     int get_visit_count() const;
-    double get_total_value() const; // Value accumulated from children (relative to this node's player?) - Let's align with python: from root perspective
+    double get_total_value() const; // Value accumulated (always from the root player's perspective)
     double get_prior() const;
+    int get_pending_visits() const; // NEW accessor
 
 
 private:
@@ -75,7 +89,10 @@ private:
     double total_value_; // Accumulated value from simulations below this node (always from the root player's perspective)
     double prior_;       // Prior probability assigned by the policy network
 
-    // Helper to calculate UCT score for a child
+    // Async support
+    int pending_visits_; // Count of simulations currently evaluating this node
+
+    // Helper to calculate UCT score for a child, incorporating virtual loss
     double calculate_uct_score(const MCTSNode* child, double c_puct) const;
 
 };

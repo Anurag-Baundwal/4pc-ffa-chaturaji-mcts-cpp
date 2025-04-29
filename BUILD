@@ -1,6 +1,6 @@
 # BUILD (or BUILD.bazel)
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary", "cc_test") # Added cc_test
 
 package(default_visibility = ["//visibility:public"])
 
@@ -17,43 +17,33 @@ config_setting(
 )
 
 # --- Intermediate library to handle libtorch selection ---
-# This part remains largely the same. The actual libtorch target they
-# point to will be defined in the WORKSPACE file, which is platform-specific.
-# On Windows, @libtorch_release and @libtorch_debug point to Windows CPU libs.
-# On Colab, the notebook script modifies WORKSPACE so @libtorch_release
-# points to the Linux GPU lib.
 cc_library(
     name = "libtorch_configured",
     deps = select({
-        # Use debug libtorch on Windows debug builds
         "//:debug_build": ["@libtorch_debug//:libtorch_debug"],
-        # Use release libtorch otherwise (Windows release or Colab GPU/CPU)
         "//conditions:default": ["@libtorch_release//:libtorch"],
     }),
 )
 
 
-# === All cc_library and cc_binary rules need their copts updated ===
+# === Base Types and Utilities ===
 
 cc_library(
     name = "chaturaji_types",
     hdrs = [
         "types.h",
         "piece.h",
+        "thread_safe_queue.h", # ADDED thread_safe_queue header
     ],
     copts = select({
-        # If building with --define use_cuda=true (Colab GPU likely)
-        "//:cuda_build": [
-            "-std=c++17",         # GCC/Clang C++17 flag
-            "-D AT_CUDA_ENABLED=1", # Define the CUDA macro
-        ],
-        # Default case (Windows MSVC, potentially other non-CUDA Linux)
-        # This covers both Windows Debug and Release builds.
-        "//conditions:default": [
-            "/std:c++17", # MSVC C++17 flag
-            # Add other general compiler flags here if needed, e.g., optimization flags like /O2
-        ],
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
     }),
+    # --- ADDED DEPENDENCY HERE ---
+    deps = [
+        ":libtorch_configured", # Needed because types.h now includes torch/torch.h
+    ],
+    # --- END ADDED DEPENDENCY ---
 )
 
 cc_library(
@@ -61,23 +51,13 @@ cc_library(
     srcs = ["board.cpp"],
     hdrs = ["board.h"],
     copts = select({
-        "//:cuda_build": [
-            "-std=c++17",
-            "-D AT_CUDA_ENABLED=1",
-        ],
-        "//conditions:default": [
-            "/std:c++17",
-        ],
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_types",
+        ":chaturaji_types", # This now transitively provides libtorch includes
     ],
 )
-
-# Repeat the 'copts = select({...})' block for all remaining rules:
-# chaturaji_utils, chaturaji_model, chaturaji_mcts_node,
-# chaturaji_search, chaturaji_self_play, chaturaji_training,
-# chaturaji_engine, zobrist_test.
 
 cc_library(
     name = "chaturaji_utils",
@@ -90,9 +70,11 @@ cc_library(
     deps = [
         ":chaturaji_board",
         ":chaturaji_types",
-        ":libtorch_configured",
+        ":libtorch_configured", # Keep explicit dependency for clarity too
     ],
 )
+
+# === Core ML and Search Components ===
 
 cc_library(
     name = "chaturaji_model",
@@ -108,6 +90,22 @@ cc_library(
     ],
 )
 
+# NEW: Evaluator component
+cc_library(
+    name = "chaturaji_evaluator",
+    srcs = ["evaluator.cpp"],
+    hdrs = ["evaluator.h"],
+    copts = select({
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
+    }),
+    deps = [
+        ":chaturaji_model",
+        ":chaturaji_types", # Depends on EvaluationRequest/Result, ThreadSafeQueue
+        ":libtorch_configured",
+    ],
+)
+
 cc_library(
     name = "chaturaji_mcts_node",
     srcs = ["mcts_node.cpp"],
@@ -118,7 +116,7 @@ cc_library(
     }),
     deps = [
         ":chaturaji_board",
-        ":chaturaji_types",
+        ":chaturaji_types", # This now transitively provides libtorch includes
     ],
 )
 
@@ -133,12 +131,14 @@ cc_library(
     deps = [
         ":chaturaji_board",
         ":chaturaji_mcts_node",
-        ":chaturaji_model",
+        ":chaturaji_model", # Still needed for sync mode
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured",
+        ":libtorch_configured", # Still needed for sync mode
     ],
 )
+
+# === Self-Play and Training ===
 
 cc_library(
     name = "chaturaji_self_play",
@@ -150,12 +150,13 @@ cc_library(
     }),
     deps = [
         ":chaturaji_board",
+        ":chaturaji_evaluator", # Depends on Evaluator now
         ":chaturaji_mcts_node",
-        ":chaturaji_model",
-        ":chaturaji_search",
+        ":chaturaji_model",     # Still needed to pass handle to Evaluator
+        ":chaturaji_search",    # Needs get_reward_map, process_policy etc.
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured",
+        ":libtorch_configured", # Keep explicit dependency
     ],
 )
 
@@ -169,12 +170,14 @@ cc_library(
     }),
     deps = [
         ":chaturaji_model",
-        ":chaturaji_self_play",
+        ":chaturaji_self_play", # Depends on SelfPlay
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured",
+        ":libtorch_configured", # Keep explicit dependency
     ],
 )
+
+# === Executable and Tests ===
 
 cc_binary(
     name = "chaturaji_engine",
@@ -184,13 +187,16 @@ cc_binary(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
+        # Include all necessary components
         ":chaturaji_board",
+        ":chaturaji_evaluator", # Needed by SelfPlay
         ":chaturaji_model",
         ":chaturaji_search",
+        ":chaturaji_self_play", # Needed by Training
         ":chaturaji_training",
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured",
+        ":libtorch_configured", # Keep explicit dependency
     ],
 )
 
@@ -203,7 +209,8 @@ cc_test(
     }),
     deps = [
         ":chaturaji_board",
-        ":chaturaji_types",
+        ":chaturaji_types", # This now transitively provides libtorch includes
+        # Test doesn't need libtorch linked explicitly, just headers via types
     ],
-    linkstatic = True,
+    # linkstatic = True, # Consider removing if causing issues with DLLs/shared libs
 )

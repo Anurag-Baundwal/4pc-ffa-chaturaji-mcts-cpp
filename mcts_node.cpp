@@ -1,6 +1,7 @@
 #include "mcts_node.h"
 #include <stdexcept>
 #include <algorithm> // For std::max_element
+#include <iostream>  // For potential debug warnings
 
 namespace chaturaji_cpp {
 
@@ -11,7 +12,8 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
     move_(move),
     visit_count_(0),
     total_value_(0.0),
-    prior_(prior)
+    prior_(prior),
+    pending_visits_(0) // Initialize pending visits to 0
 {}
 
 
@@ -51,7 +53,12 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
     MCTSNode* best_child = nullptr;
     double best_score = -std::numeric_limits<double>::infinity();
 
+    // Ensure parent visit count is not zero before calculating sqrt (use epsilon)
+    // Note: We use parent's N(s) which is `this->visit_count_ + this->pending_visits_`
+    double parent_total_visits = static_cast<double>(this->visit_count_ + this->pending_visits_);
+
     for (const auto& child_ptr : children_) {
+        // Pass parent_total_visits to avoid recalculating sqrt repeatedly
         double score = calculate_uct_score(child_ptr.get(), c_puct);
         if (score > best_score) {
             best_score = score;
@@ -64,16 +71,13 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
     if (!is_leaf()) {
         // Optional: Throw an error or log a warning if trying to expand non-leaf
-        // std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
+         std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
         return;
     }
     if (board_state_.is_game_over()) {
         // Cannot expand a terminal node
         return;
     }
-
-    // Get legal moves from the current board state (should match policy_probs keys)
-    // std::vector<Move> legal_moves = board_state_.get_pseudo_legal_moves(board_state_.get_current_player());
 
     children_.reserve(policy_probs.size()); // Optimize allocation
 
@@ -82,7 +86,6 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
         double prior_prob = pair.second;
 
         // Create a new board state by making the move using the lightweight factory
-        // This avoids copying the potentially large history/undo vectors from the parent.
         Board next_board = Board::create_mcts_child_board(board_state_, move);
 
         // Create the new child node
@@ -91,14 +94,26 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
 }
 
 
-void MCTSNode::update(double value) {
+// Renamed from update -> update_stats
+void MCTSNode::update_stats(double value) {
     visit_count_++;
     total_value_ += value; // Accumulate value (root's perspective)
-
-    // Backpropagate to parent - REMOVED FOR BATCHED MCTS
-    // The calling function (backpropagate_path) handles iteration up the tree.
 }
 
+// --- Methods for Async Support ---
+void MCTSNode::increment_pending_visits() {
+    pending_visits_++;
+}
+
+void MCTSNode::decrement_pending_visits() {
+    if (pending_visits_ > 0) {
+        pending_visits_--;
+    } else {
+        // This indicates a potential logic error (decrementing below zero)
+         std::cerr << "Warning: Decrementing pending_visits below zero for node." << std::endl;
+         // Optionally, throw an exception or handle as appropriate.
+    }
+}
 
 // --- Accessors for Node Statistics ---
 int MCTSNode::get_visit_count() const {
@@ -113,39 +128,48 @@ double MCTSNode::get_prior() const {
     return prior_;
 }
 
+int MCTSNode::get_pending_visits() const {
+    return pending_visits_;
+}
+
 // --- Private Helper ---
 double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
-     // PUCT formula: Q(s,a) + U(s,a)
-     // U(s,a) = c_puct * P(s,a) * sqrt(Sum_b N(s,b)) / (1 + N(s,a))
-     // Q(s,a) = W(s,a) / N(s,a) (average value from child's perspective)
-     // Python code used:
-     // if child.visit_count == 0: score = c_puct * child.prior * math.sqrt(self.visit_count + 1e-8) / 1.0
-     // else: score = (child.total_value / child.visit_count) + c_puct * child.prior * math.sqrt(self.visit_count) / (child.visit_count + 1)
-     // Note: child.total_value is from the *root's* perspective in the Python code.
-     // For standard PUCT, Q should be relative to the player whose turn it is at the child node.
-     // Let's follow the Python implementation directly for now.
+    const double epsilon = 1e-8; // Small value to prevent division by zero
 
-     const double epsilon = 1e-8; // Small value to prevent division by zero or log(0)
+    // Effective N(s,a) and W(s,a) incorporating pending visits and virtual loss
+    // N'(s,a) = N(s,a) + P(s,a)  (Real visits + Pending visits)
+    // W'(s,a) = W(s,a) - P(s,a) * V_loss (Real value - Virtual Losses)
+    double child_visits = static_cast<double>(child->visit_count_);
+    double child_pending = static_cast<double>(child->pending_visits_);
+    double child_total_value = child->total_value_; // Real accumulated value
 
-     if (child->visit_count_ == 0) {
-        // Encourages exploration of unvisited nodes first based on prior
-        // Using parent's visit count seems standard here.
-        return c_puct * child->prior_ * std::sqrt(static_cast<double>(this->visit_count_) + epsilon);
-        // Python code used sqrt(self.visit_count + 1e-8) / 1.0
-        // Let's match Python's version slightly more closely:
-        // return c_puct * child->prior_ * std::sqrt(static_cast<double>(this->visit_count_) + epsilon) / (1.0);
-     } else {
-        // Exploitation term (Q): Average value obtained from simulations passing through the child.
-        // This value is from the root's perspective as implemented.
-        double q_value = child->total_value_ / static_cast<double>(child->visit_count_);
+    double effective_visits = child_visits + child_pending;
+    double effective_value = child_total_value - (child_pending * VIRTUAL_LOSS_VALUE);
 
-        // Exploration term (U): Favors children with high prior and low visit count.
-        double u_value = c_puct * child->prior_ *
-                         std::sqrt(static_cast<double>(this->visit_count_)) /
-                         (1.0 + static_cast<double>(child->visit_count_));
+    // Q'(s,a) = W'(s,a) / N'(s,a)
+    double q_value = 0.0;
+    if (effective_visits > epsilon) { // Avoid division by zero
+       q_value = effective_value / effective_visits;
+    }
+    // If effective_visits is 0 (child unvisited and not pending), q_value remains 0.0,
+    // which is appropriate as the U-term will dominate.
 
-        return q_value + u_value;
-     }
+    // Calculate Parent Visits N(s) = sum_b N'(s,b) for the U-term denominator
+    // Instead of summing children, we use the parent's recorded visits + pending visits
+    // N(s) = N_parent(s) + P_parent(s)
+    // Note: `this` is the parent node here.
+    double parent_visits = static_cast<double>(this->visit_count_);
+    double parent_pending = static_cast<double>(this->pending_visits_);
+    double parent_total_effective_visits = parent_visits + parent_pending;
+
+
+    // U(s,a) = c_puct * P(s,a) * sqrt(N(s)) / (1 + N'(s,a))
+    // Where P(s,a) is the prior probability of the child action.
+    double u_value = c_puct * child->prior_ *
+                     std::sqrt(parent_total_effective_visits + epsilon) / // Add epsilon for sqrt safety
+                     (1.0 + effective_visits);
+
+    return q_value + u_value;
 }
 
 

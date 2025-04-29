@@ -3,22 +3,55 @@ Commands that you can run in the project root.
 To compile the engine:
 bazel build //:chaturaji_engine -c opt
 
+---------------------------------------------------------------------
+
 To train a model:
-For test runs
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games 50 --epochs 5 --batch 64 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10 --mcts-batch 64
 
-For a more serious training run
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1000 --games 1000 --epochs 7 --batch 16384 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 250 --mcts-batch 4096
+Arguments:
+  --train                 : Enter training mode.
+  --iterations N          : Number of training iterations (default: 50).
+  --games N               : Number of self-play games per iteration (default: 50).
+  --epochs N              : Number of training epochs per iteration (default: 25).
+  --train-batch N         : Batch size for the training data loader (default: 4096).
+  --workers N             : Number of parallel self-play worker threads (default: 4).
+  --nn-batch N            : Batch size for the NN evaluator thread during self-play (default: 4096).
+  --sims N                : Number of MCTS simulations per move during self-play (default: 50).
+  --save-dir PATH         : Directory to save model checkpoints (default: /content/drive/MyDrive/models).
+  --load-model PATH       : Path to an existing model to continue training from (optional).
+  --lr VALUE              : Learning rate (default: 0.001).
+  --wd VALUE              : Weight decay (default: 1e-4).
 
-If training doesn't start, copy all dlls from C:\Users\dell3\Downloads\libtorch-win-shared-with-deps-2.6.0+cpu\libtorch\lib to bazel-bin (ie folder containing engine exe) and try again
+Example - Test Run (adjust workers/nn-batch based on your CPU/GPU):
+bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games 50 --epochs 5 --train-batch 64 --workers 4 --nn-batch 128 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10
 
-To simulate a game using the trained model:
-.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20250421_163036\chaturaji_iter_1.pt" --sims 1000 --mcts-batch 64
+Example - Serious Training Run (adjust workers/nn-batch based on your CPU/GPU):
+bazel run //:chaturaji_engine -c opt -- --train --iterations 1000 --games 1000 --epochs 7 --train-batch 16384 --workers 8 --nn-batch 4096 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 250
 
-To ensure print_board displays the pieces in the terminal properly, run the following command before simulating a game:
+DLL Note:
+If training or inference doesn't start (especially outside Bazel run), copy all required DLLs from the LibTorch 'lib' directory (e.g., C:/Users/dell3/Downloads/libtorch-win-shared-with-deps-2.6.0+cpu/libtorch/lib) to the directory containing the chaturaji_engine.exe (e.g., bazel-bin).
+
+---------------------------------------------------------------------
+
+To simulate a game using a trained model (Inference Mode):
+
+Arguments:
+  --model PATH            : Path to the trained model (.pt file).
+  --sims N                : Number of MCTS simulations per move (default: 1000).
+  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during inference (default: 16).
+
+Example:
+.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_YYYYMMDD_HHMMSS\chaturaji_iter_N.pt" --sims 1000 --mcts-batch 64
+
+Terminal Setup (Windows):
+To ensure print_board displays the pieces correctly in the Windows terminal, run this command *before* running the engine executable:
 chcp 65001
 
-To run zobrist hashing test
+---------------------------------------------------------------------
 
-bazel build //:zobrist_test 
+To run Zobrist hashing tests:
+
+Compile the test:
+bazel build //:zobrist_test
+
+Run the test and show output:
 bazel test //:zobrist_test --test_output=all

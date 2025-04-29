@@ -5,13 +5,14 @@
 #include <filesystem>
 #include <torch/torch.h>
 #include <chrono> // For timing
+#include <algorithm> // For std::find
 
 
 #include "board.h"
 #include "types.h"
 #include "utils.h"
 #include "model.h"
-#include "search.h"
+#include "search.h" // Includes sync MCTS function now
 #include "train.h" // Include train function header
 
 namespace fs = std::filesystem;
@@ -40,9 +41,10 @@ int main(int argc, char* argv[]) {
         int iterations = 50;
         int games_per_iter = 50;
         int epochs_per_iter = 25;
-        int batch_size = 4096; // Training batch size
+        int training_batch_size = 4096; // Training DataLoader batch size
         int sims_per_move = 50;
-        int mcts_batch_size = 16; // <-- NEW: MCTS evaluation batch size
+        int num_workers = 4;          // NEW: Number of self-play workers
+        int nn_batch_size = 4096;     // NEW: Evaluator NN batch size
         std::string save_dir = "/content/drive/MyDrive/models"; // Default from Colab
         std::string load_path = "";
 
@@ -53,12 +55,14 @@ int main(int argc, char* argv[]) {
         if (!temp_str.empty()) games_per_iter = std::stoi(temp_str);
          temp_str = get_cmd_option(argv, argv+argc, "--epochs");
         if (!temp_str.empty()) epochs_per_iter = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--batch");
-        if (!temp_str.empty()) batch_size = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--train-batch"); // Argument for training data loader
+        if (!temp_str.empty()) training_batch_size = std::stoi(temp_str);
          temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) sims_per_move = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--mcts-batch"); // <-- NEW argument
-        if (!temp_str.empty()) mcts_batch_size = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--workers"); // NEW argument
+        if (!temp_str.empty()) num_workers = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--nn-batch"); // NEW argument (evaluator batch)
+        if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--load-model");
@@ -66,21 +70,24 @@ int main(int argc, char* argv[]) {
 
 
         std::cout << "Parameters:" << std::endl;
-        std::cout << "  Iterations: " << iterations << std::endl;
-        std::cout << "  Games/Iter: " << games_per_iter << std::endl;
-        std::cout << "  Epochs/Iter: " << epochs_per_iter << std::endl;
-        std::cout << "  Batch Size: " << batch_size << std::endl;
-        std::cout << "  Sims/Move: " << sims_per_move << std::endl;
-        std::cout << "  MCTS Batch Size: " << mcts_batch_size << std::endl; // <-- Print new param
-        std::cout << "  Save Dir: " << save_dir << std::endl;
-        std::cout << "  Load Model: " << (load_path.empty() ? "None" : load_path) << std::endl;
+        std::cout << "  Iterations:        " << iterations << std::endl;
+        std::cout << "  Games/Iter:        " << games_per_iter << std::endl;
+        std::cout << "  Epochs/Iter:       " << epochs_per_iter << std::endl;
+        std::cout << "  Training Batch:    " << training_batch_size << std::endl;
+        std::cout << "  Sims/Move:         " << sims_per_move << std::endl;
+        std::cout << "  Workers:           " << num_workers << std::endl; // <-- Print new param
+        std::cout << "  NN Eval Batch:     " << nn_batch_size << std::endl; // <-- Print new param
+        std::cout << "  Save Dir:          " << save_dir << std::endl;
+        std::cout << "  Load Model:        " << (load_path.empty() ? "None" : load_path) << std::endl;
 
         try {
             chaturaji_cpp::train(
-                iterations, games_per_iter, epochs_per_iter, batch_size,
-                0.001, 1e-4, // Default LR and weight decay
+                iterations, games_per_iter, epochs_per_iter,
+                training_batch_size, // Training dataloader batch size
+                num_workers,         // Number of self-play workers
+                nn_batch_size,       // Evaluator NN batch size
+                0.001, 1e-4,         // Default LR and weight decay
                 sims_per_move,
-                mcts_batch_size, // <-- Pass MCTS batch size
                 save_dir, load_path
             );
         } catch (const std::exception& e) {
@@ -89,25 +96,25 @@ int main(int argc, char* argv[]) {
         }
 
     } else {
-        // --- Inference/Analysis Mode (like chaturaji_engine.py) ---
+        // --- Inference/Analysis Mode (Uses Synchronous MCTS) ---
         std::cout << "--- Starting Inference Mode ---" << std::endl;
 
         std::string model_path = "model.pt"; // Default model path
         int simulations = 1000; // Default simulations
-        int mcts_batch_size = 16; // <-- NEW: MCTS evaluation batch size for inference
+        int mcts_sync_batch_size = 16; // Batch size for synchronous MCTS NN calls
 
         std::string temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--model");
         if (!temp_str.empty()) model_path = temp_str;
         temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) simulations = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--mcts-batch"); // <-- NEW argument
-        if (!temp_str.empty()) mcts_batch_size = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--mcts-batch"); // Argument for sync MCTS batching
+        if (!temp_str.empty()) mcts_sync_batch_size = std::stoi(temp_str);
 
          std::cout << "Parameters:" << std::endl;
-         std::cout << "  Model Path: " << model_path << std::endl;
-         std::cout << "  Simulations: " << simulations << std::endl;
-         std::cout << "  MCTS Batch Size: " << mcts_batch_size << std::endl; // <-- Print new param
+         std::cout << "  Model Path:        " << model_path << std::endl;
+         std::cout << "  Simulations:       " << simulations << std::endl;
+         std::cout << "  MCTS Sync Batch:   " << mcts_sync_batch_size << std::endl;
 
          torch::Device device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
          std::cout << "Using device: " << device << std::endl;
@@ -149,14 +156,14 @@ int main(int argc, char* argv[]) {
                  break;
             }
 
-             std::cout << "Searching for best move (" << simulations << " sims, batch " << mcts_batch_size << ")..." << std::endl;
+             std::cout << "Searching for best move (Sync MCTS: " << simulations << " sims, batch " << mcts_sync_batch_size << ")..." << std::endl;
              auto start_time = std::chrono::high_resolution_clock::now();
 
-             // Get best move using MCTS with batch size
-             std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts(
+             // Get best move using SYNCHRONOUS MCTS
+             std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( // Use sync function
               board, network, simulations, device,
               1.0, // Default c_puct
-              mcts_batch_size // <-- Pass MCTS batch size
+              mcts_sync_batch_size // Pass sync MCTS batch size
               );
 
              auto end_time = std::chrono::high_resolution_clock::now();
@@ -179,7 +186,6 @@ int main(int argc, char* argv[]) {
                  board.make_move(best_move);
              } else {
                  std::cout << "No valid moves found for player " << static_cast<int>(board.get_current_player()) << "." << std::endl;
-                 // In a real game, this might trigger resignation or indicate stalemate/checkmate
                  if (!board.is_game_over()) {
                       std::cout << "Player " << static_cast<int>(board.get_current_player()) << " resigns." << std::endl;
                       board.resign();
@@ -190,7 +196,7 @@ int main(int argc, char* argv[]) {
         // Print final state
         std::cout << "\n--- Final Board State ---" << std::endl;
         board.print_board();
-        auto final_scores = board.get_game_result(); // Get scores after potential draw bonus
+        auto final_scores = board.get_game_result();
         std::cout << "Final Scores:" << std::endl;
         for(const auto& pair : final_scores) {
             std::cout << "  Player " << static_cast<int>(pair.first) << ": " << pair.second << std::endl;

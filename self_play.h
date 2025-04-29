@@ -4,8 +4,11 @@
 #include <deque>
 #include <map>
 #include <tuple> // For storing game data
-#include <memory> // For network pointer if needed
+#include <memory> // For shared_ptr
 #include <random> // For probabilistic move selection
+#include <thread> // For std::thread
+#include <atomic> // For atomic flags/counters
+#include <vector> // For storing threads
 
 #include "board.h"
 #include "mcts_node.h"
@@ -13,11 +16,12 @@
 #include "search.h" // For process_policy, get_reward_map
 #include "types.h"
 #include "utils.h" // For board_to_tensor
+#include "evaluator.h" // Include the new Evaluator class
+
 
 namespace chaturaji_cpp {
 
-// Define the structure for storing one step of game data
-// Board state (copied), Policy map (Move -> prob), Player whose turn it was, Final reward for that player
+// Define the structure for storing one step of game data (Unchanged)
 using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, double>;
 using ReplayBuffer = std::deque<GameDataStep>;
 
@@ -27,31 +31,36 @@ public:
     /**
      * @param network Shared pointer to the neural network model.
      * @param device The device (CPU/CUDA) for NN inference.
+     * @param num_workers Number of parallel game simulation threads.
      * @param simulations_per_move Number of MCTS simulations for each move decision.
      * @param buffer_size Maximum size of the replay buffer.
+     * @param nn_batch_size The batch size used by the NN evaluator thread.
      * @param c_puct MCTS exploration constant.
-     * @param temperature_decay_move Move number after which temperature becomes 0 for greedy selection.
-     * @param mcts_batch_size The batch size used during MCTS NN evaluations.
+     * @param temperature_decay_move Move number after which temperature becomes 0.
      * @param dirichlet_alpha The alpha parameter for Dirichlet noise.
-     * @param dirichlet_epsilon The weight factor for Dirichlet noise (0=no noise, 1=only noise).
+     * @param dirichlet_epsilon The weight factor for Dirichlet noise.
      */
     SelfPlay(
         ChaturajiNN network, // Pass the model module directly
         torch::Device device,
+        int num_workers = 4,
         int simulations_per_move = 100,
         size_t buffer_size = 250000,
+        int nn_batch_size = 4096, // Batch size for NN evaluations
         double c_puct = 1.0,
         int temperature_decay_move = 5,
-        int mcts_batch_size = 8,
         double dirichlet_alpha = 0.3,
         double dirichlet_epsilon = 0.25
     );
 
+    ~SelfPlay(); // Destructor to manage evaluator lifetime
+
     /**
-     * @brief Generates one full game of self-play using MCTS.
+     * @brief Generates a specified number of self-play games using worker threads and the evaluator.
      *        Adds the generated game data to the internal replay buffer.
+     * @param num_games The total number of games to generate across all workers.
      */
-    void generate_game();
+    void generate_data(int num_games);
 
     /**
      * @brief Provides access to the internal replay buffer.
@@ -66,57 +75,53 @@ public:
 
 
 private:
-    ChaturajiNN network_; // Store the network module
-    torch::Device device_;
-    int simulations_per_move_;
-    ReplayBuffer buffer_; // Stores (board, policy_map, player, reward) tuples
-    double mcts_c_puct_;
-    int temperature_decay_move_;
-    int mcts_batch_size_; // <-- Store batch size
-    double dirichlet_alpha_; 
-    double dirichlet_epsilon_; 
-
-    // Random number generation for temperature-based move selection
-    std::mt19937 rng_; // Mersenne Twister engine
-
+    // --- Renamed generate_game to run_game_simulation ---
     /**
-     * @brief Calculates action probabilities based on MCTS visit counts and temperature.
-     * @param root The root node of the MCTS search for the current position.
-     * @param temperature Controls exploration (1.0 = proportional, 0.0 = greedy).
-     * @return Map from Move to its selection probability.
+     * @brief Runs a single game simulation loop, interacting with the evaluator.
+     *        This function is executed by each worker thread.
+     * @param worker_id Identifier for the worker thread (for logging).
+     * @param games_completed_counter Atomic counter shared by workers.
+     * @param target_games Total games to generate across all workers.
+     * @param local_buffer Buffer local to this worker thread to store results.
      */
-    std::map<Move, double> get_action_probs(const MCTSNode& root, double temperature) const;
-
-    /**
-     * @brief Chooses a move based on the calculated action probabilities.
-     * @param root The root node of the MCTS search.
-     * @param temperature The temperature for selection.
-     * @return The chosen Move.
-     */
-    Move choose_move(const MCTSNode& root, double temperature);
-
-    /**
-     * @brief Processes the final game result and assigns rewards to buffer entries.
-     * @param game_data_temp Temporary vector holding (Board, Policy, Player) for the finished game.
-     * @param final_board The board state at the end of the game.
-     */
-    void process_game_result(
-        std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,
-        const Board& final_board
+    void run_game_simulation(
+        int worker_id,
+        std::atomic<int>& games_completed_counter,
+        int target_games,
+        std::vector<GameDataStep>& local_buffer
     );
 
-    /**
-     * @brief Applies Dirichlet noise to a policy probability map.
-     * @param policy_probs The original policy map (Move -> probability).
-     * @param alpha The concentration parameter for the Dirichlet distribution.
-     * @param epsilon The weighting factor for the noise (0=no noise, 1=only noise).
-     * @return A new map containing the noisy policy probabilities.
-     */
-    std::map<Move, double> add_dirichlet_noise(
+
+    // (get_action_probs, choose_move, process_game_result remain similar)
+    std::map<Move, double> get_action_probs(const MCTSNode& root, double temperature) const;
+    Move choose_move(const MCTSNode& root, double temperature);
+    void process_game_result(
+        std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,
+        const Board& final_board,
+        std::vector<GameDataStep>& output_buffer // Store directly in output buffer
+    );
+     std::map<Move, double> add_dirichlet_noise(
       const std::map<Move, double>& policy_probs,
       double alpha,
       double epsilon
-  );
+    );
+
+    // Member Variables
+    ChaturajiNN network_handle_; // Keep handle for potential future use? Or remove? Keep for now.
+    torch::Device device_; // Keep track of intended device
+    int num_workers_;
+    int simulations_per_move_;
+    ReplayBuffer buffer_; // Main shared buffer (filled after workers finish)
+    double mcts_c_puct_;
+    int temperature_decay_move_;
+    double dirichlet_alpha_;
+    double dirichlet_epsilon_;
+
+    std::mt19937 rng_; // Mersenne Twister engine (maybe make thread-local later?)
+
+    // --- Evaluator and Worker Management ---
+    std::unique_ptr<Evaluator> evaluator_; // Use unique_ptr to manage lifetime
+    std::vector<std::thread> worker_threads_;
 };
 
 } // namespace chaturaji_cpp

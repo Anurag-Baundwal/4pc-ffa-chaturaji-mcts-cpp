@@ -1,7 +1,9 @@
 #pragma once
 
 #include <torch/torch.h>
-#include "types.h" // Include basic types if needed
+#include <vector>   // For vector
+#include <utility>  // For std::pair
+#include "types.h" // Include basic types (EvaluationRequest, EvaluationResult)
 
 namespace chaturaji_cpp {
 
@@ -23,7 +25,24 @@ struct ChaturajiNNImpl : torch::nn::Module {
     ChaturajiNNImpl();
 
     // Returns policy logits (before softmax) and value estimate
+    // Input shape: [B, C, H, W]
+    // Output shapes: { [B, 4096], [B, 1] }
     std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x);
+
+    // --- Batched Evaluation Interface ---
+    /**
+     * @brief Evaluates a batch of board states provided as EvaluationRequests.
+     * Internally calls the forward method. Handles tensor stacking and result unpacking.
+     *
+     * @param requests Vector of evaluation requests. Assumes state tensors are ready (e.g., on CPU).
+     * @param device The target device (CPU/CUDA) to perform inference on.
+     * @return Vector of evaluation results, corresponding to the input requests. Results are on CPU.
+     */
+    std::vector<EvaluationResult> evaluate_batch(
+        const std::vector<EvaluationRequest>& requests,
+        torch::Device device
+    );
+    // --- END Batched Evaluation Interface ---
 
 private:
     // Input convolutional layer

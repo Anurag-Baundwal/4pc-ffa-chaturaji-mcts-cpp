@@ -3,6 +3,7 @@
 #include <optional> // For optional promotion piece type
 #include <functional> // For std::hash
 #include <cstdint>    // For uint64_t
+#include <torch/torch.h> // Include for Tensor type
 
 namespace chaturaji_cpp {
 
@@ -78,9 +79,36 @@ struct Move {
     }
 };
 
+// --- Structures for Asynchronous Evaluation ---
+
+// Unique identifier for an evaluation request
+using RequestId = uint64_t;
+
+/**
+ * @brief Data sent from an MCTS worker to the evaluator.
+ */
+struct EvaluationRequest {
+    RequestId request_id;        // Unique ID to correlate request and result
+    torch::Tensor state_tensor;  // Board state tensor [C, H, W] (on CPU or specified device?) - Assume CPU for transfer simplicity for now
+    // Add Game ID if needed for multi-game workers later
+    // uint64_t game_id;
+};
+
+/**
+ * @brief Data sent from the evaluator back to the MCTS worker.
+ */
+struct EvaluationResult {
+    RequestId request_id;         // ID from the corresponding request
+    torch::Tensor policy_logits;  // Raw policy logits [4096] (on CPU)
+    float value;                  // Single value estimate (scalar)
+    // Add Game ID if needed
+    // uint64_t game_id;
+};
+
+
 } // namespace chaturaji_cpp
 
-// Provide hash specializations for BoardLocation and Move if needed for unordered containers
+// --- Existing Hash Specializations ---
 namespace std {
     template <>
     struct hash<chaturaji_cpp::BoardLocation> {
