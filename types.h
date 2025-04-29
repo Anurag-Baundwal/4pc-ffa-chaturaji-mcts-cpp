@@ -81,7 +81,7 @@ struct Move {
 
 // --- Structures for Asynchronous Evaluation ---
 
-// Unique identifier for an evaluation request
+// Unique identifier for an evaluation request (can be for a batch)
 using RequestId = uint64_t;
 
 /**

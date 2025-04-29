@@ -45,6 +45,7 @@ int main(int argc, char* argv[]) {
         int sims_per_move = 50;
         int num_workers = 4;          // NEW: Number of self-play workers
         int nn_batch_size = 4096;     // NEW: Evaluator NN batch size
+        int worker_batch_size = 16; // <--- Default for worker batch
         std::string save_dir = "/content/drive/MyDrive/models"; // Default from Colab
         std::string load_path = "";
 
@@ -63,6 +64,8 @@ int main(int argc, char* argv[]) {
         if (!temp_str.empty()) num_workers = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--nn-batch"); // NEW argument (evaluator batch)
         if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv+argc, "--worker-batch"); // <--- New argument
+        if (!temp_str.empty()) worker_batch_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--load-model");
@@ -77,6 +80,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  Sims/Move:         " << sims_per_move << std::endl;
         std::cout << "  Workers:           " << num_workers << std::endl; // <-- Print new param
         std::cout << "  NN Eval Batch:     " << nn_batch_size << std::endl; // <-- Print new param
+        std::cout << "  Worker MCTS Batch: " << worker_batch_size << std::endl; // <-- Print new param
         std::cout << "  Save Dir:          " << save_dir << std::endl;
         std::cout << "  Load Model:        " << (load_path.empty() ? "None" : load_path) << std::endl;
 
@@ -86,6 +90,7 @@ int main(int argc, char* argv[]) {
                 training_batch_size, // Training dataloader batch size
                 num_workers,         // Number of self-play workers
                 nn_batch_size,       // Evaluator NN batch size
+                worker_batch_size,   // Pass worker batch size
                 0.001, 1e-4,         // Default LR and weight decay
                 sims_per_move,
                 save_dir, load_path

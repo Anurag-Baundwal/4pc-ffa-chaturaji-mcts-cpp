@@ -89,6 +89,7 @@ void train(
   int training_batch_size, // Renamed param
   int num_workers,        // NEW param
   int nn_batch_size,      // NEW param (evaluator batch size)
+  int worker_batch_size, 
   double learning_rate,
   double weight_decay,
   int simulations_per_move,
@@ -123,6 +124,7 @@ void train(
     simulations_per_move,
     250000,                 // Default buffer size
     nn_batch_size,          // Pass NN evaluator batch size
+    worker_batch_size,      // Pass worker batch size
     1.0,                    // Default c_puct
     5,                      // Default temp decay move
     0.3,                    // Default dirichlet alpha
@@ -132,7 +134,10 @@ void train(
   // --- Training Loop ---
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
       std::cout << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl;
-      std::cout << "Generating " << num_games_per_iteration << " self-play games (Workers: " << num_workers << ", NN Batch: " << nn_batch_size << ")..." << std::endl;
+      std::cout << "Generating " << num_games_per_iteration
+      << " self-play games (Workers: " << num_workers
+      << ", NN Batch: " << nn_batch_size
+      << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
       auto start_selfplay = std::chrono::high_resolution_clock::now();
 
       self_play_generator.clear_buffer(); // Clear buffer before generating new data

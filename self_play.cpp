@@ -20,6 +20,7 @@ SelfPlay::SelfPlay(
     int simulations_per_move,
     size_t buffer_size,
     int nn_batch_size,
+    int worker_batch_size,
     double c_puct,
     int temperature_decay_move,
     double dirichlet_alpha,
@@ -30,6 +31,7 @@ SelfPlay::SelfPlay(
     num_workers_(num_workers),
     simulations_per_move_(simulations_per_move),
     buffer_(buffer_size), // Initialize deque with max size
+    worker_batch_size_(worker_batch_size), 
     mcts_c_puct_(c_puct),
     temperature_decay_move_(temperature_decay_move),
     dirichlet_alpha_(dirichlet_alpha),
@@ -61,6 +63,99 @@ const ReplayBuffer& SelfPlay::get_buffer() const {
 void SelfPlay::clear_buffer() {
      std::lock_guard<std::mutex> lock(buffer_mutex); // Protect buffer access
     buffer_.clear();
+}
+
+// --- New Helper Function Implementation ---
+void SelfPlay::process_worker_batch(
+  std::vector<SimulationState>& pending_batch,
+  Player root_player,
+  bool& root_noise_applicable // Use reference to modify the flag
+) {
+  if (pending_batch.empty()) {
+      return;
+  }
+
+  size_t batch_size = pending_batch.size();
+  std::vector<std::future<EvaluationResult>> futures;
+  futures.reserve(batch_size);
+
+  // 1. Submit all requests without waiting
+  for (size_t i = 0; i < batch_size; ++i) {
+      MCTSNode* leaf_node = pending_batch[i].current_node;
+      if (!leaf_node) { // Safety check
+           std::cerr << "Error: Nullptr leaf_node found in pending worker batch." << std::endl;
+           // Need a way to handle this - maybe skip submission and create a dummy future?
+           // For now, let's assume valid nodes. A robust solution might need dummy results.
+           continue;
+      }
+      EvaluationRequest req;
+      // Generate tensor on CPU for potentially easier transfer if evaluator is on GPU
+      req.state_tensor = get_board_tensor_no_batch(leaf_node->get_board(), torch::kCPU);
+      // Submit and store the future
+      futures.push_back(evaluator_->submit_request(std::move(req)));
+      // Associate future with the request (implicitly done by index)
+      pending_batch[i].pending_request_id = req.request_id; // Store ID if needed for debugging/logging
+  }
+
+  // 2. Wait for and process results
+  for (size_t i = 0; i < batch_size; ++i) {
+      MCTSNode* leaf_node = pending_batch[i].current_node;
+      const std::vector<MCTSNode*>& path = pending_batch[i].path;
+
+      if (!leaf_node) continue; // Skip if node was invalid earlier
+
+      try {
+          // Wait for the i-th future to complete
+          EvaluationResult result = futures[i].get();
+
+          // Decrement pending visits (remove virtual loss effect)
+          leaf_node->decrement_pending_visits();
+
+          // Process policy
+          std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+
+          // Check if this evaluation was for the *original* root node search
+          // AND if noise hasn't been applied yet for this root.
+          bool is_root_node_eval = (leaf_node == path[0]); // path[0] is always the root for this search
+
+          // Expand the node (potentially with noise for the root)
+          if (!policy_probs.empty()) {
+              // Only apply noise if it's the root's first evaluation pass AND flag is true
+              if (is_root_node_eval && root_noise_applicable) {
+                  policy_probs = add_dirichlet_noise(policy_probs, dirichlet_alpha_, dirichlet_epsilon_);
+                  root_noise_applicable = false; // Noise applied, set flag for this move search
+                  // std::cout << "Applied root noise" << std::endl; // Debug
+              }
+              // Expand only if it's still a leaf (another thread/batch might have expanded it)
+              if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
+                   leaf_node->expand(policy_probs);
+              }
+          } else if (!leaf_node->get_board().is_game_over()) {
+               // Policy empty but not terminal? Log warning.
+                std::cerr << "Warning (Worker Batch): Empty policy from NN for non-terminal leaf." << std::endl;
+          }
+
+
+          // Backpropagate value (always from root player's perspective)
+          backpropagate_path(path, static_cast<double>(result.value));
+
+      } catch (const std::future_error& e) {
+          std::cerr << "Future error processing worker batch item " << i << ": " << e.what() << " Code: " << e.code() << std::endl;
+          // Clean up pending visit if future failed
+          if (leaf_node) {
+              leaf_node->decrement_pending_visits();
+          }
+      } catch (const std::exception& e) {
+          std::cerr << "Exception processing worker batch item " << i << ": " << e.what() << std::endl;
+          // Clean up pending visit
+           if (leaf_node) {
+              leaf_node->decrement_pending_visits();
+          }
+      }
+  } // End processing loop
+
+  // 3. Clear the processed batch
+  pending_batch.clear();
 }
 
 // --- Helper for adding Dirichlet Noise ---
@@ -159,139 +254,120 @@ void SelfPlay::generate_data(int num_games) {
 }
 
 
-// --- Worker Thread Function ---
+// --- Worker Thread Function (Revised - No Goto) ---
 void SelfPlay::run_game_simulation(
-    int worker_id,
-    std::atomic<int>& games_completed_counter,
-    int target_games,
-    std::vector<GameDataStep>& local_buffer // Output buffer for this worker
+  int worker_id,
+  std::atomic<int>& games_completed_counter,
+  int target_games,
+  std::vector<GameDataStep>& local_buffer
 ) {
-     // Seed thread-local RNG if necessary, otherwise use member rng_ (potential contention but simpler for now)
-     std::mt19937 thread_rng(std::random_device{}() + worker_id); // Example thread-local seeding
+  std::mt19937 thread_rng(std::random_device{}() + worker_id);
 
-    while (games_completed_counter < target_games) {
-        Board board;
-        // Temporary storage for the *current single game's* data
-        std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_data_temp;
-        int move_count = 0;
-        MCTSNode root(board); // Create root node for the game
+  while (games_completed_counter < target_games) {
+      Board board;
+      std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_data_temp;
+      int move_count = 0;
 
-        // --- MCTS Search Loop (within a single game) ---
-        while (!board.is_game_over()) {
-            // Check if target number of games already reached by other workers
-             if (games_completed_counter >= target_games) break;
+      // --- Game Loop ---
+      while (!board.is_game_over()) {
+          if (games_completed_counter >= target_games) break;
 
-            MCTSNode current_root(board); // Create root for the current move search
+          MCTSNode current_root(board); // Root for the current move search
+          Player root_player = board.get_current_player(); // Player at the root
 
-            // Apply Dirichlet noise *only* to the root's prior for the first evaluation
-            bool first_evaluation = true; // Flag to add noise only once per search
+          // --- Batching Structures for this move search ---
+          std::vector<SimulationState> pending_worker_batch;
+          pending_worker_batch.reserve(worker_batch_size_);
+          bool root_noise_applicable = true; // Flag to apply noise only once for this root
 
-            // Run simulations for the current move
-            for (int sim = 0; sim < simulations_per_move_; ++sim) {
-                SimulationState current_mcts_path;
-                current_mcts_path.current_node = &current_root;
-                current_mcts_path.path.push_back(current_mcts_path.current_node);
+          // --- Run MCTS Simulations for the current move ---
+          for (int sim = 0; sim < simulations_per_move_; ++sim) {
+              SimulationState current_mcts_path;
+              current_mcts_path.current_node = &current_root;
+              current_mcts_path.path.push_back(current_mcts_path.current_node);
 
-                // 1. Selection (with virtual loss)
-                while (!current_mcts_path.current_node->is_leaf()) {
-                    current_mcts_path.current_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
-                    if (!current_mcts_path.current_node) {
-                        std::cerr << "Worker " << worker_id << ": MCTS select_child returned nullptr from non-leaf." << std::endl;
-                        continue;
-                    }
-                    current_mcts_path.path.push_back(current_mcts_path.current_node);
-                }
+              bool selection_failed = false; // Flag to track selection issues
 
-                // 2. Check if leaf is terminal
-                 MCTSNode* leaf_node = current_mcts_path.current_node;
-                if (leaf_node->get_board().is_game_over()) {
-                    std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
-                    std::map<Player, double> reward_map = get_reward_map(final_scores);
-                    double value = reward_map.count(current_root.get_board().get_current_player()) ? reward_map.at(current_root.get_board().get_current_player()) : -2.0;
-                    backpropagate_path(current_mcts_path.path, value);
-                } else {
-                    // 3. Non-terminal leaf: Request evaluation
-                    leaf_node->increment_pending_visits();
+              // 1. Selection (with virtual loss)
+              while (!current_mcts_path.current_node->is_leaf()) {
+                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
 
-                    EvaluationRequest req;
-                    req.state_tensor = get_board_tensor_no_batch(leaf_node->get_board(), torch::kCPU); // Create on CPU
+                  if (next_node == nullptr || next_node == current_mcts_path.current_node) {
+                       std::cerr << "Worker " << worker_id << ": MCTS select_child failed or didn't advance. Node:"
+                                 << (next_node ? " same" : " null") << ". Sims left: " << (simulations_per_move_ - sim - 1) << std::endl;
+                       selection_failed = true; // Set the flag
+                       break; // Break out of the inner selection loop
+                  }
+                  current_mcts_path.current_node = next_node;
+                  current_mcts_path.path.push_back(current_mcts_path.current_node);
+              } // End Selection while loop
 
-                    // Submit request and get future
-                    std::future<EvaluationResult> result_future = evaluator_->submit_request(std::move(req));
+              // --- Check if selection failed ---
+              if (selection_failed) {
+                  // Skip the rest of the logic for *this simulation* and move to the next one.
+                  continue; // Go to the next iteration of the outer `for` loop (simulations)
+              }
 
-                    // 4. Wait for result (BLOCKING this simulation path)
-                    try {
-                        EvaluationResult result = result_future.get(); // Blocking wait
+              // --- If selection succeeded, proceed with leaf handling ---
+              MCTSNode* leaf_node = current_mcts_path.current_node;
 
-                        // 5. Process result
-                        leaf_node->decrement_pending_visits();
+              // 2. Check if leaf is terminal
+              if (leaf_node->get_board().is_game_over()) {
+                  std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
+                  std::map<Player, double> reward_map = get_reward_map(final_scores);
+                  double value = reward_map.count(root_player) ? reward_map.at(root_player) : -2.0;
+                  backpropagate_path(current_mcts_path.path, value);
+              } else {
+                  // 3. Non-terminal leaf: Add to pending batch
+                  leaf_node->increment_pending_visits();
+                  pending_worker_batch.push_back(std::move(current_mcts_path));
 
-                         // Process policy, potentially add noise only if it's the root's first eval
-                         std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+                  // 4. Check if batch is full
+                  if (pending_worker_batch.size() >= static_cast<size_t>(worker_batch_size_)) {
+                      process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
+                  }
+              }
+              // End leaf handling (no goto needed)
 
-                         // Expand the leaf node
-                        if (!policy_probs.empty()) { // Check if policy is valid
-                           // Apply noise only if it's the very first evaluation originating from the root node search
-                            if (leaf_node == &current_root && first_evaluation) {
-                                policy_probs = add_dirichlet_noise(policy_probs, dirichlet_alpha_, dirichlet_epsilon_);
-                                first_evaluation = false; // Don't add noise again in this search
-                            }
-                            leaf_node->expand(policy_probs);
-                         } else if (!leaf_node->get_board().is_game_over()) {
-                              // Policy empty but not terminal? Log warning.
-                              std::cerr << "Worker " << worker_id << ": Warning - Empty policy from NN for non-terminal leaf." << std::endl;
-                         }
+          } // End MCTS simulation loop for one move
 
+          // --- Process any remaining nodes in the batch ---
+          if (!pending_worker_batch.empty()) {
+              process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
+          }
 
-                        // Backpropagate value
-                        backpropagate_path(current_mcts_path.path, static_cast<double>(result.value));
+          // --- Choose Move (based on completed search) ---
+          double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
+          std::map<Move, double> final_policy = get_action_probs(current_root, current_temperature);
 
-                    } catch (const std::future_error& e) {
-                         std::cerr << "Worker " << worker_id << ": Future error waiting for result: " << e.what() << " Code: " << e.code() << std::endl;
-                         // Need to clean up the pending visit if the future failed
-                         leaf_node->decrement_pending_visits();
-                         // This simulation path failed, move to the next one.
-                    } catch (const std::exception& e) {
-                        std::cerr << "Worker " << worker_id << ": Exception processing evaluation result: " << e.what() << std::endl;
-                        leaf_node->decrement_pending_visits(); // Clean up pending visit
-                    }
-                } // End if non-terminal leaf
+          if (final_policy.empty()) {
+               if (!board.is_game_over()) {
+                   std::cerr << "Worker " << worker_id << ": Warning - No moves generated from MCTS search, but game not over. Ending game." << std::endl;
+               }
+              break; // End this game simulation
+          }
 
-            } // End MCTS simulation loop for one move
+          // Store state and policy
+          game_data_temp.emplace_back(board, final_policy, root_player);
 
-            // --- Choose Move ---
-            double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
-            std::map<Move, double> final_policy = get_action_probs(current_root, current_temperature);
+          // Choose and make move
+          Move chosen_move = choose_move(current_root, current_temperature);
+          board.make_move(chosen_move);
+          move_count++;
 
-            if (final_policy.empty()) {
-                if (!board.is_game_over()) {
-                     std::cerr << "Worker " << worker_id << ": Warning - No moves generated from MCTS search, but game not over. Ending game." << std::endl;
-                }
-                break; // End this game simulation
-            }
+      } // End game loop (while !board.is_game_over())
 
-            // Store state (copy board) and policy *before* making move
-            game_data_temp.emplace_back(board, final_policy, board.get_current_player());
+      // --- Game Finished ---
+      int completed_count = games_completed_counter.fetch_add(1) + 1;
+      std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games
+                << " (" << move_count << " moves)." << std::endl;
 
-            // Choose and make the move on the main game board
-            Move chosen_move = choose_move(current_root, current_temperature); // Use thread_rng here?
-            board.make_move(chosen_move);
-            move_count++;
+      // Process results into worker's local buffer
+      process_game_result(game_data_temp, board, local_buffer);
 
-        } // End game loop (while !board.is_game_over())
-
-        // --- Game Finished ---
-        int completed_count = games_completed_counter.fetch_add(1) + 1; // Increment and get new value
-        std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games
-                  << " (" << move_count << " moves)." << std::endl;
-
-        // Process results and add to the worker's local buffer
-        process_game_result(game_data_temp, board, local_buffer);
-
-    } // End worker loop (while games_completed_counter < target_games)
-     std::cout << "Worker " << worker_id << " exiting." << std::endl;
+  } // End worker loop (while games_completed_counter < target_games)
+  std::cout << "Worker " << worker_id << " exiting." << std::endl;
 }
-
 // --- Helper Functions
 
 std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double temperature) const {

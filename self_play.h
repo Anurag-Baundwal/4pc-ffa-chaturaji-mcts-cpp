@@ -37,6 +37,7 @@ public:
      * @param nn_batch_size The batch size used by the NN evaluator thread.
      * @param c_puct MCTS exploration constant.
      * @param temperature_decay_move Move number after which temperature becomes 0.
+     * @param worker_batch_size The batch size for each worker thread.
      * @param dirichlet_alpha The alpha parameter for Dirichlet noise.
      * @param dirichlet_epsilon The weight factor for Dirichlet noise.
      */
@@ -46,7 +47,8 @@ public:
         int num_workers = 4,
         int simulations_per_move = 100,
         size_t buffer_size = 250000,
-        int nn_batch_size = 4096, // Batch size for NN evaluations
+        int nn_batch_size = 4096,
+        int worker_batch_size = 16,
         double c_puct = 1.0,
         int temperature_decay_move = 5,
         double dirichlet_alpha = 0.3,
@@ -106,6 +108,21 @@ private:
       double epsilon
     );
 
+    /**
+     * @brief Processes a batch of pending leaf evaluations collected by a worker.
+     *        Submits individual requests to the evaluator, waits for results,
+     *        expands nodes, and backpropagates values.
+     *
+     * @param pending_batch Vector of simulation states waiting for evaluation.
+     * @param root_player The player whose turn it was at the root of the current MCTS search.
+     * @param apply_root_noise Reference to a boolean indicating if noise should be applied (will be set to false if applied).
+     */
+    void process_worker_batch(
+      std::vector<SimulationState>& pending_batch,
+      Player root_player,
+      bool& apply_root_noise // Pass flag by reference
+    );
+
     // Member Variables
     ChaturajiNN network_handle_; // Keep handle for potential future use? Or remove? Keep for now.
     torch::Device device_; // Keep track of intended device
@@ -114,6 +131,7 @@ private:
     ReplayBuffer buffer_; // Main shared buffer (filled after workers finish)
     double mcts_c_puct_;
     int temperature_decay_move_;
+    int worker_batch_size_; 
     double dirichlet_alpha_;
     double dirichlet_epsilon_;
 
