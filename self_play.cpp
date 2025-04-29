@@ -197,7 +197,7 @@ void SelfPlay::run_game_simulation(
                     current_mcts_path.current_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
                     if (!current_mcts_path.current_node) {
                         std::cerr << "Worker " << worker_id << ": MCTS select_child returned nullptr from non-leaf." << std::endl;
-                        goto next_simulation; // Skip this simulation
+                        continue;
                     }
                     current_mcts_path.path.push_back(current_mcts_path.current_node);
                 }
@@ -256,8 +256,6 @@ void SelfPlay::run_game_simulation(
                         leaf_node->decrement_pending_visits(); // Clean up pending visit
                     }
                 } // End if non-terminal leaf
-
-                next_simulation:; // Target for skipping simulation
 
             } // End MCTS simulation loop for one move
 

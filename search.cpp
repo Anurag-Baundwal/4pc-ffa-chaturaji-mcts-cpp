@@ -182,7 +182,7 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
                  std::cerr << "Warning: MCTS sync select_child failed or didn't advance." << std::endl;
                  // If it's null, the node was likely terminal but considered non-leaf? Error state.
                  // If it's the same node, could be an issue with PUCT calculation or tree state.
-                 goto next_sync_simulation; // Break out of this simulation attempt
+                 continue;
           }
           current_sim.current_node = next_node;
           current_sim.path.push_back(current_sim.current_node);
@@ -205,8 +205,6 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
               evaluate_and_expand_batch_sync(pending_evaluation, network, device);
           }
       }
-
-      next_sync_simulation:; // Label for goto target in case of selection error
 
   } // End of simulations loop
 
