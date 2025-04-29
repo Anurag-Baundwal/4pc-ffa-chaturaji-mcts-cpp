@@ -93,18 +93,17 @@ void evaluate_and_expand_batch_sync(
 
   // 1. Collect state tensors
   for (const auto& sim_state : pending_eval) {
-       // Use the non-batched tensor helper, ensuring it's on the correct device *before* stacking
        state_tensors.push_back(get_board_tensor_no_batch(sim_state.current_node->get_board(), device));
   }
 
   // 2. Stack tensors into a batch
-  torch::Tensor batch_tensor = torch::stack(state_tensors, 0); // Stack along dim 0 -> [B, C, H, W]
+  torch::Tensor batch_tensor = torch::stack(state_tensors, 0);
 
   // 3. Perform batched NN inference
   torch::Tensor policy_logits_batch, value_batch;
   {
       torch::NoGradGuard no_grad;
-      network->eval(); // Ensure eval mode
+      network->eval();
       std::tie(policy_logits_batch, value_batch) = network->forward(batch_tensor);
   }
 
@@ -114,24 +113,37 @@ void evaluate_and_expand_batch_sync(
 
   // 4. Process results for each simulation in the batch
   for (int i = 0; i < batch_size; ++i) {
-      const SimulationState& sim_state = pending_eval[i];
+      // --- Get references to the simulation state ---
+      // Make sure we are using references if we intend modifications, though here we mainly read path/node
+      const SimulationState& sim_state = pending_eval[i]; // Use const ref is sufficient here
       MCTSNode* leaf_node = sim_state.current_node;
-      const std::vector<MCTSNode*>& path = sim_state.path;
+      const std::vector<MCTSNode*>& path = sim_state.path; // Const ref to path
+
+      if (!leaf_node) { // Safety check
+          std::cerr << "Error: Nullptr leaf_node found in pending evaluation batch." << std::endl;
+          continue;
+      }
 
       // a. Process policy for this specific leaf
-      torch::Tensor policy_logits_single = policy_logits_batch[i]; // Shape [4096]
+      torch::Tensor policy_logits_single = policy_logits_batch[i];
       std::map<Move, double> policy_probs = process_policy(policy_logits_single, leaf_node->get_board());
 
-      // b. Expand the leaf node
-      if (!policy_probs.empty() && !leaf_node->get_board().is_game_over()) {
-           leaf_node->expand(policy_probs);
-      }
+      // b. Expand the leaf node ONLY IF it's still a leaf and not terminal
+      if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
+           // Check policy is not empty before expanding
+           if (!policy_probs.empty()) {
+                leaf_node->expand(policy_probs);
+           } else {
+                // Log if policy is unexpectedly empty for non-terminal leaf
+                std::cerr << "Warning (Sync MCTS): Empty policy from NN for non-terminal leaf node during batch processing." << std::endl;
+           }
+      } // else: Node is no longer a leaf (already expanded by another entry in this batch) or is terminal. Do not expand again.
 
       // c. Get the value for this leaf
       double value = value_batch[i].item<double>(); // Value is from root's perspective
 
-      // d. Backpropagate the value up this leaf's path
-      backpropagate_path(path, value); // Uses the same backpropagation helper
+      // d. Backpropagate the value up this leaf's path REGARDLESS of expansion success
+      backpropagate_path(path, value);
   }
 
   // Clear the processed batch
