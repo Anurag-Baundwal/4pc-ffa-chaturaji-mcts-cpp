@@ -4,6 +4,7 @@
 #include <cmath>    // For std::pow, std::exp, std::log
 #include <algorithm>// For std::max_element
 #include <stdexcept>// Include for runtime_error
+#include <vector>   // For storing noise samples
 
 namespace chaturaji_cpp {
 
@@ -14,7 +15,10 @@ SelfPlay::SelfPlay(
     size_t buffer_size,
     double c_puct,
     int temperature_decay_move,
-    int mcts_batch_size) : // Added batch_size parameter)
+    int mcts_batch_size,
+    double dirichlet_alpha,
+    double dirichlet_epsilon
+) :
     network_(network), // Copy/move the module handle
     device_(device),
     simulations_per_move_(simulations_per_move),
@@ -22,6 +26,8 @@ SelfPlay::SelfPlay(
     mcts_c_puct_(c_puct),
     temperature_decay_move_(temperature_decay_move),
     mcts_batch_size_(mcts_batch_size), // Store batch size
+    dirichlet_alpha_(dirichlet_alpha),
+    dirichlet_epsilon_(dirichlet_epsilon),
     rng_(std::random_device{}()) // Seed the random number generator
 {
     // Ensure the passed network is valid
@@ -39,6 +45,56 @@ void SelfPlay::clear_buffer() {
     buffer_.clear();
 }
 
+// --- NEW: Dirichlet Noise Helper ---
+std::map<Move, double> SelfPlay::add_dirichlet_noise(
+  const std::map<Move, double>& policy_probs,
+  double alpha,
+  double epsilon)
+{
+  if (policy_probs.empty() || alpha <= 0.0 || epsilon <= 0.0) {
+      // No noise needed if no moves, alpha invalid, or epsilon is zero
+      return policy_probs;
+  }
+
+  size_t num_actions = policy_probs.size();
+  std::vector<double> noise_samples(num_actions);
+  std::gamma_distribution<double> gamma_dist(alpha, 1.0); // Shape alpha, scale 1.0
+
+  // Generate samples from gamma distribution
+  double noise_sum = 0.0;
+  for (size_t i = 0; i < num_actions; ++i) {
+      noise_samples[i] = gamma_dist(rng_);
+      noise_sum += noise_samples[i];
+  }
+
+  // Normalize noise samples if sum is valid
+  if (noise_sum > 1e-9) { // Avoid division by zero
+      for (size_t i = 0; i < num_actions; ++i) {
+          noise_samples[i] /= noise_sum;
+      }
+  } else {
+      // If sum is too small (e.g., alpha was tiny), maybe distribute uniformly?
+      // Or just return original probs. Let's distribute uniformly for robustness.
+      double uniform_noise = 1.0 / static_cast<double>(num_actions);
+       for (size_t i = 0; i < num_actions; ++i) {
+          noise_samples[i] = uniform_noise;
+      }
+  }
+
+  // Combine original policy with noise
+  std::map<Move, double> noisy_policy;
+  size_t noise_idx = 0;
+  for (const auto& pair : policy_probs) {
+      const Move& move = pair.first;
+      double original_prob = pair.second;
+      double noise_val = noise_samples[noise_idx++];
+
+      noisy_policy[move] = (1.0 - epsilon) * original_prob + epsilon * noise_val;
+  }
+
+  return noisy_policy;
+}
+
 // --- Refactored generate_game ---
 void SelfPlay::generate_game() {
     Board board;
@@ -50,23 +106,55 @@ void SelfPlay::generate_game() {
 
     while (!board.is_game_over()) {
         // Optional: Print progress
-        // if (move_count % 5 == 0) { // Match python print frequency
+        // if (move_count % 5 == 0) { 
         //     std::cout << "Move " << move_count << " - Buffer size: " << buffer_.size() << std::endl;
         // }
 
         // Create MCTS root node for the current state
         MCTSNode root(board); // Create a copy of the board for the root
 
-        // --- Run Batched MCTS Simulations ---
-        // Uses the helper function from search.cpp
-        run_mcts_simulations_batch(
-          root,
-          network_,
-          simulations_per_move_,
-          device_,
-          mcts_c_puct_,
-          mcts_batch_size_ // Pass the stored batch size
-        );
+        // --- Step 1: Initial Network Evaluation for Root (if not terminal) ---
+        std::map<Move, double> noisy_prior_probs; // Will hold priors (potentially noisy) for expansion
+
+        if (!root.get_board().is_game_over()) { // Only evaluate if not terminal
+              torch::Tensor root_tensor = get_board_tensor_no_batch(root.get_board(), device_);
+              torch::Tensor policy_logits_root, value_root; // value_root not used here
+
+            { // NoGradGuard scope
+                torch::NoGradGuard no_grad;
+                std::tie(policy_logits_root, value_root) = network_->forward(root_tensor.unsqueeze(0));
+            }
+
+            // --- Step 2: Process Policy and Add Dirichlet Noise ---
+            std::map<Move, double> prior_probs = process_policy(policy_logits_root.squeeze(0), root.get_board());
+            noisy_prior_probs = add_dirichlet_noise(prior_probs, dirichlet_alpha_, dirichlet_epsilon_);
+
+            // --- Step 3: Expand Root Node using (potentially noisy) priors ---
+            if (!noisy_prior_probs.empty()) {
+                  root.expand(noisy_prior_probs);
+            } else {
+                  // No legal moves from root? Should mean game over.
+                  if (!root.get_board().is_game_over()) {
+                      std::cerr << "Warning: No prior probabilities generated for non-terminal root in self-play. Game might end unexpectedly." << std::endl;
+                  }
+                  // Expansion won't happen, MCTS loop below might do nothing.
+            }
+        }
+        // --- End Root Preparation ---
+
+        // --- Step 4: Run Batched MCTS Simulations ---
+        // Note: If root was terminal or had no moves, MCTS won't run effectively, which is okay.
+        // The MCTS simulation will use the priors stored in the root's children (which came from noisy_prior_probs).
+        if (!root.get_children().empty()) { // Only run if root was expanded
+            run_mcts_simulations_batch(
+              root,
+              network_,
+              simulations_per_move_,
+              device_,
+              mcts_c_puct_,
+              mcts_batch_size_ // Pass the stored batch size
+            );
+        }
         // --- End MCTS ---
 
         // Determine temperature

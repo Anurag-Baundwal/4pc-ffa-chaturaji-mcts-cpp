@@ -31,6 +31,9 @@ public:
      * @param buffer_size Maximum size of the replay buffer.
      * @param c_puct MCTS exploration constant.
      * @param temperature_decay_move Move number after which temperature becomes 0 for greedy selection.
+     * @param mcts_batch_size The batch size used during MCTS NN evaluations.
+     * @param dirichlet_alpha The alpha parameter for Dirichlet noise.
+     * @param dirichlet_epsilon The weight factor for Dirichlet noise (0=no noise, 1=only noise).
      */
     SelfPlay(
         ChaturajiNN network, // Pass the model module directly
@@ -39,7 +42,9 @@ public:
         size_t buffer_size = 250000,
         double c_puct = 1.0,
         int temperature_decay_move = 5,
-        int mcts_batch_size = 8 // <-- NEW parameter with default
+        int mcts_batch_size = 8,
+        double dirichlet_alpha = 0.3,
+        double dirichlet_epsilon = 0.25
     );
 
     /**
@@ -68,6 +73,8 @@ private:
     double mcts_c_puct_;
     int temperature_decay_move_;
     int mcts_batch_size_; // <-- Store batch size
+    double dirichlet_alpha_; 
+    double dirichlet_epsilon_; 
 
     // Random number generation for temperature-based move selection
     std::mt19937 rng_; // Mersenne Twister engine
@@ -97,6 +104,19 @@ private:
         std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,
         const Board& final_board
     );
+
+    /**
+     * @brief Applies Dirichlet noise to a policy probability map.
+     * @param policy_probs The original policy map (Move -> probability).
+     * @param alpha The concentration parameter for the Dirichlet distribution.
+     * @param epsilon The weighting factor for the noise (0=no noise, 1=only noise).
+     * @return A new map containing the noisy policy probabilities.
+     */
+    std::map<Move, double> add_dirichlet_noise(
+      const std::map<Move, double>& policy_probs,
+      double alpha,
+      double epsilon
+  );
 };
 
 } // namespace chaturaji_cpp
