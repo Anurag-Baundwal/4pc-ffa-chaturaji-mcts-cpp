@@ -122,7 +122,7 @@ void train(
     network, device,
     num_workers,            // Pass worker count
     simulations_per_move,
-    250000,                 // Default buffer size
+    1250000,                 // Default buffer size
     nn_batch_size,          // Pass NN evaluator batch size
     worker_batch_size,      // Pass worker batch size
     1.0,                    // Default c_puct

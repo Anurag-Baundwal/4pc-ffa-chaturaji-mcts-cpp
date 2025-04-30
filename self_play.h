@@ -46,7 +46,7 @@ public:
         torch::Device device,
         int num_workers = 4,
         int simulations_per_move = 100,
-        size_t buffer_size = 250000,
+        size_t buffer_size = 1250000,
         int nn_batch_size = 4096,
         int worker_batch_size = 16,
         double c_puct = 1.0,
