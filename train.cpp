@@ -126,7 +126,7 @@ void train(
     nn_batch_size,          // Pass NN evaluator batch size
     worker_batch_size,      // Pass worker batch size
     1.0,                    // Default c_puct
-    5,                      // Default temp decay move
+    25,                      // Default temp decay move
     0.3,                    // Default dirichlet alpha
     0.25                    // Default dirichlet epsilon
     );
