@@ -49,6 +49,27 @@ chcp 65001
 
 ---------------------------------------------------------------------
 
+To run a strength test between two models:
+
+Arguments:
+  --strength-test         : Enter strength test mode.
+  --new-model PATH        : Path to the 'newer' model file (required).
+  --old-model PATH        : Path to the 'older' model file (required).
+  --games N               : Number of games to play (default: 100).
+  --sims N                : Number of MCTS simulations per move (default: 250 - check main.cpp for current default).
+  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during the test (default: 64 - check main.cpp for current default).
+
+Details:
+  The test runs the specified number of games. In each game, the '--new-model'
+  player assignment cycles through RED, BLUE, YELLOW, GREEN. The '--old-model'
+  plays the other three colors. The final report shows the win rate for the
+  '--new-model' based on achieving the highest score.
+
+Example:
+.\bazel-bin\chaturaji_engine.exe --strength-test --new-model "C:\Users\dell3\Downloads\chaturaji_iter_26.pt" --old-model "C:\Users\dell3\Downloads\chaturaji_iter_1.pt" --games 100 --sims 256 --mcts-batch 64
+
+---------------------------------------------------------------------
+
 To run Zobrist hashing tests:
 
 Compile the test:

@@ -193,6 +193,7 @@ cc_binary(
         ":chaturaji_model",
         ":chaturaji_search",
         ":chaturaji_self_play", # Needed by Training
+        ":chaturaji_strength_test", # NEW: Strength test component
         ":chaturaji_training",
         ":chaturaji_types",
         ":chaturaji_utils",
@@ -213,4 +214,24 @@ cc_test(
         # Test doesn't need libtorch linked explicitly, just headers via types
     ],
     # linkstatic = True, # Consider removing if causing issues with DLLs/shared libs
+)
+
+# === NEW: Strength Test ===
+cc_library(
+    name = "chaturaji_strength_test",
+    srcs = ["strength_test.cpp"],
+    hdrs = ["strength_test.h"],
+    copts = select({
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
+    }),
+    deps = [
+        # Needs components used for running games synchronously
+        ":chaturaji_board",
+        ":chaturaji_model",
+        ":chaturaji_search",
+        ":chaturaji_types",
+        ":chaturaji_utils",
+        ":libtorch_configured",
+    ],
 )

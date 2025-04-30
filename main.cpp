@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <torch/torch.h>
 #include <chrono> // For timing
-#include <algorithm> // For std::find
+#include <algorithm> // For std::find 
 
 
 #include "board.h"
@@ -14,6 +14,7 @@
 #include "model.h"
 #include "search.h" // Includes sync MCTS function now
 #include "train.h" // Include train function header
+#include "strength_test.h" // Include strength test function header
 
 namespace fs = std::filesystem;
 
@@ -97,6 +98,41 @@ int main(int argc, char* argv[]) {
             );
         } catch (const std::exception& e) {
             std::cerr << "Training failed with exception: " << e.what() << std::endl;
+            return 1;
+        }
+
+    } else if (cmd_option_exists(argv, argv + argc, "--strength-test")) {
+        // --- Strength Test Mode ---
+        std::cout << "--- Entering Strength Test Mode ---" << std::endl;
+
+        std::string new_model_path = "";
+        std::string old_model_path = "";
+        int games = 100;
+        int sims = 250;
+        int mcts_batch = 64;
+        // Note: --new-player argument is ignored as player cycles automatically
+
+        std::string temp_str;
+        new_model_path = get_cmd_option(argv, argv + argc, "--new-model");
+        old_model_path = get_cmd_option(argv, argv + argc, "--old-model");
+        temp_str = get_cmd_option(argv, argv + argc, "--games");
+        if (!temp_str.empty()) games = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv + argc, "--sims");
+        if (!temp_str.empty()) sims = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv + argc, "--mcts-batch");
+        if (!temp_str.empty()) mcts_batch = std::stoi(temp_str);
+
+        if (new_model_path.empty() || old_model_path.empty()) {
+            std::cerr << "Error: Both --new-model and --old-model paths must be provided for strength test." << std::endl;
+            return 1;
+        }
+
+        try {
+            chaturaji_cpp::run_strength_test(
+                new_model_path, old_model_path, games, sims, mcts_batch
+            );
+        } catch (const std::exception& e) {
+            std::cerr << "Strength test failed with exception: " << e.what() << std::endl;
             return 1;
         }
 
