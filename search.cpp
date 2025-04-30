@@ -24,7 +24,12 @@ std::map<Move, double> process_policy(const torch::Tensor& policy_logits, const 
          // Potentially move to CPU here, or rely on caller convention
     }
      if (policy_logits.dim() != 1 || policy_logits.size(0) != 4096) {
-          throw std::runtime_error("process_policy expects logits shape [4096], got shape " + std::to_string(policy_logits.dim())); // Better error needed for sizes
+         // Simple workaround for shape check: Print sizes. A more robust solution would format the sizes vector.
+        std::string shape_str = "[";
+        for(int64_t s : policy_logits.sizes()) { shape_str += std::to_string(s) + ","; }
+        if (shape_str.length() > 1) shape_str.pop_back(); // Remove trailing comma
+        shape_str += "]";
+        throw std::runtime_error("process_policy expects logits shape [4096], got shape " + shape_str);
      }
 
 
@@ -93,11 +98,12 @@ void evaluate_and_expand_batch_sync(
 
   // 1. Collect state tensors
   for (const auto& sim_state : pending_eval) {
-       state_tensors.push_back(get_board_tensor_no_batch(sim_state.current_node->get_board(), device));
+       // Generate tensor on CPU for potentially easier transfer if evaluator is on GPU
+       state_tensors.push_back(get_board_tensor_no_batch(sim_state.current_node->get_board(), torch::kCPU));
   }
 
-  // 2. Stack tensors into a batch
-  torch::Tensor batch_tensor = torch::stack(state_tensors, 0);
+  // 2. Stack tensors into a batch and move to target device
+  torch::Tensor batch_tensor = torch::stack(state_tensors, 0).to(device);
 
   // 3. Perform batched NN inference
   torch::Tensor policy_logits_batch, value_batch;
@@ -114,7 +120,6 @@ void evaluate_and_expand_batch_sync(
   // 4. Process results for each simulation in the batch
   for (int i = 0; i < batch_size; ++i) {
       // --- Get references to the simulation state ---
-      // Make sure we are using references if we intend modifications, though here we mainly read path/node
       const SimulationState& sim_state = pending_eval[i]; // Use const ref is sufficient here
       MCTSNode* leaf_node = sim_state.current_node;
       const std::vector<MCTSNode*>& path = sim_state.path; // Const ref to path
@@ -160,6 +165,22 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
   double c_puct,
   int batch_size) // Internal batch size for sync eval
 {
+  // --- Handle edge case: 0 simulations ---
+  // If 0 simulations, we still might need the root policy for the fallback in get_best_move_mcts_sync.
+  // We trigger *one* evaluation of the root if it's not terminal and not yet expanded.
+  if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
+      std::vector<SimulationState> initial_eval;
+      SimulationState root_state;
+      root_state.current_node = &root;
+      root_state.path.push_back(&root);
+      initial_eval.push_back(std::move(root_state));
+      std::cout << "Info (Sync MCTS): simulations=0, evaluating root node directly for policy." << std::endl;
+      evaluate_and_expand_batch_sync(initial_eval, network, device);
+      return; // No further simulations needed
+  }
+  // --- End 0 simulations handling ---
+
+
   std::vector<SimulationState> pending_evaluation;
   pending_evaluation.reserve(batch_size);
 
@@ -179,14 +200,27 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
 
           // Simple check to prevent infinite loops if selection fails unexpectedly
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 std::cerr << "Warning: MCTS sync select_child failed or didn't advance." << std::endl;
-                 // If it's null, the node was likely terminal but considered non-leaf? Error state.
-                 // If it's the same node, could be an issue with PUCT calculation or tree state.
-                 continue;
+                 std::cerr << "Warning: MCTS sync select_child failed or didn't advance."
+                           << " Parent visits: " << current_sim.current_node->get_visit_count()
+                           << ", Children: " << current_sim.current_node->get_children().size()
+                           << ", IsGameOver: " << current_sim.current_node->get_board().is_game_over() << std::endl;
+                 // If selection failed, we cannot proceed down this path. Backpropagate terminal value if possible.
+                 if (current_sim.current_node->get_board().is_game_over()){
+                    std::map<Player, int> final_scores = current_sim.current_node->get_board().get_game_result();
+                    std::map<Player, double> reward_map = get_reward_map(final_scores);
+                    double value = reward_map.count(root_player) ? reward_map.at(root_player) : -2.0; // Use appropriate default
+                    backpropagate_path(current_sim.path, value);
+                 } else {
+                     // Non-terminal node where selection failed? This is odd.
+                     // Backpropagate a neutral value (0?) or error value? Let's use 0 for now.
+                     backpropagate_path(current_sim.path, 0.0);
+                 }
+
+                 goto next_simulation; // Use goto to jump to the start of the next simulation cleanly
           }
           current_sim.current_node = next_node;
           current_sim.path.push_back(current_sim.current_node);
-      }
+      } // End selection loop
 
 
       // 2. Check if leaf is terminal or needs evaluation
@@ -205,6 +239,8 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
               evaluate_and_expand_batch_sync(pending_evaluation, network, device);
           }
       }
+
+      next_simulation:; // Label for the goto statement
 
   } // End of simulations loop
 
@@ -232,34 +268,85 @@ std::optional<Move> get_best_move_mcts_sync( // Renamed from get_best_move_mcts
     MCTSNode root(board);
 
     // Run the SYNCHRONOUS simulations with internal batching
+    // This will now handle simulations=0 correctly by evaluating the root.
     run_mcts_simulations_sync(root, network, simulations, device, c_puct, mcts_batch_size); // Call the renamed sync version
 
-    // Choose the best move based on visit counts (same logic as before)
+    // --- Move Selection Logic ---
     const auto& children = root.get_children();
+
+    // Case 1: No children generated (root is terminal, or simulations=0 and no legal moves)
     if (children.empty()) {
-      std::cerr << "Warning: MCTS root (sync) has no children after simulations." << std::endl;
-      auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
-       if (!legal_moves.empty()) { return legal_moves[0]; } // Fallback?
-      return std::nullopt;
+        auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+        if (legal_moves.empty()) {
+            std::cerr << "Warning (get_best_move): Root has no children and no legal moves. Returning nullopt." << std::endl;
+            return std::nullopt; // No moves possible
+        } else {
+            // This should only happen if simulations=0 and the root eval failed or yielded empty policy
+            std::cerr << "Warning (get_best_move): Root has no children despite legal moves existing (Sims=" << simulations << "). Returning first legal move as fallback." << std::endl;
+            return legal_moves[0];
+        }
     }
 
-    auto best_child_it = std::max_element(children.begin(), children.end(),
+    // Case 2: Children exist, find best by visit count first
+    auto best_child_by_visit_it = std::max_element(children.begin(), children.end(),
         [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
             return a->get_visit_count() < b->get_visit_count();
         });
 
-    if (best_child_it != children.end() && (*best_child_it)->get_visit_count() > 0) {
-        return (*best_child_it)->get_move();
+    // If the best child has visits > 0, use standard MCTS result
+    if (best_child_by_visit_it != children.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
+         // Standard MCTS result based on visits
+        // Ensure the move is valid before returning
+        if((*best_child_by_visit_it)->get_move()) {
+             return (*best_child_by_visit_it)->get_move();
+        } else {
+            std::cerr << "Error (get_best_move): Best child by visit has no associated move." << std::endl;
+            // Fallback logic in case of error
+            if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
+            return std::nullopt;
+        }
     } else {
-        std::cerr << "Warning: Could not determine best move from MCTS sync visits (all 0?)." << std::endl;
-        if (!children.empty()) return children[0]->get_move(); // Fallback?
-        return std::nullopt;
+        // Fallback: All children have 0 visits. Use prior probability.
+        // This happens when simulations < mcts_batch_size or simulations=0.
+        // The root *should* have been expanded by run_mcts_simulations_sync if sims=0
+        // or by the final evaluate_and_expand_batch_sync call otherwise.
+        std::cerr << "Warning (get_best_move): All child nodes have zero visits (Sims=" << simulations << "). Using prior probabilities from policy." << std::endl;
+
+         auto best_child_by_prior_it = std::max_element(children.begin(), children.end(),
+             [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
+                 return a->get_prior() < b->get_prior(); // Compare priors
+             });
+
+         if (best_child_by_prior_it != children.end()) {
+              // Check if the move is valid before returning
+              if ((*best_child_by_prior_it)->get_move()) {
+                   return (*best_child_by_prior_it)->get_move();
+              } else {
+                   std::cerr << "Error (get_best_move): Best child by prior has no associated move." << std::endl;
+                   // Fallback
+                   if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
+                   return std::nullopt;
+              }
+         } else {
+             // This case (children exist but max_element fails) shouldn't normally happen
+             std::cerr << "Error (get_best_move): Could not determine best move from priors even though children exist." << std::endl;
+             // Fallback
+              if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
+             return std::nullopt;
+         }
     }
 }
 
 
 std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores) {
-    std::vector<std::pair<Player, int>> sorted_scores(final_scores.begin(), final_scores.end());
+    std::vector<std::pair<Player, int>> sorted_scores;
+    // Ensure all 4 players are considered, even if score is 0 or negative implicitly
+    for (int p_idx = 0; p_idx < 4; ++p_idx) {
+        Player p = static_cast<Player>(p_idx);
+        int score = final_scores.count(p) ? final_scores.at(p) : 0; // Default score 0 if not in map
+        sorted_scores.emplace_back(p, score);
+    }
+
 
     // Sort players by score descending
     std::sort(sorted_scores.begin(), sorted_scores.end(),
@@ -268,48 +355,14 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
               });
 
     std::map<Player, double> reward_map;
-    // Standard rewards: +1 (1st), 0 (2nd), -0.25 (3rd), -1 (4th) - adjust if needed
-    // If fewer than 4 players, ranks still apply (e.g., 1st=+1, 2nd=0, 3rd=-0.25)
+    // Standard rewards: +1 (1st), 0 (2nd), -0.25 (3rd), -1 (4th)
     double rewards[] = {+1.0, 0.0, -0.25, -1.0};
 
     // Assign rewards based on rank
     for (size_t i = 0; i < sorted_scores.size(); ++i) {
-         // Ensure we don't go out of bounds for the rewards array
-         if (i < sizeof(rewards)/sizeof(rewards[0])) {
-             reward_map[sorted_scores[i].first] = rewards[i];
-         } else {
-              // Should not happen with 4 players max, but good safety check
-             reward_map[sorted_scores[i].first] = rewards[sizeof(rewards)/sizeof(rewards[0])-1]; // Assign lowest reward
-         }
+         // Use index i directly as rank (0-based index matches reward index)
+         reward_map[sorted_scores[i].first] = rewards[i];
     }
-
-     // Ensure all original players have an entry, default to lowest reward if somehow missing
-     // (This handles cases where a player might have score 0 and not be in sorted_scores if map iteration order isn't guaranteed)
-     for(int p_idx = 0; p_idx < 4; ++p_idx) {
-         Player p = static_cast<Player>(p_idx);
-         if (final_scores.count(p) && reward_map.find(p) == reward_map.end()) {
-              // Find rank based on score compared to others
-              int score_p = final_scores.at(p);
-              size_t rank = 0;
-              for(const auto& sp : sorted_scores) {
-                   if (sp.second > score_p) {
-                        rank++;
-                   } else if (sp.second == score_p) {
-                        // Tie-breaking? For now, assign based on first occurrence in sort
-                        break;
-                   }
-              }
-              if (rank < sizeof(rewards)/sizeof(rewards[0])) {
-                  reward_map[p] = rewards[rank];
-              } else {
-                   reward_map[p] = rewards[sizeof(rewards)/sizeof(rewards[0])-1];
-              }
-         } else if (!final_scores.count(p)) {
-            // Player wasn't even in the final scores? Assign lowest reward.
-             reward_map[p] = rewards[sizeof(rewards)/sizeof(rewards[0])-1];
-         }
-     }
-
 
     return reward_map;
 }
