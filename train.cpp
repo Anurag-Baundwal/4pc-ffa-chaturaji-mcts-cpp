@@ -140,7 +140,7 @@ void train(
       << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
       auto start_selfplay = std::chrono::high_resolution_clock::now();
 
-      self_play_generator.clear_buffer(); // Clear buffer before generating new data
+      // self_play_generator.clear_buffer(); // Clear buffer before generating new data
       self_play_generator.generate_data(num_games_per_iteration); // Generate data using workers
 
       auto end_selfplay = std::chrono::high_resolution_clock::now();
