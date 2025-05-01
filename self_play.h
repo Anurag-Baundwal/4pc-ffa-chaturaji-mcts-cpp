@@ -33,7 +33,7 @@ public:
      * @param device The device (CPU/CUDA) for NN inference.
      * @param num_workers Number of parallel game simulation threads.
      * @param simulations_per_move Number of MCTS simulations for each move decision.
-     * @param buffer_size Maximum size of the replay buffer.
+     * @param max_buffer_size Maximum possible size of the replay buffer.
      * @param nn_batch_size The batch size used by the NN evaluator thread.
      * @param c_puct MCTS exploration constant.
      * @param temperature_decay_move Move number after which temperature becomes 0.
@@ -46,7 +46,7 @@ public:
         torch::Device device,
         int num_workers = 4,
         int simulations_per_move = 100,
-        size_t buffer_size = 1250000,
+        size_t max_buffer_size = 1250000,
         int nn_batch_size = 4096,
         int worker_batch_size = 16,
         double c_puct = 1.0,
@@ -128,6 +128,7 @@ private:
     torch::Device device_; // Keep track of intended device
     int num_workers_;
     int simulations_per_move_;
+    size_t max_buffer_size_;
     ReplayBuffer buffer_; // Main shared buffer (filled after workers finish)
     double mcts_c_puct_;
     int temperature_decay_move_;

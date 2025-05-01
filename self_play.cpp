@@ -18,7 +18,7 @@ SelfPlay::SelfPlay(
     torch::Device device,
     int num_workers,
     int simulations_per_move,
-    size_t buffer_size,
+    size_t max_buffer_size,
     int nn_batch_size,
     int worker_batch_size,
     double c_puct,
@@ -30,7 +30,8 @@ SelfPlay::SelfPlay(
     device_(device),
     num_workers_(num_workers),
     simulations_per_move_(simulations_per_move),
-    buffer_(buffer_size), // Initialize deque with max size
+    max_buffer_size_(max_buffer_size),
+    buffer_(),
     worker_batch_size_(worker_batch_size), 
     mcts_c_puct_(c_puct),
     temperature_decay_move_(temperature_decay_move),
@@ -241,7 +242,7 @@ void SelfPlay::generate_data(int num_games) {
         for (const auto& local_buf : local_buffers) {
             total_steps += local_buf.size();
             for (const auto& step : local_buf) {
-                if (buffer_.size() == buffer_.max_size()) {
+                if (buffer_.size() >= max_buffer_size_) {
                     buffer_.pop_front(); // Maintain buffer size limit
                 }
                 buffer_.push_back(step); // Add data step
