@@ -28,6 +28,8 @@ namespace fs = std::filesystem;
 
 namespace chaturaji_cpp {
 
+// Forward declaration for the helper function
+inline torch::Tensor policy_to_tensor_static(const std::map<Move, double>& policy_map);
 
 // --- ChaturajiDataset Implementation ---
 
