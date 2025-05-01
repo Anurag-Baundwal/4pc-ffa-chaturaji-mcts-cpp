@@ -39,24 +39,24 @@ int main(int argc, char* argv[]) {
         std::cout << "--- Starting Training Mode ---" << std::endl;
 
         // Get training parameters from command line or use defaults
-        int iterations = 50;
-        int games_per_iter = 50;
-        int epochs_per_iter = 25;
-        int training_batch_size = 4096; // Training DataLoader batch size
-        int sims_per_move = 50;
-        int num_workers = 4;          // NEW: Number of self-play workers
-        int nn_batch_size = 4096;     // NEW: Evaluator NN batch size
-        int worker_batch_size = 16; // <--- Default for worker batch
-        std::string save_dir = "/content/drive/MyDrive/models"; // Default from Colab
+        int iterations = 65536; 
+        int games_per_iter = 128;
+        int steps_per_iteration = 13;
+        int training_batch_size = 1024;
+        int sims_per_move = 128;
+        int num_workers = 12;   
+        int nn_batch_size = 1024;
+        int worker_batch_size = 48;
+        std::string save_dir = "/content/drive/MyDrive/models";
         std::string load_path = "";
 
         std::string temp_str;
         temp_str = get_cmd_option(argv, argv+argc, "--iterations");
         if (!temp_str.empty()) iterations = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--games");
+        temp_str = get_cmd_option(argv, argv+argc, "--games-per-iter");
         if (!temp_str.empty()) games_per_iter = std::stoi(temp_str);
-         temp_str = get_cmd_option(argv, argv+argc, "--epochs");
-        if (!temp_str.empty()) epochs_per_iter = std::stoi(temp_str);
+         temp_str = get_cmd_option(argv, argv+argc, "--steps-per-iter"); 
+        if (!temp_str.empty()) steps_per_iteration = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--train-batch"); // Argument for training data loader
         if (!temp_str.empty()) training_batch_size = std::stoi(temp_str);
          temp_str = get_cmd_option(argv, argv+argc, "--sims");
@@ -76,7 +76,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Parameters:" << std::endl;
         std::cout << "  Iterations:        " << iterations << std::endl;
         std::cout << "  Games/Iter:        " << games_per_iter << std::endl;
-        std::cout << "  Epochs/Iter:       " << epochs_per_iter << std::endl;
+        std::cout << "  Steps/Iter:        " << steps_per_iteration << std::endl; // <-- ADD: Print new parameter
         std::cout << "  Training Batch:    " << training_batch_size << std::endl;
         std::cout << "  Sims/Move:         " << sims_per_move << std::endl;
         std::cout << "  Workers:           " << num_workers << std::endl; // <-- Print new param
@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
 
         try {
             chaturaji_cpp::train(
-                iterations, games_per_iter, epochs_per_iter,
+                iterations, games_per_iter, steps_per_iteration,
                 training_batch_size, // Training dataloader batch size
                 num_workers,         // Number of self-play workers
                 nn_batch_size,       // Evaluator NN batch size

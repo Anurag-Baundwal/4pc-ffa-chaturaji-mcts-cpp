@@ -9,27 +9,24 @@ To train a model:
 
 Arguments:
   --train                 : Enter training mode.
-  --iterations N          : Number of training iterations (default: 50).
-  --games N               : Number of self-play games per iteration (default: 50).
-  --epochs N              : Number of training epochs per iteration (default: 25).
-  --train-batch N         : Batch size for the training data loader (default: 4096).
-  --workers N             : Number of parallel self-play worker threads (default: 4).
-  --nn-batch N            : Max batch size for the central NN evaluator thread (default: 4096).
-  --worker-batch N        : Batch size for MCTS leaf evaluations *within* a worker thread before waiting for results (default: 16).
-  --sims N                : Number of MCTS simulations per move during self-play (default: 50).
+  --iterations N          : Number of training iterations (default: 65563).
+  --games-per-iter N      : Number of self-play games per iteration (default: 128).
+  --steps-per-iter N      : Number of training steps (batches) per iteration (default: 13).
+  --train-batch N         : Batch size for the training steps (default: 1024).
+  --workers N             : Number of parallel self-play worker threads (default: 12).
+  --nn-batch N            : Max batch size for the central NN evaluator thread (default: 1024).
+  --worker-batch N        : Batch size for MCTS leaf evaluations *within* a worker thread before waiting for results (default: 48).
+  --sims N                : Number of MCTS simulations per move during self-play (default: 128).
   --save-dir PATH         : Directory to save model checkpoints (default: /content/drive/MyDrive/models).
   --load-model PATH       : Path to an existing model to continue training from (optional).
   --lr VALUE              : Learning rate (default: 0.001).
   --wd VALUE              : Weight decay (default: 1e-4).
 
 Example - Test Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games 50 --epochs 5 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10 
+bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games-per-iter 50 --steps-per-iter 10 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10 
 
 Example - Serious Training Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1000 --games 1000 --epochs 7 --train-batch 16384 --workers 8 --nn-batch 4096 --worker-batch 32 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 250 
-
-DLL Note:
-If training or inference doesn't start (especially outside Bazel run), copy all required DLLs from the LibTorch 'lib' directory (e.g., C:/Users/dell3/Downloads/libtorch-win-shared-with-deps-2.6.0+cpu/libtorch/lib) to the directory containing the chaturaji_engine.exe (e.g., bazel-bin).
+bazel run //:chaturaji_engine -c opt -- --train --iterations 65536 --games-per-iter 128 --steps-per-iter 13 --train-batch 16384 --workers 48 --nn-batch 1024 --worker-batch 48 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 512 
 
 ---------------------------------------------------------------------
 

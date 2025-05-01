@@ -37,16 +37,16 @@ private:
 
 // --- Training Function ---
 void train(
-    int num_iterations = 50,
-    int num_games_per_iteration = 50, 
-    int num_epochs_per_iteration = 25,
-    int training_batch_size = 4096, // Renamed for clarity
-    int num_workers = 4,            // NEW: Number of self-play workers
-    int nn_batch_size = 4096,       // NEW: Batch size for NN evaluator
-    int worker_batch_size = 16,
+    int num_iterations = 65536,
+    int num_games_per_iteration = 128, 
+    int num_steps_per_iteration = 13,
+    int training_batch_size = 1024, 
+    int num_workers = 12,            
+    int nn_batch_size = 1024,       
+    int worker_batch_size = 48,
     double learning_rate = 0.001,
     double weight_decay = 1e-4,
-    int simulations_per_move = 50,   
+    int simulations_per_move = 128,   
     const std::string& model_save_dir = "/content/drive/MyDrive/models", 
     const std::string& initial_model_path = "" // Path to load initial model from
 );

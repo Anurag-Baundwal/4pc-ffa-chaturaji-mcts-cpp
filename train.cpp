@@ -85,7 +85,7 @@ torch::Tensor ChaturajiDataset::policy_to_tensor(const std::map<Move, double>& p
 void train(
   int num_iterations,
   int num_games_per_iteration,
-  int num_epochs_per_iteration,
+  int num_steps_per_iteration,
   int training_batch_size, // Renamed param
   int num_workers,        // NEW param
   int nn_batch_size,      // NEW param (evaluator batch size)
@@ -130,88 +130,124 @@ void train(
     0.3,                    // Default dirichlet alpha
     0.25                    // Default dirichlet epsilon
     );
+  
+  // Mersenne Twister for random sampling indices from buffer
+  std::mt19937 buffer_rng(std::random_device{}());
 
   // --- Training Loop ---
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
       std::cout << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl;
+      
+      // --- Self-Play Phase ---
       std::cout << "Generating " << num_games_per_iteration
       << " self-play games (Workers: " << num_workers
       << ", NN Batch: " << nn_batch_size
       << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
       auto start_selfplay = std::chrono::high_resolution_clock::now();
-
-      // self_play_generator.clear_buffer(); // Clear buffer before generating new data
-      self_play_generator.generate_data(num_games_per_iteration); // Generate data using workers
-
+      self_play_generator.generate_data(num_games_per_iteration); // Generate data using workers and append to buffer
       auto end_selfplay = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> selfplay_duration = end_selfplay - start_selfplay;
       std::cout << "Self-play generation finished in " << selfplay_duration.count() << " seconds." << std::endl;
+      
       const ReplayBuffer& replay_buffer = self_play_generator.get_buffer();
-      if (replay_buffer.empty()) { std::cerr << "Warning: Replay buffer is empty after self-play generation. Skipping training for this iteration." << std::endl; continue; }
-      std::cout << "Buffer contains " << replay_buffer.size() << " data points." << std::endl;
+      size_t current_buffer_size = replay_buffer.size();
+
+      if (current_buffer_size < training_batch_size) { // Need at least one batch
+          std::cout << "Warning: Replay buffer size (" << current_buffer_size
+                    << ") is smaller than batch size (" << training_batch_size
+                    << "). Skipping training for this iteration." << std::endl;
+          continue;
+      }
       std::vector<GameDataStep> training_data(replay_buffer.begin(), replay_buffer.end());
 
 
-      // --- Prepare DataLoader ---
-      auto dataset = ChaturajiDataset(training_data)
-                         .map(torch::data::transforms::Stack<>());
+        // --- Training Phase ---
+        std::cout << "Starting training for " << num_steps_per_iteration << " steps (Batch Size: " << training_batch_size << ")..." << std::endl;
+        network->train(); // Set network to training mode
 
-      auto data_loader = torch::data::make_data_loader<torch::data::samplers::RandomSampler>(
-          std::move(dataset),
-          torch::data::DataLoaderOptions().batch_size(training_batch_size).workers(2) // Use training_batch_size here
-      );
+        double total_loss = 0.0;
+        double total_policy_loss = 0.0;
+        double total_value_loss = 0.0;
+        int steps_performed = 0;
+        auto train_start_time = std::chrono::high_resolution_clock::now();
 
+        for (int step = 0; step < num_steps_per_iteration; ++step) {
+            // --- Manual Batch Sampling ---
+            std::vector<torch::Tensor> state_batch_vec;
+            std::vector<torch::Tensor> target_batch_vec; // Combined policy+value
+            state_batch_vec.reserve(training_batch_size);
+            target_batch_vec.reserve(training_batch_size);
 
-      // --- Training Epochs ---
-      std::cout << "Starting training for " << num_epochs_per_iteration << " epochs (Training Batch Size: " << training_batch_size << ")..." << std::endl;
-      network->train(); // Set network to training mode
+            // Create distribution for sampling indices
+            std::uniform_int_distribution<size_t> dist(0, current_buffer_size - 1);
 
-      for (int epoch = 0; epoch < num_epochs_per_iteration; ++epoch) {
-          double total_loss = 0.0;
-          double total_policy_loss = 0.0;
-          double total_value_loss = 0.0;
-          int batch_count = 0;
-          auto epoch_start_time = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < training_batch_size; ++i) {
+                // Sample a random index
+                size_t sample_idx = dist(buffer_rng);
 
-          for (auto& batch : *data_loader) {
-              auto states = batch.data.to(device);
-              auto targets = batch.target.to(device);
-              auto policy_target = targets.slice(/*dim=*/1, /*start=*/0, /*end=*/4096);
-              auto value_target = targets.slice(/*dim=*/1, /*start=*/4096, /*end=*/4097);
+                // Access the data point from the deque
+                // NOTE: Accessing deque by index is O(N) in worst case, but
+                // O(1) on average if index is near beginning/end. For random access,
+                // copying to a vector first *might* be faster if buffer is huge and
+                // steps_per_iteration is large, but let's try direct access first.
+                // If performance is an issue here, profile and potentially copy to vector.
+                const GameDataStep& data_step = replay_buffer[sample_idx];
 
-              optimizer.zero_grad();
+                // Convert board, policy, value to tensors (on CPU initially is fine)
+                // Ensure board_to_tensor returns [C,H,W] directly or squeeze batch dim
+                torch::Tensor state_t = board_to_tensor(std::get<0>(data_step), torch::kCPU).squeeze(0);
+                torch::Tensor policy_t = policy_to_tensor_static(std::get<1>(data_step)); // Need a static version
+                torch::Tensor value_t = torch::tensor({std::get<3>(data_step)}, torch::kFloat32); // Shape [1]
+                torch::Tensor target_t = torch::cat({policy_t, value_t}, /*dim=*/0); // Shape [4097]
 
-              torch::Tensor policy_pred, value_pred;
-              std::tie(policy_pred, value_pred) = network->forward(states); // Standard forward pass
+                state_batch_vec.push_back(state_t);
+                target_batch_vec.push_back(target_t);
+            }
 
-              auto policy_log_softmax = torch::log_softmax(policy_pred, /*dim=*/1);
-              auto policy_loss = -torch::sum(policy_target * policy_log_softmax, /*dim=*/1).mean();
-              auto value_loss = torch::mse_loss(value_pred, value_target);
-              auto loss = policy_loss + value_loss;
+            // Stack the collected tensors into batches and move to device
+            auto states = torch::stack(state_batch_vec, 0).to(device);
+            auto targets = torch::stack(target_batch_vec, 0).to(device);
+            // --- End Manual Batch Sampling ---
 
-              loss.backward();
-              optimizer.step();
+            // --- Training Step ---
+            auto policy_target = targets.slice(/*dim=*/1, /*start=*/0, /*end=*/4096);
+            auto value_target = targets.slice(/*dim=*/1, /*start=*/4096, /*end=*/4097);
 
-              total_loss += loss.item<double>();
-              total_policy_loss += policy_loss.item<double>();
-              total_value_loss += value_loss.item<double>();
-              batch_count++;
-          } // End batch loop
+            optimizer.zero_grad();
 
-          auto epoch_end_time = std::chrono::high_resolution_clock::now();
-          std::chrono::duration<double> epoch_duration = epoch_end_time - epoch_start_time;
-          if (batch_count > 0) {
-               std::cout << "  Epoch " << (epoch + 1) << " finished in " << epoch_duration.count() << "s."
-                         << " Avg Loss: " << (total_loss / batch_count)
-                         << " (Policy: " << (total_policy_loss / batch_count)
-                         << ", Value: " << (total_value_loss / batch_count) << ")"
-                         << std::endl;
-           } else {
-                std::cout << "  Epoch " << (epoch + 1) << " had no batches." << std::endl;
-           }
+            torch::Tensor policy_pred, value_pred;
+            std::tie(policy_pred, value_pred) = network->forward(states); // Standard forward pass
 
-      } // End epoch loop
-       network->eval(); // Set back to eval mode for next self-play generation
+            auto policy_log_softmax = torch::log_softmax(policy_pred, /*dim=*/1);
+            auto policy_loss = -torch::sum(policy_target * policy_log_softmax, /*dim=*/1).mean();
+            auto value_loss = torch::mse_loss(value_pred, value_target);
+            auto loss = policy_loss + value_loss;
+
+            loss.backward();
+            optimizer.step();
+
+            total_loss += loss.item<double>();
+            total_policy_loss += policy_loss.item<double>();
+            total_value_loss += value_loss.item<double>();
+            steps_performed++;
+            // --- End Training Step ---
+
+        } // End step loop
+
+        auto train_end_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> train_duration = train_end_time - train_start_time;
+
+        if (steps_performed > 0) {
+             std::cout << "  Training finished " << steps_performed << " steps in " << train_duration.count() << "s."
+                       << " Avg Loss: " << (total_loss / steps_performed)
+                       << " (Policy: " << (total_policy_loss / steps_performed)
+                       << ", Value: " << (total_value_loss / steps_performed) << ")"
+                       << std::endl;
+        } else {
+             std::cout << "  No training steps performed." << std::endl;
+        }
+
+        network->eval(); // Set back to eval mode
 
       // --- Save Model Checkpoint ---
        if ((iteration + 1) % 1 == 0) { // Save every iteration for now
@@ -229,5 +265,17 @@ void train(
   std::cout << "\nTraining finished." << std::endl;
 }
 
+// Helper function
+inline torch::Tensor policy_to_tensor_static(const std::map<Move, double>& policy_map) {
+  torch::Tensor policy_tensor = torch::zeros({4096}, torch::kFloat32);
+  auto policy_accessor = policy_tensor.accessor<float, 1>();
+  for (const auto& pair : policy_map) {
+      int index = move_to_policy_index(pair.first);
+      if (index >= 0 && index < 4096) {
+          policy_accessor[index] = static_cast<float>(pair.second);
+      }
+  }
+  return policy_tensor;
+}
 
 } // namespace chaturaji_cpp
