@@ -160,7 +160,7 @@ void train(
                     << "). Skipping training for this iteration." << std::endl;
           continue;
       }
-      std::vector<GameDataStep> training_data(replay_buffer.begin(), replay_buffer.end());
+      std::vector<GameDataStep> training_data_vector(replay_buffer.begin(), replay_buffer.end());
 
 
         // --- Training Phase ---
@@ -181,19 +181,14 @@ void train(
             target_batch_vec.reserve(training_batch_size);
 
             // Create distribution for sampling indices
-            std::uniform_int_distribution<size_t> dist(0, current_buffer_size - 1);
+            std::uniform_int_distribution<size_t> dist(0, training_data_vector.size() - 1);
 
             for (int i = 0; i < training_batch_size; ++i) {
                 // Sample a random index
                 size_t sample_idx = dist(buffer_rng);
 
-                // Access the data point from the deque
-                // NOTE: Accessing deque by index is O(N) in worst case, but
-                // O(1) on average if index is near beginning/end. For random access,
-                // copying to a vector first *might* be faster if buffer is huge and
-                // steps_per_iteration is large, but let's try direct access first.
-                // If performance is an issue here, profile and potentially copy to vector.
-                const GameDataStep& data_step = replay_buffer[sample_idx];
+                // Access the data point from the vector (Efficient O(1) access)
+                const GameDataStep& data_step = training_data_vector[sample_idx];
 
                 // Convert board, policy, value to tensors (on CPU initially is fine)
                 // Ensure board_to_tensor returns [C,H,W] directly or squeeze batch dim
