@@ -316,7 +316,7 @@ void SelfPlay::run_game_simulation(
               if (leaf_node->get_board().is_game_over()) {
                   std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
                   std::map<Player, double> reward_map = get_reward_map(final_scores);
-                  double value = reward_map.count(root_player) ? reward_map.at(root_player) : -2.0;
+                  double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0;
                   backpropagate_path(current_mcts_path.path, value);
               } else {
                   // 3. Non-terminal leaf: Add to pending batch
@@ -457,7 +457,7 @@ void SelfPlay::process_game_result(
         const std::map<Move, double>& policy = std::get<1>(step_data);
         Player player_turn = std::get<2>(step_data);
 
-        double reward = reward_map.count(player_turn) ? reward_map.at(player_turn) : -2.0;
+        double reward = reward_map.count(player_turn) ? reward_map.at(player_turn) : -1.0;
 
         // Add the full tuple: Board state, Policy map, Player, Reward
         output_buffer.emplace_back(board_state, policy, player_turn, reward);

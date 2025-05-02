@@ -208,7 +208,7 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
                  if (current_sim.current_node->get_board().is_game_over()){
                     std::map<Player, int> final_scores = current_sim.current_node->get_board().get_game_result();
                     std::map<Player, double> reward_map = get_reward_map(final_scores);
-                    double value = reward_map.count(root_player) ? reward_map.at(root_player) : -2.0; // Use appropriate default
+                    double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0; // Use appropriate default
                     backpropagate_path(current_sim.path, value);
                  } else {
                      // Non-terminal node where selection failed? This is odd.
@@ -228,7 +228,7 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
           // Terminal node: Calculate reward and backpropagate immediately
           std::map<Player, int> final_scores = current_sim.current_node->get_board().get_game_result();
           std::map<Player, double> reward_map = get_reward_map(final_scores);
-          double value = reward_map.count(root_player) ? reward_map.at(root_player) : -2.0;
+          double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0;
           backpropagate_path(current_sim.path, value);
       } else {
           // Non-terminal leaf: Add to pending batch for synchronous evaluation
@@ -355,8 +355,7 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
               });
 
     std::map<Player, double> reward_map;
-    // Standard rewards: +1 (1st), 0 (2nd), -0.25 (3rd), -1 (4th)
-    double rewards[] = {+1.0, 0.0, -0.25, -1.0};
+    double rewards[] = {+1.0, -1.0, -1.0, -1.0};
 
     // Assign rewards based on rank
     for (size_t i = 0; i < sorted_scores.size(); ++i) {
