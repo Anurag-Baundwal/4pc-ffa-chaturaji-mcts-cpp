@@ -129,7 +129,7 @@ void train(
     worker_batch_size,      // Pass worker batch size
     1.0,                    // Default c_puct
     25,                      // Default temp decay move
-    0.3,                    // Default dirichlet alpha
+    0.45,                   // Default dirichlet alpha
     0.25                    // Default dirichlet epsilon
     );
   
