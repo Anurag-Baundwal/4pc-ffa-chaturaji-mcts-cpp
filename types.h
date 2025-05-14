@@ -20,7 +20,6 @@ enum class PieceType {
     BISHOP = 3,
     ROOK = 4,
     KING = 5,
-    DEAD_KING = 6
 };
 
 using ZobristKey = uint64_t;

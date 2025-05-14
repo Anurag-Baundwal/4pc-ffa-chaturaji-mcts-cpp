@@ -16,14 +16,16 @@ namespace chaturaji_cpp {
 
 namespace { // Anonymous namespace to limit scope to this file
 
-const int NUM_PIECE_TYPES_FOR_HASH = 6; // P, N, B, R, K, DK
+const int NUM_PIECE_TYPES_FOR_HASH = 5; // P, N, B, R, K
 const int NUM_PLAYERS = 4;
 const int NUM_SQUARES = 64;
-const int NUM_ALIVE_STATES = 2; // 0 = alive (is_dead=false), 1 = dead (is_dead=true)
 
 struct ZobristData {
-  std::array<std::array<std::array<std::array<ZobristKey, NUM_SQUARES>, NUM_ALIVE_STATES>, NUM_PLAYERS>, NUM_PIECE_TYPES_FOR_HASH> piece_keys;
+  std::array<std::array<std::array<ZobristKey, NUM_SQUARES>, NUM_PLAYERS>, NUM_PIECE_TYPES_FOR_HASH> piece_keys; //
   std::array<ZobristKey, NUM_PLAYERS> turn_keys;
+  std::array<ZobristKey, NUM_PLAYERS> active_player_status_keys;
+
+    
   // Add keys for castling, en passant if needed in a different game
 
   ZobristData() {
@@ -34,11 +36,9 @@ struct ZobristData {
     // Generate keys for each piece type, player, and square
     for (int type_idx = 0; type_idx < NUM_PIECE_TYPES_FOR_HASH; ++type_idx) {
       for (int player_idx = 0; player_idx < NUM_PLAYERS; ++player_idx) {
-        for (int alive_idx = 0; alive_idx < NUM_ALIVE_STATES; ++alive_idx) {
           for (int sq_idx = 0; sq_idx < NUM_SQUARES; ++sq_idx) {
-            piece_keys[type_idx][player_idx][alive_idx][sq_idx] = dist(rng);
+            piece_keys[type_idx][player_idx][sq_idx] = dist(rng);
           }
-        }
       }
     }
 
@@ -46,15 +46,20 @@ struct ZobristData {
     for (int player_idx = 0; player_idx < NUM_PLAYERS; ++player_idx) {
       turn_keys[player_idx] = dist(rng);
     }
+
+    // Generate keys for player active status
+    for (int player_idx = 0; player_idx < NUM_PLAYERS; ++player_idx) {
+        active_player_status_keys[player_idx] = dist(rng);
+    }
   }
 
   // Helper to get piece key safely, mapping PieceType to array index
-  ZobristKey get_piece_key(PieceType type, Player player, bool is_dead, int square_index) const {
+  ZobristKey get_piece_key(PieceType type, Player player, int square_index) const {
     if (square_index < 0 || square_index >= NUM_SQUARES) {
       throw std::out_of_range(
           "Square index out of range for Zobrist key lookup.");
     }
-    int type_idx = static_cast<int>(type) - 1; // Map PAWN(1)..DEAD_KING(6) to 0..5
+    int type_idx = static_cast<int>(type) - 1; // PieceType is PAWN=1 ... KING=5. Map to 0-4.
     if (type_idx < 0 || type_idx >= NUM_PIECE_TYPES_FOR_HASH) {
       throw std::out_of_range("PieceType out of range for Zobrist key lookup.");
     }
@@ -62,16 +67,7 @@ struct ZobristData {
     if (player_idx < 0 || player_idx >= NUM_PLAYERS) {
       throw std::out_of_range("Player out of range for Zobrist key lookup.");
     }
-    int alive_idx = is_dead ? 1 : 0; // Map bool to 0 or 1
-    
-    // Special handling for DEAD_KING: The implementation keeps its is_dead flag false,
-    // so we always use the 'alive' key index (0) for DEAD_KING pieces.
-    // Its unique state is distinguished by the PieceType index itself.
-    if (type == PieceType::DEAD_KING) {
-      alive_idx = 0;
-  }
-
-    return piece_keys[type_idx][player_idx][alive_idx][square_index]; 
+    return piece_keys[type_idx][player_idx][square_index]; 
     }
 
   // Helper to get turn key safely
@@ -81,6 +77,13 @@ struct ZobristData {
       throw std::out_of_range("Player out of range for Zobrist key lookup.");
     }
     return turn_keys[player_idx];
+  }
+  ZobristKey get_active_player_status_key(Player player) const {
+    int player_idx = static_cast<int>(player);
+    if (player_idx < 0 || player_idx >= NUM_PLAYERS) {
+        throw std::out_of_range("Player out of range for Zobrist active status key lookup.");
+    }
+    return active_player_status_keys[player_idx];
   }
 };
 
@@ -135,13 +138,18 @@ Board::Board()
           if (board_[r][c]) {
               const Piece& piece = *board_[r][c];
               int sq_idx = r * BOARD_SIZE + c;
-              current_hash_ ^= zobrist_data.get_piece_key(piece.piece_type, piece.player, piece.is_dead, sq_idx);
+              current_hash_ ^= zobrist_data.get_piece_key(piece.piece_type, piece.player, sq_idx);
           }
       }
   }
 
   // Hash current player's turn
   current_hash_ ^= zobrist_data.get_turn_key(current_player_);
+  
+  // Hash active player statuses
+  for (Player p : active_players_) { // active_players_ is initialized with all players
+      current_hash_ ^= zobrist_data.get_active_player_status_key(p);
+  }
   // --- END Initial Zobrist Hash Calculation ---
 
   // Add initial position hash to history
@@ -317,11 +325,17 @@ bool Board::is_valid_square(int row, int col) const {
 std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
   std::vector<Move> pseudo_legal_moves;
   pseudo_legal_moves.reserve(64); // Pre-allocate some space
+  // Ensure the player for whom moves are generated is active.
+  // This check should ideally be done by the caller (e.g., MCTS ensuring current_player_ is active).
+  // If we assume 'player' is current_player_ and current_player_ is always active if game not over.
+  if (!active_players_.count(player)) {
+      return pseudo_legal_moves; // Return empty if player is not active
+  }
 
   for (int r = 0; r < BOARD_SIZE; ++r) {
     for (int c = 0; c < BOARD_SIZE; ++c) {
       const auto &piece_opt = board_[r][c];
-      if (piece_opt && piece_opt->player == player && !piece_opt->is_dead) {
+      if (piece_opt && piece_opt->player == player) {
         switch (piece_opt->piece_type) {
         case PieceType::PAWN:
           get_pawn_moves(r, c, pseudo_legal_moves);
@@ -338,7 +352,6 @@ std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
         case PieceType::KING:
           get_king_moves(r, c, pseudo_legal_moves);
           break;
-        case PieceType::DEAD_KING: // Dead kings don't move
         default:
           break; // Should not happen for valid types
         }
@@ -589,12 +602,12 @@ std::optional<Piece> Board::make_move(const Move &move) {
 
   // --- ZOBRIST UPDATE: Part 1 (Remove pieces/turn from old state) ---
   // 1a. XOR out the moving piece from its original square. It's always alive here.
-  current_hash_ ^= zobrist_data.get_piece_key(moving_piece.piece_type, moving_piece.player, false, from_sq_idx);
+  current_hash_ ^= zobrist_data.get_piece_key(moving_piece.piece_type, moving_piece.player, from_sq_idx);
 
-  // 1b. XOR out the captured piece (if any) from the destination square. Use its actual dead status.
+  // 1b. XOR out the captured piece (if any) from the destination square.
   if (is_capture) {
       const Piece& captured = undo_info.captured_piece.value();
-      current_hash_ ^= zobrist_data.get_piece_key(captured.piece_type, captured.player, captured.is_dead, to_sq_idx);
+      current_hash_ ^= zobrist_data.get_piece_key(captured.piece_type, captured.player, to_sq_idx);
   }
   // 1c. Turn XOR is handled by advance_turn later.
   // --- END ZOBRIST UPDATE Part 1 ---
@@ -615,23 +628,18 @@ std::optional<Piece> Board::make_move(const Move &move) {
   // --- Handle Captures & Elimination ---
   if (is_capture) {
     const Piece &captured = undo_info.captured_piece.value();
-    // Check standard capture rules (cannot capture already dead pieces, except DEAD_KING for points?)
-    // Python code allowed capturing DEAD_KING for points. Let's assume that rule.
-    if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
       player_points_[moving_piece.player] += get_piece_capture_value(captured);
 
       // If a King was captured, eliminate the player
       if (captured.piece_type == PieceType::KING) {
-        // eliminate_player handles marking pieces dead/DEAD_KING and updating the hash accordingly
         eliminate_player(captured.player);
         undo_info.eliminated_player = captured.player;
       }
     }
-  }
 
   // --- ZOBRIST UPDATE: Part 2 (Add piece to new state) ---
   // 2a. XOR in the final piece (potentially promoted) at its destination square. It's always alive here.
-  current_hash_ ^= zobrist_data.get_piece_key(final_piece_at_to.piece_type, final_piece_at_to.player, false, to_sq_idx);
+  current_hash_ ^= zobrist_data.get_piece_key(final_piece_at_to.piece_type, final_piece_at_to.player, to_sq_idx);
   // 2b. Turn XOR is handled by advance_turn later.
   // --- END ZOBRIST UPDATE Part 2 ---
 
@@ -669,7 +677,6 @@ std::optional<Piece> Board::make_move(const Move &move) {
   // If a rule requires checking history *excluding* the current state, this logic would need adjustment.
   // Let's stick to the simpler "count occurrences in history including current state" interpretation for now.
   is_game_over(); // Call to update termination_reason_ if needed
-
   return undo_info.captured_piece;
 }
 
@@ -743,47 +750,18 @@ void Board::undo_move() {
   if (undo_info.eliminated_player) {
     Player player_to_revive = *undo_info.eliminated_player;
     active_players_.insert(player_to_revive); // Add player back to active set
+    // ZOBRIST: XOR in the active status key for the revived player
+    // current_hash_ ^= get_zobrist_data().get_active_player_status_key(player_to_revive);
 
-    // Iterate through the board to find pieces of the revived player
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-      for (int c = 0; c < BOARD_SIZE; ++c) {
-        auto &piece_opt = board_[r][c];
-        if (piece_opt && piece_opt->player == player_to_revive) {
-          // Check if this is the KING that was captured (only applies to undoing king capture moves)
-          // For resignation undo, captured_piece is nullopt, so this branch is skipped.
-          if (!is_resignation_undo && // Only check for king capture undo
-            undo_info.captured_piece &&
-            undo_info.captured_piece->player == player_to_revive &&
-            undo_info.captured_piece->piece_type == PieceType::KING &&
-            r == undo_info.move.to_loc.row && c == undo_info.move.to_loc.col &&
-            piece_opt->piece_type == PieceType::DEAD_KING) {
-            piece_opt->piece_type = PieceType::KING;
-            piece_opt->is_dead = false;
-          }
-          // Check if this is *any* piece marked dead during elimination (applies to both resign undo and king capture undo)
-          // Need to handle DEAD_KING specially - it should revert to KING only if it *was* the king on the 'to' square of a capture move.
-          // For resign undo, the king wasn't captured, it just became DEAD_KING in place (or stayed KING if not on board?).
-          // Let's simplify: Find the piece that *should* be the king and revert it.
-          else if (piece_opt->piece_type == PieceType::DEAD_KING) { // If it's the marker piece
-            piece_opt->piece_type = PieceType::KING; // Revert to KING
-            piece_opt->is_dead = false; // Ensure alive
-          }
-          // Re-activate other pieces that were just marked dead
-          else if (piece_opt->is_dead) // Check is_dead flag for non-kings
-            piece_opt->is_dead = false;
-        }
-      }
-    }
     // No explicit hash changes needed here; the hash restoration below handles it.
   }
 
   // --- 4. Reverse Point Changes (Only for regular (non-resignation) moves) ---
   if (!is_resignation_undo && undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
-    if (!captured.is_dead || captured.piece_type == PieceType::DEAD_KING) {
-      // Subtract points from the player who made the original move
-      player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
-    }
+
+    // Subtract points from the player who made the original move
+    player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
   }
 
   // --- 6. Clear Termination Reason ---
@@ -896,12 +874,13 @@ bool Board::is_game_over() const {
 Board::PlayerPointMap Board::get_game_result() const {
   PlayerPointMap results = player_points_; // Start with current capture points
 
-  // --- Count Dead Kings on the board ---
-  int num_dead_kings = 0;
+  // --- Count Kings of INACTIVE players ---
+  int num_kings_of_inactive_players = 0;
   for (const auto &row : board_) {
     for (const auto &piece_opt : row) {
-      if (piece_opt && piece_opt->piece_type == PieceType::DEAD_KING) {
-        num_dead_kings++;
+      if (piece_opt && piece_opt->piece_type == PieceType::KING && 
+      !active_players_.count(piece_opt->player)) { // Check if King's owner is inactive
+        num_kings_of_inactive_players++;
       }
     }
   }
@@ -917,15 +896,16 @@ Board::PlayerPointMap Board::get_game_result() const {
     if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
       if (num_active_players >
           0) { // Should always be > 0 for a draw, but safety check
-        // Calculate Dead King bonus per active player for draws
+        // Calculate how many points each active player gets based on the number of kings of inactive players
+        // Basically, kings are worth 3 points each, and if the player they belong to is inactive, other players get those points at the end of the game
         int dead_king_bonus_per_player = 0;
-        if (num_dead_kings > 0) {
+        if (num_kings_of_inactive_players > 0) {
           // Use floating-point division before ceiling
           dead_king_bonus_per_player = static_cast<int>(
-              std::ceil(3.0 * num_dead_kings / num_active_players));
+              std::ceil(3.0 * num_kings_of_inactive_players / num_active_players));
         }
 
-        // Apply base draw bonus (+2) and dead king bonus to each active player
+        // Apply base draw bonus (+2) and inactive player king bonus to each active player
         for (Player p : active_players_) {
           results[p] += 2;                          // Base +2 bonus for draw
           results[p] += dead_king_bonus_per_player; // Add dead king bonus
@@ -937,11 +917,10 @@ Board::PlayerPointMap Board::get_game_result() const {
       // This condition implies num_active_players should be 1 (or 0 if somehow
       // everyone resigns simultaneously?) We apply the bonus only if there's
       // exactly one winner left.
-      if (num_active_players == 1 && num_dead_kings > 0) {
-        Player winner =
-            *active_players_.begin(); // Get the single remaining player
+      if (num_active_players == 1 && num_kings_of_inactive_players > 0) {
+        Player winner = *active_players_.begin(); // Get the single remaining player
         int dead_king_bonus =
-            3 * num_dead_kings; // Simpler calculation for 1 active player
+            3 * num_kings_of_inactive_players; // Simpler calculation for 1 active player
         results[winner] += dead_king_bonus;
       }
       // No base bonus for elimination, only the potential dead king bonus for
@@ -990,44 +969,35 @@ std::optional<Player> Board::get_winner() const {
 
 // --- Evaluation ---
 
-int Board::get_piece_value(const Piece &piece) const {
-  // Values from Python code's evaluate function
+int Board::get_piece_value(const Piece& piece) const {
   switch (piece.piece_type) {
-  case PieceType::PAWN:
-    return 1;
-  case PieceType::KNIGHT:
-    return 3;
-  case PieceType::BISHOP:
-    return 5;
-  case PieceType::ROOK:
-    return 5;
-  case PieceType::KING:
-    return 3; // Value used in evaluation
-  case PieceType::DEAD_KING:
-    return 0; // Dead King has no intrinsic value in eval
-  default:
-    return 0;
+  case PieceType::PAWN: return 1;
+  case PieceType::KNIGHT: return 3;
+  case PieceType::BISHOP: return 5;
+  case PieceType::ROOK: return 5;
+  case PieceType::KING: return 3; 
+  default: return 0;
   }
 }
 
-int Board::get_piece_capture_value(const Piece &piece) const {
-  // Values from Python code's get_piece_capture_value function
-  switch (piece.piece_type) {
-  case PieceType::PAWN:
-    return 1;
-  case PieceType::KNIGHT:
-    return 3;
-  case PieceType::BISHOP:
-    return 5;
-  case PieceType::ROOK:
-    return 5;
-  case PieceType::KING:
-    return 3; // Value from Python
-  case PieceType::DEAD_KING:
-    return 3; // Value from Python
-  default:
-    return 0;
-  }
+int Board::get_piece_capture_value(const Piece& piece) const {
+    // Check if the captured piece's owner is active
+    if (!active_players_.count(piece.player)) {
+        // Owner is inactive
+        if (piece.piece_type == PieceType::KING) {
+            return 3; // Capturing a King of an inactive player (simulates old DEAD_KING capture value)
+        }
+        return 0; // Other pieces of inactive players are worth 0
+    }
+    // Owner is active, use standard values
+    switch (piece.piece_type) {
+        case PieceType::PAWN: return 1;
+        case PieceType::KNIGHT: return 3;
+        case PieceType::BISHOP: return 5;
+        case PieceType::ROOK: return 5;
+        case PieceType::KING: return 3; // Capturing an active King
+        default: return 0;
+    }
 }
 
 Board::PlayerPointMap Board::evaluate() const {
@@ -1048,12 +1018,12 @@ Board::PlayerPointMap Board::evaluate() const {
         const Piece &piece = *piece_opt;
         Player player = piece.player;
 
-        // Only evaluate active, non-dead pieces for material/positional value
-        if (!piece.is_dead && active_players_.count(player)) {
+        // Only evaluate piece of active players for material/positional value
+        if (active_players_.count(player)) {
           // Base material score
           scores[player] += get_piece_value(piece);
 
-          // Penalties/Bonuses from Python eval
+          // Penalties/Bonuses 
           if (piece.piece_type == PieceType::KNIGHT ||
               piece.piece_type == PieceType::BISHOP) {
             if (((player == Player::RED && r == 7) ||
@@ -1074,13 +1044,11 @@ Board::PlayerPointMap Board::evaluate() const {
               if (is_valid_square(nr, nc)) {
                 const auto &adjacent_opt = board_[nr][nc];
                 if (adjacent_opt) {
-                  if (adjacent_opt->player == player) {
-                    scores[player] +=
-                        (adjacent_opt->piece_type == PieceType::PAWN ? 0.2
-                                                                     : 0.05);
+                  if (adjacent_opt->player == player) { // Friendly piece
+                    scores[player] += (adjacent_opt->piece_type == PieceType::PAWN ? 0.2 : 0.05);
                   } else { // Opponent piece
                     if (!active_players_.count(
-                            adjacent_opt->player)) { // Dead opponent
+                            adjacent_opt->player)) { // Piece of inactive player
                       scores[player] += 0.15;        // Shelter bonus
                     } else {                         // Active opponent
                       scores[player] -= 0.15;        // Danger penalty
@@ -1204,34 +1172,9 @@ Board::PlayerPointMap Board::evaluate() const {
 void Board::eliminate_player(Player player) {
   if (active_players_.count(player)) {
     const auto& zobrist_data = get_zobrist_data();
-
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-      for (int c = 0; c < BOARD_SIZE; ++c) {
-        auto &piece_opt = board_[r][c];
-        // Only process pieces belonging to the eliminated player that are currently alive
-        if (piece_opt && piece_opt->player == player && !piece_opt->is_dead) {
-            int sq_idx = r * BOARD_SIZE + c;
-            PieceType original_type = piece_opt->piece_type;
-
-            // --- Hash out the OLD state (always is_dead=false before elimination) ---
-            current_hash_ ^= zobrist_data.get_piece_key(original_type, player, false, sq_idx);
-
-            if (original_type == PieceType::KING) {
-                // King transforms to DEAD_KING
-                piece_opt->piece_type = PieceType::DEAD_KING;
-                // Keep piece_opt->is_dead = false; (as per DEAD_KING convention)
-                // --- Hash in the NEW state (DEAD_KING, is_dead=false convention) ---
-                current_hash_ ^= zobrist_data.get_piece_key(PieceType::DEAD_KING, player, false, sq_idx);
-            } else {
-                // Other pieces are marked dead
-                piece_opt->is_dead = true;
-                // --- Hash in the NEW state (Original Type, is_dead=true) ---
-                current_hash_ ^= zobrist_data.get_piece_key(original_type, player, true, sq_idx);
-            }
-        }
-      }
-    }
-    active_players_.erase(player); // Remove from active set
+    // Zobrist: XOR out the active status key for the player being eliminated
+    current_hash_ ^= zobrist_data.get_active_player_status_key(player);
+    active_players_.erase(player); 
     // Note: Turn hash update is handled by advance_turn if called (e.g., in resign)
   }
 }
@@ -1255,25 +1198,20 @@ void Board::resign() {
     // resign_undo_info.original_moving_piece_type = PieceType::PAWN; // Default
 
     // --- Now perform the elimination ---
-    eliminate_player(resigning_player); // Handles piece hash updates
+    eliminate_player(resigning_player);
 
     // Check if the game ends *immediately* due to this resignation
     // (i.e., only 1 player remains active AFTER elimination)
     bool game_just_ended = (active_players_.size() <= 1);
 
     if (!game_just_ended) {
-        // Game continues, advance turn (handles turn hash update)
-        advance_turn();
+        advance_turn(); // handles turn hash update
     } else {
-        // Game ended. Need to XOR out the resigning player's turn key,
-        // because advance_turn won't be called or won't XOR in a new player.
-        // eliminate_player does *not* handle the turn key.
+        // Game ended. XOR out the resigning player's turn key.
         const auto& zobrist_data = get_zobrist_data();
         current_hash_ ^= zobrist_data.get_turn_key(resigning_player);
 
-        // Set termination reason
-        // Call is_game_over() to ensure reason is set correctly based on active_players count
-        is_game_over();
+        is_game_over(); // Sets termination reason
     }
     // --- Push the resignation-specific undo info ---
     undo_stack_.push_back(resign_undo_info);
@@ -1340,8 +1278,7 @@ void Board::print_board() const {
 
   // Print board rows
   for (int r = 0; r < BOARD_SIZE; ++r) {
-    // Print row number (0-7) followed by a space - Matching python's
-    // `print(row, end=" ")`
+    // Print row number (0-7) followed by a space
     std::cout << 8 - r << " ";
     for (int c = 0; c < BOARD_SIZE; ++c) {
       const auto &piece_opt = board_[r][c];
@@ -1349,119 +1286,43 @@ void Board::print_board() const {
 
       if (piece_opt) {
         const Piece &p = *piece_opt;
-        bool use_dead_symbol =
-            p.is_dead || p.piece_type == PieceType::DEAD_KING;
+        bool display_as_inactive = !active_players_.count(p.player);
 
-        if (use_dead_symbol) {
-          // Select dead symbol (no color)
-          switch (p.piece_type) {
-          case PieceType::PAWN:
-            symbol = dead_pawn;
-            break;
-          case PieceType::KNIGHT:
-            symbol = dead_knight;
-            break;
-          case PieceType::BISHOP:
-            symbol = dead_bishop;
-            break;
-          case PieceType::ROOK:
-            symbol = dead_rook;
-            break;
-          case PieceType::KING:
-            symbol = dead_king;
-            break;
-          case PieceType::DEAD_KING:
-            symbol = dead_king;
-            break;
-          }
-        } else {
-          // Select colored symbol for active pieces
-          switch (p.player) {
-          case Player::RED:
-            switch (p.piece_type) {
-            case PieceType::PAWN:
-              symbol = red_pawn;
-              break;
-            case PieceType::KNIGHT:
-              symbol = red_knight;
-              break;
-            case PieceType::BISHOP:
-              symbol = red_bishop;
-              break;
-            case PieceType::ROOK:
-              symbol = red_rook;
-              break;
-            case PieceType::KING:
-              symbol = red_king;
-              break;
-            }
-            break;
-          case Player::BLUE:
-            switch (p.piece_type) {
-            case PieceType::PAWN:
-              symbol = blue_pawn;
-              break;
-            case PieceType::KNIGHT:
-              symbol = blue_knight;
-              break;
-            case PieceType::BISHOP:
-              symbol = blue_bishop;
-              break;
-            case PieceType::ROOK:
-              symbol = blue_rook;
-              break;
-            case PieceType::KING:
-              symbol = blue_king;
-              break;
-            }
-            break;
-          case Player::YELLOW:
-            switch (p.piece_type) {
-            case PieceType::PAWN:
-              symbol = yellow_pawn;
-              break;
-            case PieceType::KNIGHT:
-              symbol = yellow_knight;
-              break;
-            case PieceType::BISHOP:
-              symbol = yellow_bishop;
-              break;
-            case PieceType::ROOK:
-              symbol = yellow_rook;
-              break;
-            case PieceType::KING:
-              symbol = yellow_king;
-              break;
-            }
-            break;
-          case Player::GREEN:
-            switch (p.piece_type) {
-            case PieceType::PAWN:
-              symbol = green_pawn;
-              break;
-            case PieceType::KNIGHT:
-              symbol = green_knight;
-              break;
-            case PieceType::BISHOP:
-              symbol = green_bishop;
-              break;
-            case PieceType::ROOK:
-              symbol = green_rook;
-              break;
-            case PieceType::KING:
-              symbol = green_king;
-              break;
-            }
-            break;
-          }
+        // Use uncolored symbols for pieces of inactive players
+        const std::string& current_pawn_sym = display_as_inactive ? UNICODE_PAWN : (
+            p.player == Player::RED ? red_pawn : 
+            p.player == Player::BLUE ? blue_pawn :
+            p.player == Player::YELLOW ? yellow_pawn : green_pawn);
+        // ... similar logic for other piece types ...
+        const std::string& current_knight_sym = display_as_inactive ? UNICODE_KNIGHT : (
+            p.player == Player::RED ? red_knight :
+            p.player == Player::BLUE ? blue_knight :
+            p.player == Player::YELLOW ? yellow_knight : green_knight);
+        const std::string& current_bishop_sym = display_as_inactive ? UNICODE_BISHOP : (
+            p.player == Player::RED ? red_bishop :
+            p.player == Player::BLUE ? blue_bishop :
+            p.player == Player::YELLOW ? yellow_bishop : green_bishop);
+        const std::string& current_rook_sym = display_as_inactive ? UNICODE_ROOK : (
+            p.player == Player::RED ? red_rook :
+            p.player == Player::BLUE ? blue_rook :
+            p.player == Player::YELLOW ? yellow_rook : green_rook);
+        const std::string& current_king_sym = display_as_inactive ? UNICODE_KING : (
+            p.player == Player::RED ? red_king :
+            p.player == Player::BLUE ? blue_king :
+            p.player == Player::YELLOW ? yellow_king : green_king);
+
+        switch (p.piece_type) {
+          case PieceType::PAWN:   symbol = current_pawn_sym;   break;
+          case PieceType::KNIGHT: symbol = current_knight_sym; break;
+          case PieceType::BISHOP: symbol = current_bishop_sym; break;
+          case PieceType::ROOK:   symbol = current_rook_sym;   break;
+          case PieceType::KING:   symbol = current_king_sym;   break;
+          // No DEAD_KING
         }
       }
-      // Print the square content with brackets - Matching python's
-      // `print(f"[{symbol}]", end="")`
       std::cout << "[" << symbol << "]";
     }
-    std::cout << std::endl; // Newline after each row
-                            // Removed the horizontal separator line here
+    std::cout << std::endl; 
   }
   // Removed the bottom coordinate line and separator line
 
@@ -1528,8 +1389,7 @@ void Board::print_board() const {
   }
 }
 
-Board::PositionKey Board::get_position_key() const {  
-    // Simply return the pre-calculated and updated Zobrist hash
+Board::PositionKey Board::get_position_key() const {
     return current_hash_;
 }
 

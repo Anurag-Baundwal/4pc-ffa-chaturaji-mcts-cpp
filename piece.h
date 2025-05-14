@@ -9,13 +9,12 @@ class Piece {
 public:
     Player player;
     PieceType piece_type;
-    bool is_dead;
 
     // Default constructor (maybe needed for optional/array initialization)
-    Piece() : player(Player::RED), piece_type(PieceType::PAWN), is_dead(true) {} // Default to something invalid/dead
+    Piece() : player(Player::RED), piece_type(PieceType::PAWN) {} // Default to a Red Pawn
 
     // Parameterized constructor
-    Piece(Player p, PieceType pt) : player(p), piece_type(pt), is_dead(false) {}
+    Piece(Player p, PieceType pt) : player(p), piece_type(pt) {}
 
     // Copy constructor (default should be fine)
     Piece(const Piece& other) = default;
@@ -32,8 +31,7 @@ public:
      // Equality operator (optional, but can be useful)
     bool operator==(const Piece& other) const {
         return player == other.player &&
-               piece_type == other.piece_type &&
-               is_dead == other.is_dead;
+               piece_type == other.piece_type;
     }
     
     // Inequality operator
