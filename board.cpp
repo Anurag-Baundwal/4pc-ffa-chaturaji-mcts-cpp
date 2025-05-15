@@ -1012,21 +1012,9 @@ void Board::eliminate_player(Player player) {
     // Zobrist: XOR out the active status key for the player being eliminated
     current_hash_ ^= zobrist_data.get_active_player_status_key(player);
     active_players_.erase(player); // Remove from active set
-
-    // Clear all bitboards for the eliminated player
-    int p_idx = static_cast<int>(player);
-    for (int pt_bb_idx = 0; pt_bb_idx < NUM_BB_PIECE_TYPES; ++pt_bb_idx) {
-        // Remove this player's pieces of this type from the global occupied bitboard
-        occupied_bitboard_ &= ~piece_bitboards_[p_idx][pt_bb_idx]; 
-        piece_bitboards_[p_idx][pt_bb_idx] = 0ULL; // Clear player's specific piece type bitboard
-    }
-    player_bitboards_[p_idx] = 0ULL; // Clear player's all-pieces bitboard
     
     // Note: Zobrist keys for the actual pieces of the eliminated player are NOT XORed out here.
-    // They are effectively "off" the active game state by being on zeroed bitboards and their player inactive.
-    // If make_move captures one of these, it will be XORed out then as part of the capture logic.
-    // This matches behavior where pieces are only removed from Zobrist when captured or moved,
-    // and player status change is a separate Zobrist component updated above.
+    // The pieces are still on the board. Only their "active status" Zobrist key is removed.
   }
 }
 
