@@ -1200,6 +1200,7 @@ void Board::resign() {
     resign_undo_info.previous_hash = current_hash_;
     resign_undo_info.eliminated_player = resigning_player; // Mark the player who resigned
     resign_undo_info.was_history_cleared = false;          // Resign doesn't clear history
+    resign_undo_info.move.from_loc = {-1,-1}; // Sentinel for resignation move in undo
     resign_undo_info.captured_piece = std::nullopt; 
 
     // --- Perform the elimination ---
