@@ -74,6 +74,7 @@ public:
 
     std::vector<Move> get_pseudo_legal_moves(Player player) const;
     std::optional<Piece> make_move(const Move& move);
+    std::optional<Piece> make_move_for_mcts(const Move& move);
     void undo_move();
 
     // --- Game State Accessors ---

@@ -468,12 +468,11 @@ Board Board::create_mcts_child_board(const Board& parent_board, const Move& move
   // termination_reason_ is not copied; child node determines its own termination.
   // position_history_ and undo_stack_ start empty for the child and are populated by make_move.
 
-  // 3. Apply the move to the child board's copied state.
-  // make_move will update: current_player_, full_move_number_, move_number_of_last_reset_,
+  // 3. Apply the move to the child board's copied state using the lightweight function.
+  // make_move_for_mcts will update: current_player_, full_move_number_, move_number_of_last_reset_,
   // current_hash_, bitboards.
-  // It will also push ONE UndoInfo onto child_board.undo_stack_ (which was empty),
-  // and add the new hash to child_board.position_history_ (which was empty).
-  child_board.make_move(move);
+  // It will NOT push to undo_stack_ or position_history_ of the child_board.
+  child_board.make_move_for_mcts(move);
 
   // The state of child_board is now the state *after* 'move' was applied.
   // Its history/undo stack only contains information about *that single move*.
@@ -854,6 +853,96 @@ std::optional<Piece> Board::make_move(const Move &move) {
   
   is_game_over(); // Call to update termination_reason_ if game ended
   return undo_info.captured_piece; // Return the captured piece, if any
+}
+
+// --- Lightweight Move Execution for MCTS ---
+// Does NOT create UndoInfo, push to undo_stack_, or modify position_history_ directly related to the move.
+std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
+  const auto& zobrist_data = get_zobrist_data();
+  int fr = move.from_loc.row, fc = move.from_loc.col;
+  int tr = move.to_loc.row, tc = move.to_loc.col;
+  int from_sq_idx = Board::to_sq_idx(fr, fc);
+  int to_sq_idx = Board::to_sq_idx(tr, tc);
+  int moving_player_idx = static_cast<int>(current_player_);
+
+  // --- Validate Moving Piece (from bitboards) ---
+  std::optional<Piece> moving_piece_opt = get_piece_at_sq(from_sq_idx);
+  if (!moving_piece_opt) {
+    throw std::runtime_error("MCTS: Attempting to move from an empty square. From sq: " + std::to_string(from_sq_idx));
+  }
+  if (moving_piece_opt->player != current_player_) {
+      throw std::runtime_error("MCTS: Attempting to move opponent's piece. Mover: " +
+                               std::to_string(static_cast<int>(current_player_)) +
+                               ", Piece Owner: " + std::to_string(static_cast<int>(moving_piece_opt->player)));
+  }
+  Piece moving_piece_obj = *moving_piece_opt;
+  int moving_pt_bb_idx = piece_type_to_bb_idx(moving_piece_obj.piece_type);
+
+  // --- Determine Captured Piece (from bitboards) ---
+  std::optional<Piece> captured_piece_opt = get_piece_at_sq(to_sq_idx); // Renamed to avoid conflict
+  bool is_capture = captured_piece_opt.has_value();
+  bool is_pawn_move = (moving_piece_obj.piece_type == PieceType::PAWN);
+  bool is_resetting_move = is_pawn_move || is_capture;
+
+  // --- ZOBRIST UPDATE & BITBOARD UPDATE: Part 1 (Remove pieces from old state) ---
+  // 1a. XOR out moving piece from Zobrist hash & clear from bitboards
+  current_hash_ ^= zobrist_data.get_piece_key(moving_piece_obj.piece_type, moving_piece_obj.player, from_sq_idx);
+  clear_bit(piece_bitboards_[moving_player_idx][moving_pt_bb_idx], from_sq_idx);
+  clear_bit(player_bitboards_[moving_player_idx], from_sq_idx);
+  clear_bit(occupied_bitboard_, from_sq_idx);
+
+  // 1b. If capture, XOR out captured piece from Zobrist & clear from bitboards
+  if (is_capture) {
+      const Piece& captured = captured_piece_opt.value();
+      current_hash_ ^= zobrist_data.get_piece_key(captured.piece_type, captured.player, to_sq_idx);
+      int captured_player_idx = static_cast<int>(captured.player);
+      int captured_pt_bb_idx = piece_type_to_bb_idx(captured.piece_type);
+      clear_bit(piece_bitboards_[captured_player_idx][captured_pt_bb_idx], to_sq_idx);
+      clear_bit(player_bitboards_[captured_player_idx], to_sq_idx);
+  }
+
+  // Handle Promotion (update piece type before placing)
+  PieceType final_piece_type = moving_piece_obj.piece_type;
+  if (move.promotion_piece_type) {
+    final_piece_type = move.promotion_piece_type.value();
+  }
+
+  // --- ZOBRIST UPDATE & BITBOARD UPDATE: Part 2 (Add piece to new state) ---
+  int final_pt_bb_idx = piece_type_to_bb_idx(final_piece_type);
+  set_bit(piece_bitboards_[moving_player_idx][final_pt_bb_idx], to_sq_idx);
+  set_bit(player_bitboards_[moving_player_idx], to_sq_idx);
+  set_bit(occupied_bitboard_, to_sq_idx);
+  current_hash_ ^= zobrist_data.get_piece_key(final_piece_type, moving_piece_obj.player, to_sq_idx);
+
+  // --- Handle Captures, Points & Elimination ---
+  if (is_capture) {
+    const Piece &captured_val = captured_piece_opt.value();
+    player_points_[moving_piece_obj.player] += get_piece_capture_value(captured_val);
+    if (captured_val.piece_type == PieceType::KING) {
+        eliminate_player(captured_val.player); // Handles Zobrist for active status & bitboard clearing
+    }
+  }
+
+  // --- Update Game State Counters ---
+  // position_history_ and undo_stack_ are NOT updated here.
+  Player player_who_moved = current_player_; // current_player_ before advance_turn()
+  Player last_active_player_in_sequence = get_last_active_player();
+  bool was_last_player_turn = (player_who_moved == last_active_player_in_sequence);
+
+  if (was_last_player_turn) full_move_number_++;
+
+  if (is_resetting_move) {
+    move_number_of_last_reset_ = full_move_number_;
+    // DO NOT clear position_history_ or set undo_info.was_history_cleared.
+  }
+
+  // --- Final Steps ---
+  // NO undo_stack_.push_back()
+  advance_turn(); // Advances turn and updates Zobrist hash for player change
+  // NO position_history_.push_back()
+
+  is_game_over(); // Call to update termination_reason_ if game ended
+  return captured_piece_opt; // Return the captured piece, if any
 }
 
 // --- Undo Last Move ---
