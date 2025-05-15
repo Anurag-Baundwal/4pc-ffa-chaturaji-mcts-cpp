@@ -87,15 +87,14 @@ torch::Tensor ChaturajiDataset::policy_to_tensor(const std::map<Move, double>& p
 void train(
   int num_iterations,
   int num_games_per_iteration,
-  int num_steps_per_iteration,
-  int training_batch_size, // Renamed param
-  int num_workers,        // NEW param
-  int nn_batch_size,      // NEW param (evaluator batch size)
+  double target_sampling_rate_param,
+  int training_batch_size,
+  int num_workers,        
+  int nn_batch_size,      
   int worker_batch_size, 
   double learning_rate,
   double weight_decay,
   int simulations_per_move,
-  // int mcts_batch_size, // REMOVED - replaced by nn_batch_size for evaluator
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
@@ -138,6 +137,7 @@ void train(
 
   // --- Training Loop ---
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
+      bool perform_training_this_iteration = true; // Flag to control training execution
       std::cout << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl;
       
       // --- Self-Play Phase ---
@@ -146,7 +146,9 @@ void train(
       << ", NN Batch: " << nn_batch_size
       << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
       auto start_selfplay = std::chrono::high_resolution_clock::now();
-      self_play_generator.generate_data(num_games_per_iteration); // Generate data using workers and append to buffer
+      // Generate data using workers and append to buffer
+      // But also capture the number of generated steps
+      size_t num_generated_data_points = self_play_generator.generate_data(num_games_per_iteration); 
       auto end_selfplay = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> selfplay_duration = end_selfplay - start_selfplay;
       std::cout << "Self-play generation finished in " << selfplay_duration.count() << " seconds." << std::endl;
@@ -154,26 +156,62 @@ void train(
       const ReplayBuffer& replay_buffer = self_play_generator.get_buffer();
       size_t current_buffer_size = replay_buffer.size();
 
-      if (current_buffer_size < training_batch_size) { // Need at least one batch
-          std::cout << "Warning: Replay buffer size (" << current_buffer_size
-                    << ") is smaller than batch size (" << training_batch_size
-                    << "). Skipping training for this iteration." << std::endl;
-          continue;
+      // --- Calculate dynamic steps_per_iteration ---
+      int dynamic_steps_per_iteration = 0; // Default to 0 steps
+      if (num_generated_data_points > 0 && training_batch_size > 0) {
+          // Use the passed-in target_sampling_rate_param
+          double calculated_steps = static_cast<double>(num_generated_data_points) * target_sampling_rate_param / static_cast<double>(training_batch_size);
+          dynamic_steps_per_iteration = static_cast<int>(std::round(calculated_steps));
+          
+          // If rounding resulted in 0 steps, but some data was generated, ensure at least 1 step
+          // to utilize the new data, provided the total buffer can form a batch.
+          if (dynamic_steps_per_iteration == 0) {
+              dynamic_steps_per_iteration = 1; 
+          }
       }
+      // If no new data was generated (num_generated_data_points == 0), dynamic_steps_per_iteration remains 0.
+
+
+      // --- Condition for skipping training ---
+      // Skip if:
+      // 1. No training steps are to be performed (e.g., no new data and dynamic_steps_per_iteration is 0).
+      // 2. OR, the entire replay buffer is too small to form even one training batch.
+      if (dynamic_steps_per_iteration == 0 || current_buffer_size < static_cast<size_t>(training_batch_size)) {
+            std::cout << "  Skipping training this iteration. Dynamic steps: " << dynamic_steps_per_iteration
+                      << ", Num generated data points: " << num_generated_data_points
+                      << ", Buffer size: " << current_buffer_size << ", Training Batch size: " << training_batch_size 
+                      << ", Target Sampling Rate: " << target_sampling_rate_param << std::endl;
+            perform_training_this_iteration = false;
+      }
+
+  if (perform_training_this_iteration) {
+      std::cout << "Starting training for " << dynamic_steps_per_iteration << " steps (Batch Size: " << training_batch_size 
+                << ", Num data points generated this iteration: " << num_generated_data_points 
+                << ", Target sampling rate: " << target_sampling_rate_param << ")" << std::endl;
+      
+      // Create a vector from the replay buffer for efficient random access during sampling.
+      // This copy happens once per training phase.
       std::vector<GameDataStep> training_data_vector(replay_buffer.begin(), replay_buffer.end());
-
-
+            // Safety check: if training_data_vector is empty but steps were scheduled.
+      // This should ideally be caught by the current_buffer_size check above.
+      if (training_data_vector.empty() && dynamic_steps_per_iteration > 0) {
+          std::cerr << "Error: Scheduled training steps (" << dynamic_steps_per_iteration 
+                    << ") but training_data_vector is empty. Buffer size reported as: " << current_buffer_size 
+                    << ". Skipping training." << std::endl;
+          perform_training_this_iteration = false;
+      }
+      if (perform_training_this_iteration) {
         // --- Training Phase ---
-        std::cout << "Starting training for " << num_steps_per_iteration << " steps (Batch Size: " << training_batch_size << ")..." << std::endl;
+        // std::cout << "Starting training for " << dynamic_steps_per_iteration << " steps (Batch Size: " << training_batch_size << ")..." << std::endl;
         network->train(); // Set network to training mode
 
         double total_loss = 0.0;
         double total_policy_loss = 0.0;
         double total_value_loss = 0.0;
-        int steps_performed = 0;
+        int steps_performed_this_iter = 0;
         auto train_start_time = std::chrono::high_resolution_clock::now();
-
-        for (int step = 0; step < num_steps_per_iteration; ++step) {
+        // Use dynamic_steps_per_iteration in the loop
+        for (int step = 0; step < dynamic_steps_per_iteration; ++step) {
             // --- Manual Batch Sampling ---
             std::vector<torch::Tensor> state_batch_vec;
             std::vector<torch::Tensor> target_batch_vec; // Combined policy+value
@@ -193,7 +231,7 @@ void train(
                 // Convert board, policy, value to tensors (on CPU initially is fine)
                 // Ensure board_to_tensor returns [C,H,W] directly or squeeze batch dim
                 torch::Tensor state_t = board_to_tensor(std::get<0>(data_step), torch::kCPU).squeeze(0);
-                torch::Tensor policy_t = policy_to_tensor_static(std::get<1>(data_step)); // Need a static version
+                torch::Tensor policy_t = policy_to_tensor_static(std::get<1>(data_step));
                 torch::Tensor value_t = torch::tensor({std::get<3>(data_step)}, torch::kFloat32); // Shape [1]
                 torch::Tensor target_t = torch::cat({policy_t, value_t}, /*dim=*/0); // Shape [4097]
 
@@ -226,7 +264,7 @@ void train(
             total_loss += loss.item<double>();
             total_policy_loss += policy_loss.item<double>();
             total_value_loss += value_loss.item<double>();
-            steps_performed++;
+            steps_performed_this_iter++;
             // --- End Training Step ---
 
         } // End step loop
@@ -234,18 +272,19 @@ void train(
         auto train_end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> train_duration = train_end_time - train_start_time;
 
-        if (steps_performed > 0) {
-             std::cout << "  Training finished " << steps_performed << " steps in " << train_duration.count() << "s."
-                       << " Avg Loss: " << (total_loss / steps_performed)
-                       << " (Policy: " << (total_policy_loss / steps_performed)
-                       << ", Value: " << (total_value_loss / steps_performed) << ")"
+        if (steps_performed_this_iter > 0) {
+             std::cout << "  Training finished " << steps_performed_this_iter << " steps in " << train_duration.count() << "s."
+                       << " Avg Loss: " << (total_loss / steps_performed_this_iter)
+                       << " (Policy: " << (total_policy_loss / steps_performed_this_iter)
+                       << ", Value: " << (total_value_loss / steps_performed_this_iter) << ")"
                        << std::endl;
         } else {
-             std::cout << "  No training steps performed." << std::endl;
+             std::cout << "  No training steps performed this iteration (after checks)." << std::endl;
         }
 
         network->eval(); // Set back to eval mode
-
+      }
+    }
       // --- Save Model Checkpoint ---
        if ((iteration + 1) % 1 == 0) { // Save every iteration for now
            fs::path save_path = model_dir / ("chaturaji_iter_" + std::to_string(iteration + 1) + ".pt");

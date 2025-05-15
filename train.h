@@ -39,7 +39,7 @@ private:
 void train(
     int num_iterations = 65536,
     int num_games_per_iteration = 128, 
-    int num_steps_per_iteration = 13,
+    double target_sampling_rate = 1.5,
     int training_batch_size = 1024, 
     int num_workers = 12,            
     int nn_batch_size = 1024,       

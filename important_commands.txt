@@ -9,24 +9,25 @@ To train a model:
 
 Arguments:
   --train                 : Enter training mode.
-  --iterations N          : Number of training iterations (default: 65563).
-  --games-per-iter N      : Number of self-play games per iteration (default: 128).
-  --steps-per-iter N      : Number of training steps (batches) per iteration (default: 13).
-  --train-batch N         : Batch size for the training steps (default: 1024).
-  --workers N             : Number of parallel self-play worker threads (default: 12).
-  --nn-batch N            : Max batch size for the central NN evaluator thread (default: 1024).
-  --worker-batch N        : Batch size for MCTS leaf evaluations *within* a worker thread before waiting for results (default: 48).
-  --sims N                : Number of MCTS simulations per move during self-play (default: 128).
-  --save-dir PATH         : Directory to save model checkpoints (default: /content/drive/MyDrive/models).
+  --iterations N          : Number of training iterations (default: 32768, check main.cpp).
+  --games-per-iter N      : Number of self-play games per iteration (default: 32, check main.cpp).
+  --target-sampling-rate VALUE : Target number of times each generated position is used for training (default: 1.5, check main.cpp).
+                                  The actual number of training steps per iteration will be calculated dynamically based on this.
+  --train-batch N         : Batch size for the training steps (default: 512, check main.cpp).
+  --workers N             : Number of parallel self-play worker threads (default: 10, check main.cpp).
+  --nn-batch N            : Max batch size for the central NN evaluator thread (default: 1024, check main.cpp).
+  --worker-batch N        : Batch size for MCTS leaf evaluations *within* a worker thread before waiting for results (default: 48, check main.cpp).
+  --sims N                : Number of MCTS simulations per move during self-play (default: 225, check main.cpp).
+  --save-dir PATH         : Directory to save model checkpoints (default: /content/drive/MyDrive/cpp_engine_models).
   --load-model PATH       : Path to an existing model to continue training from (optional).
-  --lr VALUE              : Learning rate (default: 0.001).
-  --wd VALUE              : Weight decay (default: 1e-4).
+  --lr VALUE              : Learning rate (default: 0.001, check train.cpp).
+  --wd VALUE              : Weight decay (default: 1e-4, check train.cpp).
 
 Example - Test Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games-per-iter 50 --steps-per-iter 10 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 10 
+bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games-per-iter 5 --target-sampling-rate 1.5 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 64 
 
 Example - Serious Training Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 65536 --games-per-iter 128 --steps-per-iter 13 --train-batch 16384 --workers 48 --nn-batch 1024 --worker-batch 48 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 512 
+bazel run //:chaturaji_engine -c opt -- --train --iterations 32768 --games-per-iter 32 --target-sampling-rate 1.5 --train-batch 512 --workers 10 --nn-batch 1024 --worker-batch 48 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 225
 
 ---------------------------------------------------------------------
 
@@ -34,8 +35,8 @@ To simulate a game using a trained model (Inference Mode):
 
 Arguments:
   --model PATH            : Path to the trained model (.pt file).
-  --sims N                : Number of MCTS simulations per move (default: 1000).
-  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during inference (default: 16).
+  --sims N                : Number of MCTS simulations per move (default: 1000, check main.cpp).
+  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during inference (default: 16, check main.cpp).
 
 Example:
 .\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_YYYYMMDD_HHMMSS\chaturaji_iter_N.pt" --sims 1000 --mcts-batch 64
@@ -52,9 +53,9 @@ Arguments:
   --strength-test         : Enter strength test mode.
   --new-model PATH        : Path to the 'newer' model file (required).
   --old-model PATH        : Path to the 'older' model file (required).
-  --games N               : Number of games to play (default: 100).
-  --sims N                : Number of MCTS simulations per move (default: 250 - check main.cpp for current default).
-  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during the test (default: 64 - check main.cpp for current default).
+  --games N               : Number of games to play (default: 100, check main.cpp).
+  --sims N                : Number of MCTS simulations per move (default: 250, check main.cpp).
+  --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during the test (default: 64, check main.cpp).
 
 Details:
   The test runs the specified number of games. In each game, the '--new-model'

@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
         // Get training parameters from command line or use defaults
         int iterations = 65536; 
         int games_per_iter = 128;
-        int steps_per_iteration = 13;
+        double target_sampling_rate = 1.5; // ADD: Default
         int training_batch_size = 1024;
         int sims_per_move = 128;
         int num_workers = 12;   
@@ -55,39 +55,39 @@ int main(int argc, char* argv[]) {
         if (!temp_str.empty()) iterations = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--games-per-iter");
         if (!temp_str.empty()) games_per_iter = std::stoi(temp_str);
-         temp_str = get_cmd_option(argv, argv+argc, "--steps-per-iter"); 
-        if (!temp_str.empty()) steps_per_iteration = std::stoi(temp_str);
+
+        temp_str = get_cmd_option(argv, argv+argc, "--target-sampling-rate");
+        if (!temp_str.empty()) target_sampling_rate = std::stod(temp_str); // Use stod for double
         temp_str = get_cmd_option(argv, argv+argc, "--train-batch"); // Argument for training data loader
         if (!temp_str.empty()) training_batch_size = std::stoi(temp_str);
          temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) sims_per_move = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--workers"); // NEW argument
+        temp_str = get_cmd_option(argv, argv+argc, "--workers"); 
         if (!temp_str.empty()) num_workers = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--nn-batch"); // NEW argument (evaluator batch)
+        temp_str = get_cmd_option(argv, argv+argc, "--nn-batch");
         if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
-        temp_str = get_cmd_option(argv, argv+argc, "--worker-batch"); // <--- New argument
+        temp_str = get_cmd_option(argv, argv+argc, "--worker-batch");
         if (!temp_str.empty()) worker_batch_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
          temp_str = get_cmd_option(argv, argv+argc, "--load-model");
         if (!temp_str.empty()) load_path = temp_str;
 
-
         std::cout << "Parameters:" << std::endl;
-        std::cout << "  Iterations:        " << iterations << std::endl;
-        std::cout << "  Games/Iter:        " << games_per_iter << std::endl;
-        std::cout << "  Steps/Iter:        " << steps_per_iteration << std::endl; // <-- ADD: Print new parameter
-        std::cout << "  Training Batch:    " << training_batch_size << std::endl;
-        std::cout << "  Sims/Move:         " << sims_per_move << std::endl;
-        std::cout << "  Workers:           " << num_workers << std::endl; // <-- Print new param
-        std::cout << "  NN Eval Batch:     " << nn_batch_size << std::endl; // <-- Print new param
-        std::cout << "  Worker MCTS Batch: " << worker_batch_size << std::endl; // <-- Print new param
-        std::cout << "  Save Dir:          " << save_dir << std::endl;
-        std::cout << "  Load Model:        " << (load_path.empty() ? "None" : load_path) << std::endl;
+        std::cout << "  Iterations:           " << iterations << std::endl;
+        std::cout << "  Games/Iter:           " << games_per_iter << std::endl;
+        std::cout << "  Target Sampling Rate: " << std::fixed << std::setprecision(2) << target_sampling_rate << std::endl;
+        std::cout << "  Training Batch:       " << training_batch_size << std::endl;
+        std::cout << "  Sims/Move:            " << sims_per_move << std::endl;
+        std::cout << "  Workers:              " << num_workers << std::endl; // <-- Print new param
+        std::cout << "  NN Eval Batch:        " << nn_batch_size << std::endl; // <-- Print new param
+        std::cout << "  Worker MCTS Batch:    " << worker_batch_size << std::endl; // <-- Print new param
+        std::cout << "  Save Dir:             " << save_dir << std::endl;
+        std::cout << "  Load Model:           " << (load_path.empty() ? "None" : load_path) << std::endl;
 
         try {
             chaturaji_cpp::train(
-                iterations, games_per_iter, steps_per_iteration,
+                iterations, games_per_iter, target_sampling_rate,
                 training_batch_size, // Training dataloader batch size
                 num_workers,         // Number of self-play workers
                 nn_batch_size,       // Evaluator NN batch size

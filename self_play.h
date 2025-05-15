@@ -62,7 +62,7 @@ public:
      *        Adds the generated game data to the internal replay buffer.
      * @param num_games The total number of games to generate across all workers.
      */
-    void generate_data(int num_games);
+    size_t generate_data(int num_games);
 
     /**
      * @brief Provides access to the internal replay buffer.

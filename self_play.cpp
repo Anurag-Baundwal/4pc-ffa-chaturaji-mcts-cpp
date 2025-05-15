@@ -205,7 +205,7 @@ std::map<Move, double> SelfPlay::add_dirichlet_noise(
 
 
 // --- Main Data Generation Function ---
-void SelfPlay::generate_data(int num_games) {
+size_t SelfPlay::generate_data(int num_games) {
     worker_threads_.clear(); // Clear any previous threads
     std::atomic<int> games_completed_counter(0);
 
@@ -236,11 +236,11 @@ void SelfPlay::generate_data(int num_games) {
     std::cout << "All workers finished. Combining results..." << std::endl;
 
     // Combine results from local buffers into the main buffer
+    size_t total_data_points_generated_this_iteration = 0;
     { // Lock scope for main buffer
         std::lock_guard<std::mutex> lock(buffer_mutex);
-        size_t total_steps = 0;
         for (const auto& local_buf : local_buffers) {
-            total_steps += local_buf.size();
+            total_data_points_generated_this_iteration += local_buf.size();
             for (const auto& step : local_buf) {
                 if (buffer_.size() >= max_buffer_size_) {
                     buffer_.pop_front(); // Maintain buffer size limit
@@ -248,10 +248,11 @@ void SelfPlay::generate_data(int num_games) {
                 buffer_.push_back(step); // Add data step
             }
         }
-         std::cout << "Combined " << total_steps << " data steps. Final buffer size: " << buffer_.size() << std::endl;
+         std::cout << "Combined " << total_data_points_generated_this_iteration << " data steps. Final buffer size: " << buffer_.size() << std::endl;
     } // Mutex unlock
 
     // Note: Evaluator is stopped in the destructor ~SelfPlay
+    return total_data_points_generated_this_iteration;
 }
 
 
