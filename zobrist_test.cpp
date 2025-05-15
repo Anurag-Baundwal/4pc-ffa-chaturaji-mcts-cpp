@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <regex>
+#include <algorithm> // For std::count
 
 #include "board.h" // Include your board header
 #include "types.h" // Include your types header
@@ -56,7 +57,7 @@ std::string loc_to_pgn(const BoardLocation& loc) {
 // Parses a single move notation like "f5-f6", "h4xg5", "d7-d8=R", "Bf8xKe9#"
 // Returns the Move object. Ignores check/mate symbols.
 Move parse_pgn_move_notation(const std::string& notation) {
-    std::regex move_regex("([a-k][1-9][0-9]?)[x-]?([a-k][1-9][0-9]?)(?:=([RQBN]))?([+#])?");
+    std::regex move_regex("([a-k][1-9][0-9]?)[x-]?([a-k][1-9][0-9]?)(?:=([R]))?([+#])?"); // Only R promotion
     std::smatch match;
 
     if (std::regex_match(notation, match, move_regex)) {
@@ -71,9 +72,6 @@ Move parse_pgn_move_notation(const std::string& notation) {
         if (!promo_str.empty()) {
             // Chaturaji only allows Rook promotion in standard rules
             if (promo_str == "R") promo_type = PieceType::ROOK;
-            // Add other types if your engine supports them via variants
-            // else if (promo_str == "N") promo_type = PieceType::KNIGHT;
-            // else if (promo_str == "B") promo_type = PieceType::BISHOP;
             else {
                 std::cerr << "Warning: Unsupported promotion type '" << promo_str << "' in PGN. Ignoring promotion." << std::endl;
             }
@@ -112,12 +110,27 @@ bool compare_board_states(const Board& b1, const Board& b2) {
     if (b1.get_move_number_of_last_reset() != b2.get_move_number_of_last_reset()) return false;
     if (b1.get_active_players() != b2.get_active_players()) return false;
     if (b1.get_player_points() != b2.get_player_points()) return false;
-    // Deep compare board grid (optional, hash should cover it)
-    const auto& grid1 = b1.get_board_grid();
-    const auto& grid2 = b2.get_board_grid();
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-        for (int c = 0; c < BOARD_SIZE; ++c) {
-            if (grid1[r][c] != grid2[r][c]) return false; // Piece::operator== needed
+    // Compare bitboards directly for thoroughness
+    if (b1.get_occupied_bitboard() != b2.get_occupied_bitboard()) {
+        std::cerr << "State Compare Fail: Occupied bitboard mismatch" << std::endl;
+        // Board::print_bitboard(b1.get_occupied_bitboard(), "B1 Occupied");
+        // Board::print_bitboard(b2.get_occupied_bitboard(), "B2 Occupied");
+        return false;
+    }
+    for (int p_idx = 0; p_idx < 4; ++p_idx) {
+        Player p = static_cast<Player>(p_idx);
+        if (b1.get_player_bitboard(p) != b2.get_player_bitboard(p)) {
+            std::cerr << "State Compare Fail: Player bitboard mismatch for player " << p_idx << std::endl;
+            return false;
+        }
+        for (int pt_val = 1; pt_val <= 5; ++pt_val) { // PieceType enum values 1-5
+            PieceType pt = static_cast<PieceType>(pt_val);
+            if (b1.get_piece_bitboard(p, pt) != b2.get_piece_bitboard(p, pt)) {
+                 std::cerr << "State Compare Fail: Piece bitboard mismatch for player " << p_idx << ", piece " << pt_val << std::endl;
+                 // Board::print_bitboard(b1.get_piece_bitboard(p,pt), "B1 P" + std::to_string(p_idx) + " T" + std::to_string(pt_val));
+                 // Board::print_bitboard(b2.get_piece_bitboard(p,pt), "B2 P" + std::to_string(p_idx) + " T" + std::to_string(pt_val));
+                return false;
+            }
         }
     }
     return true;

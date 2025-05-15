@@ -17,8 +17,8 @@ const std::vector<PieceType> UTIL_PIECE_TYPE_ORDER = {
 };
 const std::map<PieceType, int> UTIL_PIECE_TYPE_TO_INDEX = []{
     std::map<PieceType, int> m;
-    for(int i=0; i<UTIL_PIECE_TYPE_ORDER.size(); ++i) {
-        m[UTIL_PIECE_TYPE_ORDER[i]] = i;
+    for(size_t i=0; i<UTIL_PIECE_TYPE_ORDER.size(); ++i) {
+        m[UTIL_PIECE_TYPE_ORDER[i]] = static_cast<int>(i);
     }
     return m;
 }();
@@ -151,9 +151,10 @@ Move policy_index_to_move(int index) {
 
 std::string get_san_string(const Move& move, const Board& board) {
      std::stringstream ss;
-     const auto& grid = board.get_board_grid(); // Get grid once
-     const auto& from_piece_opt = grid[move.from_loc.row][move.from_loc.col];
-     const auto& to_piece_opt = grid[move.to_loc.row][move.to_loc.col]; 
+     // Get piece at 'from' location using bitboards
+     std::optional<Piece> from_piece_opt = board.get_piece_at_sq(Board::to_sq_idx(move.from_loc.row, move.from_loc.col));
+     // Check if 'to' location has a piece (for capture 'x') using bitboards
+     std::optional<Piece> to_piece_opt = board.get_piece_at_sq(Board::to_sq_idx(move.to_loc.row, move.to_loc.col)); 
 
      if (!from_piece_opt) {
          return "ERROR_NO_FROM_PIECE"; 

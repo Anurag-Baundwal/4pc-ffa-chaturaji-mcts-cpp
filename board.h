@@ -44,7 +44,6 @@ struct UndoInfo {
 class Board {
 public:
     // --- Typedefs for clarity ---
-    using BoardGrid = std::array<std::array<std::optional<Piece>, BOARD_SIZE>, BOARD_SIZE>;
     using PositionKey = ZobristKey;
     using PositionHistory = std::vector<PositionKey>;
     using GameHistory = std::vector<Move>;
@@ -71,13 +70,13 @@ public:
     static bool is_valid_sq_idx(int sq_idx);      // New: check based on 0-63 index
     static int to_sq_idx(int r, int c);           // New: convert row/col to 0-63 index
     static BoardLocation from_sq_idx(int sq_idx); // New: convert 0-63 index to row/col
+    std::optional<Piece> get_piece_at_sq(int sq_idx) const; // NEW: Get piece from bitboards
 
     std::vector<Move> get_pseudo_legal_moves(Player player) const;
     std::optional<Piece> make_move(const Move& move);
     void undo_move();
 
     // --- Game State Accessors ---
-    const BoardGrid& get_board_grid() const; // Access to the 2D array representation (if still used)
     const ActivePlayerSet& get_active_players() const;
     const PlayerPointMap& get_player_points() const;
     Player get_current_player() const;
@@ -141,7 +140,6 @@ public:
 
 private:
     // --- Internal State ---
-    BoardGrid board_; // The 2D array representation of the board (might be kept for convenience or specific logic)
     ActivePlayerSet active_players_;
     PlayerPointMap player_points_;
     Player current_player_;
