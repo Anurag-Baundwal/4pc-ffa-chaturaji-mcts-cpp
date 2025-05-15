@@ -34,36 +34,33 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1; 
   torch::Tensor tensor = torch::zeros({NUM_CHANNELS_TOTAL, BOARD_SIZE, BOARD_SIZE}, options);
 
-  const auto& grid = board.get_board_grid();
-  const auto& active_players_set = board.get_active_players();
-  const auto& points = board.get_player_points();
-  Player current_player = board.get_current_player();
+  // Piece Placement Channels (0-19) using bitboards
+  for (int p_idx = 0; p_idx < 4; ++p_idx) { // Iterate players
+      Player player_enum = static_cast<Player>(p_idx);
+      for (int pt_idx = 0; pt_idx < NUM_ACTUAL_PIECE_TYPES; ++pt_idx) { // Iterate piece types
+          PieceType piece_type_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; // Get PieceType from index
+          Bitboard bb = board.get_piece_bitboard(player_enum, piece_type_enum);
+          int channel = p_idx * NUM_ACTUAL_PIECE_TYPES + pt_idx;
 
-  // Piece Placement Channels (0-19)
-  for (int r = 0; r < BOARD_SIZE; ++r) {
-      for (int c = 0; c < BOARD_SIZE; ++c) {
-          const auto& piece_opt = grid[r][c];
-          if (piece_opt) {
-              const Piece& piece = *piece_opt;
-              int player_idx = static_cast<int>(piece.player);
-              auto it = UTIL_PIECE_TYPE_TO_INDEX.find(piece.piece_type); // Use local util map
-              if (it != UTIL_PIECE_TYPE_TO_INDEX.end()) {
-                  int type_idx = it->second; 
-                  int channel = player_idx * NUM_ACTUAL_PIECE_TYPES + type_idx;
-                  if (channel >= 0 && channel < NUM_PIECE_CHANNELS_ONLY) {
-                       tensor[channel][r][c] = 1.0f;
+          Bitboard temp_bb = bb;
+          while(temp_bb) {
+              int sq_idx = Board::pop_lsb(temp_bb); // Use Board's static pop_lsb
+              BoardLocation loc = Board::from_sq_idx(sq_idx); // Use Board's static from_sq_idx
+              if (channel >= 0 && channel < NUM_PIECE_CHANNELS_ONLY) {
+                  if(loc.row >=0 && loc.row < BOARD_SIZE && loc.col >=0 && loc.col < BOARD_SIZE) {
+                     tensor[channel][loc.row][loc.col] = 1.0f;
                   } else {
-                       std::cerr << "Warning: Invalid piece channel in board_to_tensor: " << channel << std::endl;
+                      std::cerr << "Warning: sq_idx " << sq_idx << " gave invalid loc " << loc.row << "," << loc.col << std::endl;
                   }
               } else {
-                  std::cerr << "Warning: Piece type " << static_cast<int>(piece.piece_type) 
-                            << " not found in UTIL_PIECE_TYPE_TO_INDEX map." << std::endl;
+                  std::cerr << "Warning: Invalid piece channel in board_to_tensor (from bitboard): " << channel << std::endl;
               }
           }
       }
   }
 
   // Active Player Status Channels (20-23)
+  const auto& active_players_set = board.get_active_players();
   int active_status_channel_offset = NUM_PIECE_CHANNELS_ONLY; // Starts at 20
   for (int i = 0; i < 4; ++i) {
       Player p_iter = static_cast<Player>(i);
@@ -75,6 +72,7 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   }
 
   // Current Player Channels (24-27)
+  Player current_player = board.get_current_player();
   int current_player_channel_offset = active_status_channel_offset + 4; // Starts at 24
   int current_player_idx_val = static_cast<int>(current_player);
   if (current_player_idx_val >= 0 && current_player_idx_val < 4) {
@@ -88,6 +86,7 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
 
 
   // Player Points Channels (28-31)
+  const auto& points = board.get_player_points();
   int points_channel_offset = current_player_channel_offset + 4; // Starts at 28
   for (int i = 0; i < 4; ++i) {
       Player p_iter = static_cast<Player>(i);
@@ -96,8 +95,7 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
       if(it != points.end()){
           player_points_val = static_cast<float>(it->second);
       }
-      // Normalize points (e.g. max possible points in Chaturaji might be around 50-60 without extreme scenarios)
-      // A simple division by 100 is a common starting point.
+      // Normalize points 
       tensor[points_channel_offset + i].fill_(player_points_val / 100.0f); 
   }
 
@@ -180,10 +178,7 @@ std::string get_san_string(const Move& move, const Board& board) {
      if (move.promotion_piece_type) {
          ss << '=';
           switch(*move.promotion_piece_type) {
-            case PieceType::KNIGHT: ss << 'N'; break;
-            case PieceType::BISHOP: ss << 'B'; break;
             case PieceType::ROOK:   ss << 'R'; break;
-            // KING promotion is not standard, usually only Q,R,B,N in chess. Chaturaji has Rook.
             default: ss << '?'; break; 
          }
      }
@@ -199,8 +194,6 @@ std::string get_uci_string(const Move& move) {
 
     if (move.promotion_piece_type) {
           switch(*move.promotion_piece_type) {
-            case PieceType::KNIGHT: ss << 'n'; break;
-            case PieceType::BISHOP: ss << 'b'; break;
             case PieceType::ROOK:   ss << 'r'; break;
             default: break; 
          }

@@ -6,6 +6,8 @@
 #include <torch/torch.h> // Include for Tensor type
 
 namespace chaturaji_cpp {
+  
+using Bitboard = uint64_t;
 
 enum class Player {
     RED = 0,
