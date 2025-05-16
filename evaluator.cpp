@@ -85,7 +85,7 @@ void Evaluator::evaluation_loop() {
         // --- Attempt to Get First Request with Timeout ---
         // This allows the loop to wake up periodically to check stop_requested_
         // and to form batches more effectively if requests arrive in bursts.
-        std::optional<EvaluationRequest> first_request_opt = request_queue_.try_pop_for(std::chrono::milliseconds(1));
+        std::optional<EvaluationRequest> first_request_opt = request_queue_.try_pop_for(std::chrono::milliseconds(2));
         // --- Check for Stop Signal or Timeout ---
         if (stop_requested_) {
             break; // Exit loop if stop is requested
