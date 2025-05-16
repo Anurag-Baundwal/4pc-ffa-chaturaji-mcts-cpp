@@ -110,7 +110,6 @@ int main(int argc, char* argv[]) {
         int games = 100;
         int sims = 250;
         int mcts_batch = 64;
-        // Note: --new-player argument is ignored as player cycles automatically
 
         std::string temp_str;
         new_model_path = get_cmd_option(argv, argv + argc, "--new-model");
@@ -122,10 +121,11 @@ int main(int argc, char* argv[]) {
         temp_str = get_cmd_option(argv, argv + argc, "--mcts-batch");
         if (!temp_str.empty()) mcts_batch = std::stoi(temp_str);
 
-        if (new_model_path.empty() || old_model_path.empty()) {
-            std::cerr << "Error: Both --new-model and --old-model paths must be provided for strength test." << std::endl;
+        if (new_model_path.empty()) { // Only --new-model is strictly required
+            std::cerr << "Error: --new-model path must be provided for strength test." << std::endl;
             return 1;
         }
+        // old_model_path can be empty; run_strength_test will handle it by creating a random model.
 
         try {
             chaturaji_cpp::run_strength_test(
