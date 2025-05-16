@@ -6,15 +6,15 @@ namespace chaturaji_cpp {
 
 // --- Configuration Constants ---
 // Network Body
-const int NUM_RES_BLOCKS = 4;
-const int NUM_CHANNELS = 32;
+const int NUM_RES_BLOCKS = 6;
+const int NUM_CHANNELS = 64;
 
 // Policy Head
-const int POLICY_HEAD_CONV_CHANNELS = 8;
+const int POLICY_HEAD_CONV_CHANNELS = 12;
 
 // Value Head
-const int VALUE_HEAD_CONV_CHANNELS = 1;
-const int VALUE_FC_HIDDEN_CHANNELS = 64;
+const int VALUE_HEAD_CONV_CHANNELS = 2;
+const int VALUE_FC_HIDDEN_CHANNELS = 96;
 // --- End Configuration Constants ---
 
 // --- ResBlock Implementation ---
