@@ -85,7 +85,7 @@ void Evaluator::evaluation_loop() {
         // --- Attempt to Get First Request with Timeout ---
         // This allows the loop to wake up periodically to check stop_requested_
         // and to form batches more effectively if requests arrive in bursts.
-        std::optional<EvaluationRequest> first_request_opt = request_queue_.try_pop_for(std::chrono::milliseconds(1));
+        std::optional<EvaluationRequest> first_request_opt = request_queue_.try_pop_for(std::chrono::milliseconds(10));
 
         // --- Check for Stop Signal or Timeout ---
         if (stop_requested_) {
@@ -111,6 +111,10 @@ void Evaluator::evaluation_loop() {
             }
         }
         // At this point, batch_requests contains at least one request.
+        if (!batch_requests.empty()) { // Only log if there's something to process
+        std::cout << "Evaluator: Processing GPU batch of size " << batch_requests.size()
+                  << " (Max target: " << max_batch_size_ << ")" << std::endl;
+        }
 
         // --- Perform Batched Neural Network Inference ---
         std::vector<EvaluationResult> batch_results;
