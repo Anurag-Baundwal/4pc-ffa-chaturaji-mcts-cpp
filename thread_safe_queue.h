@@ -44,6 +44,16 @@ public:
         return value;
     }
 
+    std::optional<T> try_pop_for(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (cond_var_.wait_for(lock, timeout, [this]{ return !queue_.empty(); })) {
+            T value = std::move(queue_.front());
+            queue_.pop();
+            return value;
+        }
+        return std::nullopt; // Timeout occurred or spurious wakeup with empty queue
+    }
+
     bool empty() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.empty();
