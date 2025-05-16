@@ -15,19 +15,16 @@ namespace chaturaji_cpp {
  *
  * Tensor dimensions: [Batch=1, Channels=33, Height=8, Width=8] <- UPDATED Channel Count
  * Channels:
- *   0-5:   Player RED pieces (P, N, B, R, K, Dk) 
- *   6-11:  Player BLUE pieces (...)
- *   12-17: Player YELLOW pieces (...)
- *   18-23: Player GREEN pieces (...)
- *   24:    Is Player RED turn (1.0) else (0.0)    
- *   25:    Is Player BLUE turn (1.0) else (0.0)   
- *   26:    Is Player YELLOW turn (1.0) else (0.0) 
- *   27:    Is Player GREEN turn (1.0) else (0.0)  
- *   28:    Player RED points / 100.0              
- *   29:    Player BLUE points / 100.0             
- *   30:    Player YELLOW points / 100.0           
- *   31:    Player GREEN points / 100.0            
- *   32:    50-move counter / 50.0                 
+ * Piece Channels (0-19):
+ *   0-4:   Player RED pieces    (P, N, B, R, K) in UTIL_PIECE_TYPE_ORDER
+ *   5-9:   Player BLUE pieces   (P, N, B, R, K)
+ *   10-14: Player YELLOW pieces (P, N, B, R, K)
+ *   15-19: Player GREEN pieces  (P, N, B, R, K)
+ * Auxiliary Channels (20-32):
+ *   20-23: Active player status (RED, BLUE, YELLOW, GREEN) - plane is 1.0 if active, 0.0 otherwise.
+ *   24-27: Current player turn (RED, BLUE, YELLOW, GREEN) - plane for current player is 1.0, others 0.0.
+ *   28-31: Player points normalized (Player Points / 100.0 for RED, BLUE, YELLOW, GREEN).
+ *   32:    50-move counter normalized (Moves since last reset / 50.0, clamped to [0,1]).              
  * Note: Order of piece types within the 6 channels per player needs to be consistent.
  *
  * @param board The board object to convert.
