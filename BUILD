@@ -235,3 +235,24 @@ cc_library(
         ":libtorch_configured",
     ],
 )
+
+# === Utilities ===
+
+cc_binary(
+    name = "magic_finder",
+    srcs = ["magic_finder.cpp"],
+    copts = select({
+        "//:cuda_build": [
+            "-std=c++17",
+            "-D AT_CUDA_ENABLED=1",
+            # These flags are appropriate for NVCC or CUDA-compatible host compilers like GCC/Clang.
+            # If MSVC is used as the host compiler for CUDA, additional adjustments may be required.
+        ],
+        "//conditions:default": [
+            "/std:c++17",  # Compiler flag for C++17 when using MSVC
+        ],
+    }),
+    deps = [
+        ":chaturaji_types",  # Provides access to torch headers via types.h and includes libtorch_configured transitively
+    ],
+)
