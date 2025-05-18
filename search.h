@@ -89,7 +89,7 @@ std::optional<Move> get_best_move_mcts_sync( // Renamed for clarity
     ChaturajiNN& network, // Pass by non-const reference as network state isn't changed, but inference isn't const
     int simulations,
     torch::Device device,
-    double c_puct = 1.0,
+    double c_puct = 2.5,
     int mcts_batch_size = 16 // Parameter for internal batching
 );
 

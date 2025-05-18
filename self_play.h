@@ -49,7 +49,7 @@ public:
         size_t max_buffer_size = 1250000,
         int nn_batch_size = 4096,
         int worker_batch_size = 16,
-        double c_puct = 1.0,
+        double c_puct = 2.5,
         int temperature_decay_move = 25,
         double dirichlet_alpha = 0.3,
         double dirichlet_epsilon = 0.25

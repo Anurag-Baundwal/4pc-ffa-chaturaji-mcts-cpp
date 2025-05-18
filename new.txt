@@ -1,0 +1,16 @@
+2 workers with worker batch size of 8 (ie collecting 8 positions before sending them for evaluation):
+175 sec for 32 games
+
+8, 8:
+135 sec per game
+
+now change nn batch to 256:
+no effect - 120 sec
+
+4 workers with worker batch of 32:
+137 sec
+168 sec for iter 2
+
+12w 32 wb:
+
+8w 4wb:
