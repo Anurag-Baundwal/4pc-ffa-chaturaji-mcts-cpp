@@ -261,6 +261,17 @@ void train(
             loss.backward();
             optimizer.step();
 
+            // --- PRINT LOSS FOR CURRENT STEP ---
+            if ((step + 1) % 1 == 0) { // Print every step, or change 1 to N to print every N steps
+                std::cout << "  Iter " << (iteration + 1)
+                          << ", Step " << (step + 1) << "/" << dynamic_steps_per_iteration
+                          << ": Loss: " << loss.item<double>()
+                          << " (Policy: " << policy_loss.item<double>()
+                          << ", Value: " << value_loss.item<double>() << ")"
+                          << std::endl;
+            }
+            // --- END PRINT LOSS FOR CURRENT STEP ---
+
             total_loss += loss.item<double>();
             total_policy_loss += policy_loss.item<double>();
             total_value_loss += value_loss.item<double>();
