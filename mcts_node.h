@@ -54,7 +54,7 @@ public:
 
     /**
      * @brief Updates the visit count and total value of this node *only*.
-     *        Backpropagation is handled externally (e.g., by backpropagate_path).
+     *        Backpropagation is handled externally.
      * @param value The value obtained from the simulation or network evaluation (from the perspective of the player *at the root node*).
      */
     void update_stats(double value); // Renamed from update to avoid confusion

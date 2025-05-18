@@ -137,8 +137,8 @@ void SelfPlay::process_worker_batch(
           }
 
 
-          // Backpropagate value (always from root player's perspective)
-          backpropagate_path(path, static_cast<double>(result.value));
+          // Backpropagate value (result.value is from the perspective of leaf_node's player)
+          backpropagate_mcts_value(path, static_cast<double>(result.value)); 
 
       } catch (const std::future_error& e) {
           std::cerr << "Future error processing worker batch item " << i << ": " << e.what() << " Code: " << e.code() << std::endl;
@@ -315,10 +315,18 @@ void SelfPlay::run_game_simulation(
 
               // 2. Check if leaf is terminal
               if (leaf_node->get_board().is_game_over()) {
+                  Player player_at_leaf = leaf_node->get_board().get_current_player(); 
                   std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
                   std::map<Player, double> reward_map = get_reward_map(final_scores);
-                  double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0;
-                  backpropagate_path(current_mcts_path.path, value);
+                  
+                  double value_for_player_at_leaf_terminal = 0.0; 
+                  if (reward_map.count(player_at_leaf)) {
+                      value_for_player_at_leaf_terminal = reward_map.at(player_at_leaf);
+                  } else {
+                      std::cerr << "Worker " << worker_id << ": Warning - Player " << static_cast<int>(player_at_leaf)
+                                << " not found in reward_map for terminal node. Using 0.0 for backprop." << std::endl;
+                  }
+                  backpropagate_mcts_value(current_mcts_path.path, value_for_player_at_leaf_terminal);
               } else {
                   // 3. Non-terminal leaf: Add to pending batch
                   leaf_node->increment_pending_visits();

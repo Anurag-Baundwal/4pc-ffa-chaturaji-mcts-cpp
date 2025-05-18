@@ -97,7 +97,7 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
 // Renamed from update -> update_stats
 void MCTSNode::update_stats(double value) {
     visit_count_++;
-    total_value_ += value; // Accumulate value (root's perspective)
+    total_value_ += value;
 }
 
 // --- Methods for Async Support ---
@@ -139,37 +139,42 @@ double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const
     // Effective N(s,a) and W(s,a) incorporating pending visits and virtual loss
     // N'(s,a) = N(s,a) + P(s,a)  (Real visits + Pending visits)
     // W'(s,a) = W(s,a) - P(s,a) * V_loss (Real value - Virtual Losses)
-    double child_visits = static_cast<double>(child->visit_count_);
-    double child_pending = static_cast<double>(child->pending_visits_);
-    double child_total_value = child->total_value_; // Real accumulated value
+    double child_visits_real = static_cast<double>(child->visit_count_);
+    double child_pending_visits_val = static_cast<double>(child->pending_visits_);
+    double child_total_value_for_child_player = child->total_value_; // Real accumulated value
 
-    double effective_visits = child_visits + child_pending;
-    double effective_value = child_total_value - (child_pending * VIRTUAL_LOSS_VALUE);
+    double effective_child_visits = child_visits_real + child_pending_visits_val;
+    double effective_value_for_child_player = child_total_value_for_child_player - (child_pending_visits_val * VIRTUAL_LOSS_VALUE);
 
     // Q'(s,a) = W'(s,a) / N'(s,a)
-    double q_value = 0.0;
-    if (effective_visits > epsilon) { // Avoid division by zero
-       q_value = effective_value / effective_visits;
+    double q_value_for_child_player = 0.0;
+    if (effective_child_visits > epsilon) { // Avoid division by zero
+       q_value_for_child_player = effective_value_for_child_player / effective_child_visits;
     }
-    // If effective_visits is 0 (child unvisited and not pending), q_value remains 0.0,
+    // If effective_child_visits is 0 (child unvisited and not pending), q_value remains 0.0,
     // which is appropriate as the U-term will dominate.
+    
+    // The parent (this node) wants to choose a move that maximizes ITS OWN expected outcome.
+    // q_value_for_child_player is the expected outcome for the player at the child node.
+    // From the parent's perspective, this value should be negated.
+    double q_value_for_parent_perspective = -q_value_for_child_player;
 
     // Calculate Parent Visits N(s) = sum_b N'(s,b) for the U-term denominator
     // Instead of summing children, we use the parent's recorded visits + pending visits
     // N(s) = N_parent(s) + P_parent(s)
     // Note: `this` is the parent node here.
-    double parent_visits = static_cast<double>(this->visit_count_);
-    double parent_pending = static_cast<double>(this->pending_visits_);
-    double parent_total_effective_visits = parent_visits + parent_pending;
+    double parent_visits_real = static_cast<double>(this->visit_count_);
+    double parent_visits_pending_val = static_cast<double>(this->pending_visits_);
+    double parent_total_effective_visits = parent_visits_real + parent_visits_pending_val;
 
 
     // U(s,a) = c_puct * P(s,a) * sqrt(N(s)) / (1 + N'(s,a))
     // Where P(s,a) is the prior probability of the child action.
     double u_value = c_puct * child->prior_ *
                      std::sqrt(parent_total_effective_visits + epsilon) / // Add epsilon for sqrt safety
-                     (1.0 + effective_visits);
+                     (1.0 + effective_child_visits);
 
-    return q_value + u_value;
+    return q_value_for_parent_perspective + u_value;
 }
 
 

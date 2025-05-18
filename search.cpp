@@ -68,14 +68,20 @@ std::map<Move, double> process_policy(const torch::Tensor& policy_logits, const 
     return policy_probs;
 }
 
-// --- Iterative Backpropagation (Unchanged) ---
-void backpropagate_path(const std::vector<MCTSNode*>& path, double value) {
-  // Iterate path in reverse (from leaf up to, but not including, root's parent which is null)
-  for (auto it = path.rbegin(); it != path.rend(); ++it) {
-    MCTSNode* node = *it;
-    // Call the public update_stats method on each node in the path.
-    node->update_stats(value); // <-- Use the renamed public method
-  }
+// --- Backpropagation Function ---
+void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, double leaf_value_for_leaf_player) {
+    double current_value_for_node_player = leaf_value_for_leaf_player;
+    // Iterate path in reverse (from leaf up to the root)
+    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        MCTSNode* node = *it;
+        // MCTSNode::update_stats (visit_count_++, total_value_ += value)
+        // receives a value that is now correctly signed for 'node's player.
+        node->update_stats(current_value_for_node_player);
+
+        // For the parent of 'node', the value of this outcome is the negative
+        // of what it was for 'node'.
+        current_value_for_node_player *= -1.0;
+    }
 }
 
 // --- Synchronous MCTS Implementation (for inference/analysis) ---
@@ -145,10 +151,10 @@ void evaluate_and_expand_batch_sync(
       } // else: Node is no longer a leaf (already expanded by another entry in this batch) or is terminal. Do not expand again.
 
       // c. Get the value for this leaf
-      double value = value_batch[i].item<double>(); // Value is from root's perspective
+      double value_for_leaf_player = value_batch[i].item<double>(); // Value is from leaf's current player's perspective
 
       // d. Backpropagate the value up this leaf's path REGARDLESS of expansion success
-      backpropagate_path(path, value);
+      backpropagate_mcts_value(path, value_for_leaf_player);
   }
 
   // Clear the processed batch
@@ -206,14 +212,16 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
                            << ", IsGameOver: " << current_sim.current_node->get_board().is_game_over() << std::endl;
                  // If selection failed, we cannot proceed down this path. Backpropagate terminal value if possible.
                  if (current_sim.current_node->get_board().is_game_over()){
-                    std::map<Player, int> final_scores = current_sim.current_node->get_board().get_game_result();
+                    MCTSNode* terminal_leaf = current_sim.current_node; // This node is the "leaf" of this failed path
+                    Player player_at_this_terminal_node = terminal_leaf->get_board().get_current_player();
+                    std::map<Player, int> final_scores = terminal_leaf->get_board().get_game_result();
                     std::map<Player, double> reward_map = get_reward_map(final_scores);
-                    double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0; // Use appropriate default
-                    backpropagate_path(current_sim.path, value);
+                    double value_for_this_node = reward_map.count(player_at_this_terminal_node) ? reward_map.at(player_at_this_terminal_node) : -1.0; // Use appropriate default
+                    backpropagate_mcts_value(current_sim.path, value_for_this_node);
                  } else {
                      // Non-terminal node where selection failed? This is odd.
                      // Backpropagate a neutral value (0?) or error value? Let's use 0 for now.
-                     backpropagate_path(current_sim.path, 0.0);
+                     backpropagate_mcts_value(current_sim.path, 0.0);
                  }
 
                  goto next_simulation; // Use goto to jump to the start of the next simulation cleanly
@@ -225,11 +233,25 @@ void run_mcts_simulations_sync( // Renamed from run_mcts_simulations_batch
 
       // 2. Check if leaf is terminal or needs evaluation
       if (current_sim.current_node->get_board().is_game_over()) {
-          // Terminal node: Calculate reward and backpropagate immediately
-          std::map<Player, int> final_scores = current_sim.current_node->get_board().get_game_result();
-          std::map<Player, double> reward_map = get_reward_map(final_scores);
-          double value = reward_map.count(root_player) ? reward_map.at(root_player) : -1.0;
-          backpropagate_path(current_sim.path, value);
+          MCTSNode* terminal_leaf = current_sim.current_node;
+          Player player_at_terminal_leaf = terminal_leaf->get_board().get_current_player();
+          // Note: If game ends, current_player might be the *next* player if the game ended due to
+          // the previous player's move resulting in elimination/draw.
+          // The reward should ideally be for the player whose action *led to* or *was about to be made from* this state.
+          // For simplicity, if get_current_player() on a terminal board returns the player who would have
+          // hypothetically moved next, using their reward is a common approach.
+
+          std::map<Player, int> final_scores = terminal_leaf->get_board().get_game_result();
+          std::map<Player, double> reward_map = get_reward_map(final_scores); // reward_map has {Player: rank_reward}
+
+          double value_for_leaf_player_at_terminal = 0.0;
+          if (reward_map.count(player_at_terminal_leaf)) {
+              value_for_leaf_player_at_terminal = reward_map.at(player_at_terminal_leaf);
+          } else {
+               std::cerr << "Warning (Sync MCTS): Player " << static_cast<int>(player_at_terminal_leaf)
+                         << " not found in reward_map for terminal node. Using 0.0 for backprop." << std::endl;
+          }
+          backpropagate_mcts_value(current_sim.path, value_for_leaf_player_at_terminal);
       } else {
           // Non-terminal leaf: Add to pending batch for synchronous evaluation
           pending_evaluation.push_back(std::move(current_sim)); // Move the state

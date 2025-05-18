@@ -32,12 +32,12 @@ struct SimulationState {
 };
 
 /**
-* @brief Backpropagates a value iteratively up a stored path using the node's update_stats method.
-*
-* @param path The path from the root to the leaf (inclusive).
-* @param value The value to backpropagate (from the root's perspective).
-*/
-void backpropagate_path(const std::vector<MCTSNode*>& path, double value);
+ * @brief Backpropagates a value up the MCTS path, alternating signs.
+ * The value passed to each node's update_stats will be from that node's player's perspective.
+ * @param path The path from root to leaf (inclusive, leaf is at path.back()).
+ * @param leaf_value_for_leaf_player The value of the leaf state, from the perspective of the player whose turn it is at the leaf.
+ */
+void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, double leaf_value_for_leaf_player);
 
 // --- REMOVED evaluate_and_expand_batch DECLARATION ---
 // This function's role is replaced by the async evaluator and result processing.
