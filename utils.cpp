@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "magic_utils.h" // Include for magic_utils::BOARD_SIZE and other utilities
 #include <stdexcept>
 #include <vector>
 #include <map>
@@ -32,7 +33,8 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   
   // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) = 33 channels
   constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1; 
-  torch::Tensor tensor = torch::zeros({NUM_CHANNELS_TOTAL, BOARD_SIZE, BOARD_SIZE}, options);
+  // Use magic_utils::BOARD_SIZE
+  torch::Tensor tensor = torch::zeros({NUM_CHANNELS_TOTAL, magic_utils::BOARD_SIZE, magic_utils::BOARD_SIZE}, options);
 
   // Piece Placement Channels (0-19) using bitboards
   for (int p_idx = 0; p_idx < 4; ++p_idx) { // Iterate players
@@ -44,10 +46,11 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
 
           Bitboard temp_bb = bb;
           while(temp_bb) {
-              int sq_idx = Board::pop_lsb(temp_bb); // Use Board's static pop_lsb
-              BoardLocation loc = Board::from_sq_idx(sq_idx); // Use Board's static from_sq_idx
+              int sq_idx = magic_utils::pop_lsb(temp_bb); // Use magic_utils::pop_lsb
+              BoardLocation loc = magic_utils::from_sq_idx(sq_idx); // Use magic_utils::from_sq_idx
               if (channel >= 0 && channel < NUM_PIECE_CHANNELS_ONLY) {
-                  if(loc.row >=0 && loc.row < BOARD_SIZE && loc.col >=0 && loc.col < BOARD_SIZE) {
+                  // Use magic_utils::BOARD_SIZE for bounds checking
+                  if(loc.row >=0 && loc.row < magic_utils::BOARD_SIZE && loc.col >=0 && loc.col < magic_utils::BOARD_SIZE) {
                      tensor[channel][loc.row][loc.col] = 1.0f;
                   } else {
                       std::cerr << "Warning: sq_idx " << sq_idx << " gave invalid loc " << loc.row << "," << loc.col << std::endl;
@@ -124,37 +127,40 @@ int move_to_policy_index(const Move& move) {
     int to_row = move.to_loc.row;
     int to_col = move.to_loc.col;
 
-    if (fr_row < 0 || fr_row >= BOARD_SIZE || fr_col < 0 || fr_col >= BOARD_SIZE ||
-        to_row < 0 || to_row >= BOARD_SIZE || to_col < 0 || to_col >= BOARD_SIZE) {
+    // Use magic_utils::BOARD_SIZE for bounds checking
+    if (fr_row < 0 || fr_row >= magic_utils::BOARD_SIZE || fr_col < 0 || fr_col >= magic_utils::BOARD_SIZE ||
+        to_row < 0 || to_row >= magic_utils::BOARD_SIZE || to_col < 0 || to_col >= magic_utils::BOARD_SIZE) {
         throw std::out_of_range("Move coordinates are out of board bounds for policy index.");
     }
-    int from_index = fr_row * BOARD_SIZE + fr_col;
-    int to_index = to_row * BOARD_SIZE + to_col;
-    return from_index * (BOARD_SIZE * BOARD_SIZE) + to_index; // Range 0 to 63*64 + 63 = 4095
+    // Use magic_utils::BOARD_SIZE for calculations
+    int from_index = fr_row * magic_utils::BOARD_SIZE + fr_col;
+    int to_index = to_row * magic_utils::BOARD_SIZE + to_col;
+    return from_index * (magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE) + to_index; // Range 0 to 63*64 + 63 = 4095
 }
 
 
 Move policy_index_to_move(int index) {
-    if (index < 0 || index >= (BOARD_SIZE * BOARD_SIZE * BOARD_SIZE * BOARD_SIZE)) { // 64*64 = 4096 possibilities
+    // Use magic_utils::BOARD_SIZE for bounds checking and calculations
+    if (index < 0 || index >= (magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE)) { // 64*64 = 4096 possibilities
          throw std::out_of_range("Policy index " + std::to_string(index) + " is out of bounds (0-4095).");
     }
-    int to_index = index % (BOARD_SIZE * BOARD_SIZE);
-    int from_index = index / (BOARD_SIZE * BOARD_SIZE);
+    int to_index = index % (magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE);
+    int from_index = index / (magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE);
 
-    int to_row = to_index / BOARD_SIZE;
-    int to_col = to_index % BOARD_SIZE;
-    int from_row = from_index / BOARD_SIZE;
-    int from_col = from_index % BOARD_SIZE;
+    int to_row = to_index / magic_utils::BOARD_SIZE;
+    int to_col = to_index % magic_utils::BOARD_SIZE;
+    int from_row = from_index / magic_utils::BOARD_SIZE;
+    int from_col = from_index % magic_utils::BOARD_SIZE;
 
     return Move(BoardLocation(from_row, from_col), BoardLocation(to_row, to_col), std::nullopt);
 }
 
 std::string get_san_string(const Move& move, const Board& board) {
      std::stringstream ss;
-     // Get piece at 'from' location using bitboards
-     std::optional<Piece> from_piece_opt = board.get_piece_at_sq(Board::to_sq_idx(move.from_loc.row, move.from_loc.col));
-     // Check if 'to' location has a piece (for capture 'x') using bitboards
-     std::optional<Piece> to_piece_opt = board.get_piece_at_sq(Board::to_sq_idx(move.to_loc.row, move.to_loc.col)); 
+     // Get piece at 'from' location using bitboards and magic_utils::to_sq_idx
+     std::optional<Piece> from_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.from_loc.row, move.from_loc.col));
+     // Check if 'to' location has a piece (for capture 'x') using bitboards and magic_utils::to_sq_idx
+     std::optional<Piece> to_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.to_loc.row, move.to_loc.col)); 
 
      if (!from_piece_opt) {
          return "ERROR_NO_FROM_PIECE"; 
@@ -170,12 +176,12 @@ std::string get_san_string(const Move& move, const Board& board) {
         default: ss << '?'; break; // Should not happen with current PieceTypes
      }
      ss << static_cast<char>('a' + move.from_loc.col);
-     ss << (BOARD_SIZE - move.from_loc.row);
+     ss << (magic_utils::BOARD_SIZE - move.from_loc.row); // Use magic_utils::BOARD_SIZE
      if (to_piece_opt) {
          ss << 'x';
      }
      ss << static_cast<char>('a' + move.to_loc.col);
-     ss << (BOARD_SIZE - move.to_loc.row);
+     ss << (magic_utils::BOARD_SIZE - move.to_loc.row); // Use magic_utils::BOARD_SIZE
      if (move.promotion_piece_type) {
          ss << '=';
           switch(*move.promotion_piece_type) {
@@ -189,9 +195,9 @@ std::string get_san_string(const Move& move, const Board& board) {
 std::string get_uci_string(const Move& move) {
     std::stringstream ss;
     ss << static_cast<char>('a' + move.from_loc.col);
-    ss << (BOARD_SIZE - move.from_loc.row);
+    ss << (magic_utils::BOARD_SIZE - move.from_loc.row); // Use magic_utils::BOARD_SIZE
     ss << static_cast<char>('a' + move.to_loc.col);
-    ss << (BOARD_SIZE - move.to_loc.row);
+    ss << (magic_utils::BOARD_SIZE - move.to_loc.row); // Use magic_utils::BOARD_SIZE
 
     if (move.promotion_piece_type) {
           switch(*move.promotion_piece_type) {

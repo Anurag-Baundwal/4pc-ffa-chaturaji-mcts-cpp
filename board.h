@@ -11,12 +11,13 @@
 
 #include "types.h"
 #include "piece.h"
+#include "magic_utils.h" // Include the new magic utilities
 
 namespace chaturaji_cpp {
 
-// Define board size constant
-constexpr int BOARD_SIZE = 8;
-constexpr int NUM_SQUARES_BB = 64;
+// Define board size constants
+constexpr int BOARD_SIZE_LOCAL = 8; // Renamed to avoid conflict if magic_utils is used directly in header
+constexpr int NUM_SQUARES_BB_LOCAL = 64; // Renamed
 
 // Forward declaration
 class Board;
@@ -68,8 +69,7 @@ public:
     void setup_initial_board();
     bool is_valid_square(int row, int col) const; // Checks if (row, col) is within board boundaries
     static bool is_valid_sq_idx(int sq_idx);      // Checks if a square index (0-63) is valid
-    static int to_sq_idx(int r, int c);           // Converts (row, col) to a square index (0-63)
-    static BoardLocation from_sq_idx(int sq_idx); // Converts a square index (0-63) to (row, col)
+    // to_sq_idx and from_sq_idx are now in magic_utils
     std::optional<Piece> get_piece_at_sq(int sq_idx) const; // Get piece from bitboards
 
     std::vector<Move> get_pseudo_legal_moves(Player player) const;
@@ -106,35 +106,11 @@ public:
     // --- Utility ---
     void print_board() const;
     PositionKey get_position_key() const;
-    static void print_bitboard(Bitboard bb, const std::string& label = ""); // Utility to print a bitboard
+    // print_bitboard now uses magic_utils::get_bit and magic_utils::to_sq_idx
+    static void print_bitboard(Bitboard bb, const std::string& label = ""); 
 
-    // --- Bitboard Manipulation Helpers ---
-    static inline void set_bit(Bitboard& bb, int sq_idx) { bb |= (1ULL << sq_idx); }
-    static inline void clear_bit(Bitboard& bb, int sq_idx) { bb &= ~(1ULL << sq_idx); }
-    static inline bool get_bit(Bitboard bb, int sq_idx) { return (bb >> sq_idx) & 1ULL; }
-    static inline int pop_lsb(Bitboard& bb) { // Gets and clears the least significant bit
-        if (bb == 0) return -1; // Or throw exception
-        #ifdef _MSC_VER
-            unsigned long index;
-            _BitScanForward64(&index, bb);
-            bb &= bb - 1; // Clears the LSB
-            return static_cast<int>(index);
-        #else // Assuming GCC/Clang
-            int index = __builtin_ctzll(bb); // Count trailing zeros (index of LSB)
-            bb &= bb - 1; // Clears the LSB
-            return index;
-        #endif
-    }
-    static inline int get_lsb_index(Bitboard bb) { // Gets the index of the least significant bit
-         if (bb == 0) return -1; // Or throw exception
-        #ifdef _MSC_VER
-            unsigned long index;
-            _BitScanForward64(&index, bb);
-            return static_cast<int>(index);
-        #else // Assuming GCC/Clang
-            return __builtin_ctzll(bb);
-        #endif
-    }
+    // --- Bitboard Manipulation Helpers removed, use magic_utils::set_bit, etc. ---
+    
     // Helper to map PieceType to 0-4 index for bitboards_
     static int piece_type_to_bb_idx(PieceType pt);
 
@@ -156,29 +132,31 @@ private:
     Bitboard occupied_bitboard_;                             // All pieces on the board
 
     // Precomputed attack/move lookup tables for bitboards
-    static std::array<Bitboard, NUM_SQUARES_BB> knight_attacks_;
-    static std::array<Bitboard, NUM_SQUARES_BB> king_attacks_;
+    // These are specific to Board's internal representation and initialization
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> knight_attacks_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> king_attacks_;
     // Pawn attacks are direction-dependent per player (and color)
-    static std::array<std::array<Bitboard, NUM_SQUARES_BB>, 4> pawn_attacks_red_;    // [player_idx][square_idx]
-    static std::array<std::array<Bitboard, NUM_SQUARES_BB>, 4> pawn_attacks_blue_;   // Red, Blue, Yellow, Green typically have different 'forward'
-    static std::array<std::array<Bitboard, NUM_SQUARES_BB>, 4> pawn_attacks_yellow_;
-    static std::array<std::array<Bitboard, NUM_SQUARES_BB>, 4> pawn_attacks_green_;
+    static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_red_;
+    static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_blue_;
+    static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_yellow_;
+    static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_green_;
     // Pawn forward (non-capturing) moves
-    static std::array<Bitboard, NUM_SQUARES_BB> pawn_fwd_moves_red_;
-    static std::array<Bitboard, NUM_SQUARES_BB> pawn_fwd_moves_blue_;
-    static std::array<Bitboard, NUM_SQUARES_BB> pawn_fwd_moves_yellow_;
-    static std::array<Bitboard, NUM_SQUARES_BB> pawn_fwd_moves_green_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_red_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_blue_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_yellow_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_green_;
 
     // --- Magic Bitboard Data for Sliding Pieces (Rooks, Bishops) ---
-    static std::array<Bitboard, NUM_SQUARES_BB> rook_masks_;       // Relevant occupancy bits for rook moves from each square
-    static std::array<Bitboard, NUM_SQUARES_BB> bishop_masks_;     // Relevant occupancy bits for bishop moves from each square
-    static std::array<int, NUM_SQUARES_BB> rook_shift_bits_;     // Precomputed shift amounts for rook magic indexing
-    static std::array<int, NUM_SQUARES_BB> bishop_shift_bits_;   // Precomputed shift amounts for bishop magic indexing
+    // These are populated by initialize_lookup_tables using magic_utils functions and constants
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> rook_masks_;
+    static std::array<Bitboard, magic_utils::NUM_SQUARES> bishop_masks_;
+    static std::array<int, magic_utils::NUM_SQUARES> rook_shift_bits_;
+    static std::array<int, magic_utils::NUM_SQUARES> bishop_shift_bits_;
     
-    static std::vector<Bitboard> rook_attack_table_;             // Flat lookup table for all possible rook attacks, indexed by magic
-    static std::vector<Bitboard> bishop_attack_table_;           // Flat lookup table for all possible bishop attacks, indexed by magic
-    static std::array<unsigned int, NUM_SQUARES_BB> rook_attack_offsets_; // Offsets into rook_attack_table_ for each square
-    static std::array<unsigned int, NUM_SQUARES_BB> bishop_attack_offsets_;// Offsets into bishop_attack_table_ for each square
+    static std::vector<Bitboard> rook_attack_table_;
+    static std::vector<Bitboard> bishop_attack_table_;
+    static std::array<unsigned int, magic_utils::NUM_SQUARES> rook_attack_offsets_;
+    static std::array<unsigned int, magic_utils::NUM_SQUARES> bishop_attack_offsets_;
     // --- End Magic Bitboard Data ---
 
     // Helper to initialize static lookup tables (including magic bitboards)

@@ -33,17 +33,30 @@ cc_library(
     hdrs = [
         "types.h",
         "piece.h",
-        "thread_safe_queue.h", # ADDED thread_safe_queue header
+        "thread_safe_queue.h",
     ],
     copts = select({
         "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
         "//conditions:default": [ "/std:c++17", ],
     }),
-    # --- ADDED DEPENDENCY HERE ---
     deps = [
-        ":libtorch_configured", # Needed because types.h now includes torch/torch.h
+        ":libtorch_configured",
     ],
-    # --- END ADDED DEPENDENCY ---
+)
+
+# === Magic Utilities Library ===
+cc_library(
+    name = "chaturaji_magic_utils",  # Consistent naming convention
+    srcs = ["magic_utils.cpp"],
+    hdrs = ["magic_utils.h"],
+    copts = select({
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
+    }),
+    deps = [
+        ":chaturaji_types", # magic_utils.h includes types.h
+                           # No need for libtorch_configured directly here if types.h handles it
+    ],
 )
 
 cc_library(
@@ -55,7 +68,8 @@ cc_library(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_types", # This now transitively provides libtorch includes
+        ":chaturaji_types",
+        ":chaturaji_magic_utils", # board.h and board.cpp use magic_utils
     ],
 )
 
@@ -70,7 +84,8 @@ cc_library(
     deps = [
         ":chaturaji_board",
         ":chaturaji_types",
-        ":libtorch_configured", # Keep explicit dependency for clarity too
+        ":chaturaji_magic_utils", # utils.cpp uses magic_utils
+        ":libtorch_configured",
     ],
 )
 
@@ -90,7 +105,6 @@ cc_library(
     ],
 )
 
-# NEW: Evaluator component
 cc_library(
     name = "chaturaji_evaluator",
     srcs = ["evaluator.cpp"],
@@ -101,7 +115,7 @@ cc_library(
     }),
     deps = [
         ":chaturaji_model",
-        ":chaturaji_types", # Depends on EvaluationRequest/Result, ThreadSafeQueue
+        ":chaturaji_types",
         ":libtorch_configured",
     ],
 )
@@ -115,8 +129,9 @@ cc_library(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_board",
-        ":chaturaji_types", # This now transitively provides libtorch includes
+        ":chaturaji_board", # mcts_node.cpp includes board.h which now includes magic_utils.h
+        ":chaturaji_types",
+        # ":chaturaji_magic_utils", # Implicitly included via chaturaji_board
     ],
 )
 
@@ -131,10 +146,12 @@ cc_library(
     deps = [
         ":chaturaji_board",
         ":chaturaji_mcts_node",
-        ":chaturaji_model", # Still needed for sync mode
+        ":chaturaji_model",
         ":chaturaji_types",
-        ":chaturaji_utils",
-        ":libtorch_configured", # Still needed for sync mode
+        ":chaturaji_utils", # utils.h might be included directly or transitively.
+                            # search.h includes utils.h.
+        # ":chaturaji_magic_utils", # Implicit via board or utils
+        ":libtorch_configured",
     ],
 )
 
@@ -150,13 +167,14 @@ cc_library(
     }),
     deps = [
         ":chaturaji_board",
-        ":chaturaji_evaluator", # Depends on Evaluator now
+        ":chaturaji_evaluator",
         ":chaturaji_mcts_node",
-        ":chaturaji_model",     # Still needed to pass handle to Evaluator
-        ":chaturaji_search",    # Needs get_reward_map, process_policy etc.
+        ":chaturaji_model",
+        ":chaturaji_search",
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured", # Keep explicit dependency
+        # ":chaturaji_magic_utils", # Implicit
+        ":libtorch_configured",
     ],
 )
 
@@ -170,10 +188,11 @@ cc_library(
     }),
     deps = [
         ":chaturaji_model",
-        ":chaturaji_self_play", # Depends on SelfPlay
+        ":chaturaji_self_play",
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured", # Keep explicit dependency
+        # ":chaturaji_magic_utils", # Implicit
+        ":libtorch_configured",
     ],
 )
 
@@ -187,17 +206,17 @@ cc_binary(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        # Include all necessary components
         ":chaturaji_board",
-        ":chaturaji_evaluator", # Needed by SelfPlay
+        ":chaturaji_evaluator",
         ":chaturaji_model",
         ":chaturaji_search",
-        ":chaturaji_self_play", # Needed by Training
-        ":chaturaji_strength_test", # NEW: Strength test component
+        ":chaturaji_self_play",
+        ":chaturaji_strength_test",
         ":chaturaji_training",
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":libtorch_configured", # Keep explicit dependency
+        ":chaturaji_magic_utils", # main.cpp might not directly use it, but good to link all our libs
+        ":libtorch_configured",
     ],
 )
 
@@ -209,14 +228,11 @@ cc_test(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_board",
-        ":chaturaji_types", # This now transitively provides libtorch includes
-        # Test doesn't need libtorch linked explicitly, just headers via types
+        ":chaturaji_board", # board.h includes magic_utils.h
+        ":chaturaji_types",
     ],
-    # linkstatic = True, # Consider removing if causing issues with DLLs/shared libs
 )
 
-# === NEW: Strength Test ===
 cc_library(
     name = "chaturaji_strength_test",
     srcs = ["strength_test.cpp"],
@@ -226,17 +242,15 @@ cc_library(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        # Needs components used for running games synchronously
         ":chaturaji_board",
         ":chaturaji_model",
         ":chaturaji_search",
         ":chaturaji_types",
         ":chaturaji_utils",
+        # ":chaturaji_magic_utils", # Implicit
         ":libtorch_configured",
     ],
 )
-
-# === Utilities ===
 
 cc_binary(
     name = "magic_finder",
@@ -245,14 +259,13 @@ cc_binary(
         "//:cuda_build": [
             "-std=c++17",
             "-D AT_CUDA_ENABLED=1",
-            # These flags are appropriate for NVCC or CUDA-compatible host compilers like GCC/Clang.
-            # If MSVC is used as the host compiler for CUDA, additional adjustments may be required.
         ],
         "//conditions:default": [
-            "/std:c++17",  # Compiler flag for C++17 when using MSVC
+            "/std:c++17",
         ],
     }),
     deps = [
-        ":chaturaji_types",  # Provides access to torch headers via types.h and includes libtorch_configured transitively
+        ":chaturaji_types",
+        ":chaturaji_magic_utils", # magic_finder.cpp directly includes magic_utils.h
     ],
 )
