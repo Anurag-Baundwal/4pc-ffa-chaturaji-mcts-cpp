@@ -23,6 +23,7 @@
 #include <chrono>
 #include <iomanip>
 #include <filesystem>
+#include <fstream> // Added for std::ofstream
 
 namespace fs = std::filesystem;
 
@@ -107,14 +108,48 @@ void train(
   ss_ts << std::put_time(std::localtime(&now_c), "%Y%m%d_%H%M%S");
   std::string timestamp = ss_ts.str();
   fs::path model_dir = fs::path(model_save_dir_base) / ("run_" + timestamp);
-  try { fs::create_directories(model_dir); std::cout << "Model directory created: " << model_dir << std::endl; }
-  catch (const std::exception& e) { std::cerr << "Error creating model directory: " << e.what() << std::endl; return; }
+
+  std::ofstream log_file; // Declare log_file here
+  fs::path log_file_path = model_dir / "detailed_training_log.txt"; // Save in the run-specific directory
+
+  try { 
+      fs::create_directories(model_dir); 
+      std::cout << "Model directory created: " << model_dir << std::endl; 
+  }
+  catch (const std::exception& e) { 
+      std::cerr << "Error creating model directory: " << e.what() << std::endl; 
+      // Log file cannot be opened yet if directory creation fails
+      return; 
+  }
+
+  log_file.open(log_file_path.string(), std::ios_base::app); // Open in append mode
+
+  if (!log_file.is_open()) {
+      std::cerr << "Warning: Could not open log file: " << log_file_path << std::endl;
+  } else {
+      log_file << "Log file opened successfully: " << log_file_path << std::endl;
+  }
+
+  if (log_file.is_open()) { log_file << "Using device: " << device << std::endl; }
+  if (log_file.is_open()) { log_file << "Model directory created: " << model_dir << std::endl; }
+
+
   ChaturajiNN network;
   network->to(device); // Move network to device *before* passing to SelfPlay/Evaluator
   if (!initial_model_path.empty() && fs::exists(initial_model_path)) {
-      try { torch::load(network, initial_model_path, device); std::cout << "Loaded initial model from: " << initial_model_path << std::endl; }
-      catch (const c10::Error& e) { std::cerr << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; }
-  } else { std::cout << "No initial model provided or found. Starting from scratch." << std::endl; }
+      try { 
+          torch::load(network, initial_model_path, device); 
+          std::cout << "Loaded initial model from: " << initial_model_path << std::endl; 
+          if (log_file.is_open()) { log_file << "Loaded initial model from: " << initial_model_path << std::endl; }
+      }
+      catch (const c10::Error& e) { 
+          std::cerr << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; 
+          if (log_file.is_open()) { log_file << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; }
+      }
+  } else { 
+      std::cout << "No initial model provided or found. Starting from scratch." << std::endl; 
+      if (log_file.is_open()) { log_file << "No initial model provided or found. Starting from scratch." << std::endl; }
+  }
   torch::optim::Adam optimizer(network->parameters(), torch::optim::AdamOptions(learning_rate).weight_decay(weight_decay));
 
 
@@ -139,22 +174,31 @@ void train(
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
       bool perform_training_this_iteration = true; // Flag to control training execution
       std::cout << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl;
+      if (log_file.is_open()) { log_file << "\n---------- ITERATION " << (iteration + 1) << "/" << num_iterations << " ----------" << std::endl; }
       
       // --- Self-Play Phase ---
       std::cout << "Generating " << num_games_per_iteration
       << " self-play games (Workers: " << num_workers
       << ", NN Batch: " << nn_batch_size
       << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
+      if (log_file.is_open()) { 
+          log_file << "Generating " << num_games_per_iteration
+                   << " self-play games (Workers: " << num_workers
+                   << ", NN Batch: " << nn_batch_size
+                   << ", Worker Batch: " << worker_batch_size << ")..." << std::endl;
+      }
       auto start_selfplay = std::chrono::high_resolution_clock::now();
       // Generate data using workers and append to buffer
       // But also capture the number of generated steps
       size_t num_generated_data_points = self_play_generator.generate_data(num_games_per_iteration); 
       auto end_selfplay = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> selfplay_duration = end_selfplay - start_selfplay;
-      std::cout << "Self-play generation finished in " << selfplay_duration.count() << " seconds." << std::endl;
+      std::cout << "Self-play generation finished in " << selfplay_duration.count() << " seconds. Generated " << num_generated_data_points << " data points." << std::endl;
+      if (log_file.is_open()) { log_file << "Self-play generation finished in " << selfplay_duration.count() << " seconds. Generated " << num_generated_data_points << " data points." << std::endl; }
       
       const ReplayBuffer& replay_buffer = self_play_generator.get_buffer();
       size_t current_buffer_size = replay_buffer.size();
+      if (log_file.is_open()) { log_file << "Current replay buffer size: " << current_buffer_size << std::endl; }
 
       // --- Calculate dynamic steps_per_iteration ---
       int dynamic_steps_per_iteration = 0; // Default to 0 steps
@@ -181,6 +225,12 @@ void train(
                       << ", Num generated data points: " << num_generated_data_points
                       << ", Buffer size: " << current_buffer_size << ", Training Batch size: " << training_batch_size 
                       << ", Target Sampling Rate: " << target_sampling_rate_param << std::endl;
+            if (log_file.is_open()) {
+                log_file << "  Skipping training this iteration. Dynamic steps: " << dynamic_steps_per_iteration
+                         << ", Num generated data points: " << num_generated_data_points
+                         << ", Buffer size: " << current_buffer_size << ", Training Batch size: " << training_batch_size 
+                         << ", Target Sampling Rate: " << target_sampling_rate_param << std::endl;
+            }
             perform_training_this_iteration = false;
       }
 
@@ -188,6 +238,11 @@ void train(
       std::cout << "Starting training for " << dynamic_steps_per_iteration << " steps (Batch Size: " << training_batch_size 
                 << ", Num data points generated this iteration: " << num_generated_data_points 
                 << ", Target sampling rate: " << target_sampling_rate_param << ")" << std::endl;
+      if (log_file.is_open()) {
+          log_file << "Starting training for " << dynamic_steps_per_iteration << " steps (Batch Size: " << training_batch_size 
+                   << ", Num data points generated this iteration: " << num_generated_data_points 
+                   << ", Target sampling rate: " << target_sampling_rate_param << ")" << std::endl;
+      }
       
       // Create a vector from the replay buffer for efficient random access during sampling.
       // This copy happens once per training phase.
@@ -198,9 +253,14 @@ void train(
           std::cerr << "Error: Scheduled training steps (" << dynamic_steps_per_iteration 
                     << ") but training_data_vector is empty. Buffer size reported as: " << current_buffer_size 
                     << ". Skipping training." << std::endl;
-          perform_training_this_iteration = false;
+          if (log_file.is_open()) {
+              log_file << "Error: Scheduled training steps (" << dynamic_steps_per_iteration 
+                       << ") but training_data_vector is empty. Buffer size reported as: " << current_buffer_size 
+                       << ". Skipping training." << std::endl;
+          }
+          perform_training_this_iteration = false; // Update flag if this specific error occurs
       }
-      if (perform_training_this_iteration) {
+      if (perform_training_this_iteration) { // Re-check flag after the potential error above
         // --- Training Phase ---
         // std::cout << "Starting training for " << dynamic_steps_per_iteration << " steps (Batch Size: " << training_batch_size << ")..." << std::endl;
         network->train(); // Set network to training mode
@@ -269,6 +329,14 @@ void train(
                           << " (Policy: " << policy_loss.item<double>()
                           << ", Value: " << value_loss.item<double>() << ")"
                           << std::endl;
+                if (log_file.is_open()) {
+                    log_file << "  Iter " << (iteration + 1)
+                             << ", Step " << (step + 1) << "/" << dynamic_steps_per_iteration
+                             << ": Loss: " << loss.item<double>()
+                             << " (Policy: " << policy_loss.item<double>()
+                             << ", Value: " << value_loss.item<double>() << ")"
+                             << std::endl;
+                }
             }
             // --- END PRINT LOSS FOR CURRENT STEP ---
 
@@ -289,8 +357,16 @@ void train(
                        << " (Policy: " << (total_policy_loss / steps_performed_this_iter)
                        << ", Value: " << (total_value_loss / steps_performed_this_iter) << ")"
                        << std::endl;
+             if (log_file.is_open()) {
+                 log_file << "  Training finished " << steps_performed_this_iter << " steps in " << train_duration.count() << "s."
+                          << " Avg Loss: " << (total_loss / steps_performed_this_iter)
+                          << " (Policy: " << (total_policy_loss / steps_performed_this_iter)
+                          << ", Value: " << (total_value_loss / steps_performed_this_iter) << ")"
+                          << std::endl;
+             }
         } else {
              std::cout << "  No training steps performed this iteration (after checks)." << std::endl;
+             if (log_file.is_open()) { log_file << "  No training steps performed this iteration (after checks)." << std::endl; }
         }
 
         network->eval(); // Set back to eval mode
@@ -302,14 +378,23 @@ void train(
            try {
                torch::save(network, save_path.string());
                std::cout << "Model saved after iteration " << (iteration + 1) << " to: " << save_path << std::endl;
+               if (log_file.is_open()) { log_file << "Model saved after iteration " << (iteration + 1) << " to: " << save_path << std::endl; }
            } catch (const c10::Error& e) {
                 std::cerr << "Error saving model: " << e.what() << std::endl;
+                if (log_file.is_open()) { log_file << "Error saving model: " << e.what() << std::endl; }
            }
        }
 
   } // End iteration loop
 
   std::cout << "\nTraining finished." << std::endl;
+  if (log_file.is_open()) {
+      log_file << "\nTraining finished." << std::endl;
+      log_file.close();
+      std::cout << "Detailed log saved to: " << log_file_path << std::endl; // This cout is fine as it's a final status to the user
+  } else {
+      std::cout << "Detailed log was not saved as the file could not be opened: " << log_file_path << std::endl;
+  }
 }
 
 // Helper function
