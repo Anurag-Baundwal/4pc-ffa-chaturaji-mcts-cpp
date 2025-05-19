@@ -15,6 +15,7 @@ const int POLICY_HEAD_CONV_CHANNELS = 12;
 // Value Head
 const int VALUE_HEAD_CONV_CHANNELS = 2;
 const int VALUE_FC_HIDDEN_CHANNELS = 96;
+const int NUM_VALUE_OUTPUTS = 4; // MODIFIED: Output 4 values for the 4 players
 // --- End Configuration Constants ---
 
 // --- ResBlock Implementation ---
@@ -53,10 +54,10 @@ ChaturajiNNImpl::ChaturajiNNImpl() :
     policy_fc_(torch::nn::LinearOptions(POLICY_HEAD_CONV_CHANNELS * 8 * 8, 4096)),
 
     // Value head
-    value_conv_(torch::nn::Conv2dOptions(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, /*kernel_size=*/1)), // NUM_CHANNELS in, 1 out
+    value_conv_(torch::nn::Conv2dOptions(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, /*kernel_size=*/1)), 
     value_bn_(VALUE_HEAD_CONV_CHANNELS),
-    value_fc1_(torch::nn::LinearOptions(VALUE_HEAD_CONV_CHANNELS * 8 * 8, VALUE_FC_HIDDEN_CHANNELS)), // 1*8*8 = 64 input features
-    value_fc2_(torch::nn::LinearOptions(VALUE_FC_HIDDEN_CHANNELS, 1)) // 1 output value
+    value_fc1_(torch::nn::LinearOptions(VALUE_HEAD_CONV_CHANNELS * 8 * 8, VALUE_FC_HIDDEN_CHANNELS)), 
+    value_fc2_(torch::nn::LinearOptions(VALUE_FC_HIDDEN_CHANNELS, NUM_VALUE_OUTPUTS)) // MODIFIED: Output 4 values
 {
     // Register input layer modules
     register_module("conv1", conv1_);
@@ -92,23 +93,23 @@ std::pair<torch::Tensor, torch::Tensor> ChaturajiNNImpl::forward(torch::Tensor x
     torch::Tensor p = policy_conv_(x);
     p = policy_bn_(p);
     p = torch::relu(p);
-    p = p.view({p.size(0), -1}); // Flatten - This automatically adapts to the new channel size from policy_conv_
+    p = p.view({p.size(0), -1}); 
     p = policy_fc_(p); // Output shape [Batch, 4096] (Logits)
 
     // --- Value Head ---
     torch::Tensor v = value_conv_(x);
     v = value_bn_(v);
     v = torch::relu(v);
-    v = v.view({v.size(0), -1}); // Flatten - This automatically adapts to the new channel size from value_conv_
+    v = v.view({v.size(0), -1}); 
     v = value_fc1_(v);
     v = torch::relu(v);
-    v = value_fc2_(v); // Output shape [Batch, 1]
-    v = torch::tanh(v); // Apply tanh activation
+    v = value_fc2_(v); // MODIFIED: Output shape [Batch, 4]
+    v = torch::tanh(v); // Apply tanh activation (range -1 to 1 for each of the 4 values)
 
     return {p, v};
 }
 
-// --- NEW: Batched Evaluation Implementation ---
+// --- Batched Evaluation Implementation ---
 std::vector<EvaluationResult> ChaturajiNNImpl::evaluate_batch(
     const std::vector<EvaluationRequest>& requests,
     torch::Device device)
@@ -121,47 +122,54 @@ std::vector<EvaluationResult> ChaturajiNNImpl::evaluate_batch(
     std::vector<torch::Tensor> state_tensors;
     state_tensors.reserve(requests.size());
     for (const auto& req : requests) {
-        // Ensure tensor has correct shape [C, H, W] before adding
         if (req.state_tensor.dim() != 3 || req.state_tensor.size(0) != 33 || req.state_tensor.size(1) != 8 || req.state_tensor.size(2) != 8) {
              throw std::runtime_error("Invalid tensor dimensions in EvaluationRequest. Expected [33, 8, 8], got " + std::string(req.state_tensor.sizes().vec().begin(), req.state_tensor.sizes().vec().end()));
         }
-        // Assuming input tensors are on CPU, move them to the target device
         state_tensors.push_back(req.state_tensor.to(device));
     }
 
     // 2. Stack tensors into a batch
-    torch::Tensor batch_tensor = torch::stack(state_tensors, 0); // Stacks along new dim 0 -> [B, C, H, W]
+    torch::Tensor batch_tensor = torch::stack(state_tensors, 0);
 
-    // 3. Perform batched NN inference using the existing forward method
-    torch::Tensor policy_logits_batch, value_batch;
+    // 3. Perform batched NN inference
+    torch::Tensor policy_logits_batch, value_batch; // value_batch will be [B, 4]
     {
         torch::NoGradGuard no_grad;
-        this->eval(); // Ensure evaluation mode
+        this->eval(); 
         std::tie(policy_logits_batch, value_batch) = this->forward(batch_tensor);
     }
 
-    // 4. Move results to CPU for easier handling and packaging
+    // 4. Move results to CPU
     policy_logits_batch = policy_logits_batch.to(torch::kCPU); // Shape [B, 4096]
-    value_batch = value_batch.to(torch::kCPU);           // Shape [B, 1]
+    value_batch = value_batch.to(torch::kCPU);           // Shape [B, 4]
 
-    // Ensure batch sizes match
     if (policy_logits_batch.size(0) != static_cast<int64_t>(requests.size()) || value_batch.size(0) != static_cast<int64_t>(requests.size())) {
         throw std::runtime_error("Mismatch between request batch size and NN output batch size.");
     }
+    if (value_batch.size(1) != NUM_VALUE_OUTPUTS) { // Check second dimension of value_batch
+        throw std::runtime_error("NN value output has incorrect number of player values. Expected " +
+                                 std::to_string(NUM_VALUE_OUTPUTS) + ", got " + std::to_string(value_batch.size(1)));
+    }
+
 
     // 5. Create EvaluationResult objects
     std::vector<EvaluationResult> results;
     results.reserve(requests.size());
+    auto value_accessor = value_batch.accessor<float, 2>(); // Access as [Batch, NumPlayers]
+
     for (size_t i = 0; i < requests.size(); ++i) {
         EvaluationResult res;
         res.request_id = requests[i].request_id;
-        res.policy_logits = policy_logits_batch[i]; // Extract the i-th policy tensor [4096]
-        res.value = value_batch[i].item<float>();   // Extract the i-th value scalar
+        res.policy_logits = policy_logits_batch[i]; 
+        
+        // MODIFIED: Populate the std::array<float, 4>
+        for (int j = 0; j < NUM_VALUE_OUTPUTS; ++j) {
+            res.value[j] = value_accessor[i][j];
+        }
         results.push_back(res);
     }
 
     return results;
 }
-// --- End NEW ---
 
 } // namespace chaturaji_cpp

@@ -7,13 +7,13 @@ namespace chaturaji_cpp {
 
 // --- Constructor ---
 MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move, double prior) :
-    board_state_(std::move(board_state)), // Move the board state in
+    board_state_(std::move(board_state)), 
     parent_(parent),
     move_(move),
     visit_count_(0),
-    total_value_(0.0),
+    total_player_values_({0.0, 0.0, 0.0, 0.0}), // MODIFIED: Initialize array
     prior_(prior),
-    pending_visits_(0) // Initialize pending visits to 0
+    pending_visits_(0) 
 {}
 
 
@@ -47,18 +47,13 @@ const std::optional<Move>& MCTSNode::get_move() const {
 
 MCTSNode* MCTSNode::select_child(double c_puct) const {
     if (is_leaf()) {
-        return nullptr; // Cannot select child from a leaf
+        return nullptr; 
     }
 
     MCTSNode* best_child = nullptr;
     double best_score = -std::numeric_limits<double>::infinity();
 
-    // Ensure parent visit count is not zero before calculating sqrt (use epsilon)
-    // Note: We use parent's N(s) which is `this->visit_count_ + this->pending_visits_`
-    double parent_total_visits = static_cast<double>(this->visit_count_ + this->pending_visits_);
-
     for (const auto& child_ptr : children_) {
-        // Pass parent_total_visits to avoid recalculating sqrt repeatedly
         double score = calculate_uct_score(child_ptr.get(), c_puct);
         if (score > best_score) {
             best_score = score;
@@ -70,34 +65,29 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 
 void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
     if (!is_leaf()) {
-        // Optional: Throw an error or log a warning if trying to expand non-leaf
          std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
         return;
     }
     if (board_state_.is_game_over()) {
-        // Cannot expand a terminal node
         return;
     }
 
-    children_.reserve(policy_probs.size()); // Optimize allocation
+    children_.reserve(policy_probs.size()); 
 
     for (const auto& pair : policy_probs) {
         const Move& move = pair.first;
         double prior_prob = pair.second;
-
-        // Create a new board state by making the move using the lightweight factory
         Board next_board = Board::create_mcts_child_board(board_state_, move);
-
-        // Create the new child node
         children_.push_back(std::make_unique<MCTSNode>(std::move(next_board), this, move, prior_prob));
     }
 }
 
 
-// Renamed from update -> update_stats
-void MCTSNode::update_stats(double value) {
+void MCTSNode::update_stats(const std::array<double, 4>& values_for_players) { // MODIFIED
     visit_count_++;
-    total_value_ += value;
+    for (size_t i = 0; i < 4; ++i) {
+        total_player_values_[i] += values_for_players[i];
+    }
 }
 
 // --- Methods for Async Support ---
@@ -109,9 +99,7 @@ void MCTSNode::decrement_pending_visits() {
     if (pending_visits_ > 0) {
         pending_visits_--;
     } else {
-        // This indicates a potential logic error (decrementing below zero)
          std::cerr << "Warning: Decrementing pending_visits below zero for node." << std::endl;
-         // Optionally, throw an exception or handle as appropriate.
     }
 }
 
@@ -120,8 +108,8 @@ int MCTSNode::get_visit_count() const {
     return visit_count_;
 }
 
-double MCTSNode::get_total_value() const {
-    return total_value_;
+const std::array<double, 4>& MCTSNode::get_total_player_values() const { // MODIFIED
+    return total_player_values_;
 }
 
 double MCTSNode::get_prior() const {
@@ -134,48 +122,40 @@ int MCTSNode::get_pending_visits() const {
 
 // --- Private Helper ---
 double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
-    const double epsilon = 1e-8; // Small value to prevent division by zero
+    const double epsilon = 1e-8; 
 
-    // Effective N(s,a) and W(s,a) incorporating pending visits and virtual loss
-    // N'(s,a) = N(s,a) + P(s,a)  (Real visits + Pending visits)
-    // W'(s,a) = W(s,a) - P(s,a) * V_loss (Real value - Virtual Losses)
+    // Effective N(s,a) incorporating pending visits
     double child_visits_real = static_cast<double>(child->visit_count_);
     double child_pending_visits_val = static_cast<double>(child->pending_visits_);
-    double child_total_value_for_child_player = child->total_value_; // Real accumulated value
-
     double effective_child_visits = child_visits_real + child_pending_visits_val;
-    double effective_value_for_child_player = child_total_value_for_child_player - (child_pending_visits_val * VIRTUAL_LOSS_VALUE);
 
-    // Q'(s,a) = W'(s,a) / N'(s,a)
-    double q_value_for_child_player = 0.0;
-    if (effective_child_visits > epsilon) { // Avoid division by zero
-       q_value_for_child_player = effective_value_for_child_player / effective_child_visits;
+    // Determine the player whose perspective matters for Q-value (the parent node's current player)
+    Player parent_player_enum = this->board_state_.get_current_player();
+    int parent_player_idx = static_cast<int>(parent_player_enum);
+
+    // W'(s,a) for P_parent = W_C[P_parent] - P(s,a) * V_loss 
+    // (total value for parent_player from child, minus virtual loss for pending visits)
+    double child_total_value_for_parent_player = child->total_player_values_[parent_player_idx];
+    double effective_value_for_parent_player = child_total_value_for_parent_player - (child_pending_visits_val * VIRTUAL_LOSS_VALUE);
+
+    // Q'(s,a) from the perspective of the parent player
+    double q_value_for_parent = 0.0;
+    if (effective_child_visits > epsilon) { 
+       q_value_for_parent = effective_value_for_parent_player / effective_child_visits;
     }
-    // If effective_child_visits is 0 (child unvisited and not pending), q_value remains 0.0,
-    // which is appropriate as the U-term will dominate.
+    // The NEGATION for opponent is REMOVED. Q-value is directly for the parent.
     
-    // The parent (this node) wants to choose a move that maximizes ITS OWN expected outcome.
-    // q_value_for_child_player is the expected outcome for the player at the child node.
-    // From the parent's perspective, this value should be negated.
-    double q_value_for_parent_perspective = -q_value_for_child_player;
-
-    // Calculate Parent Visits N(s) = sum_b N'(s,b) for the U-term denominator
-    // Instead of summing children, we use the parent's recorded visits + pending visits
-    // N(s) = N_parent(s) + P_parent(s)
-    // Note: `this` is the parent node here.
+    // Parent Visits N(s) for the U-term denominator
     double parent_visits_real = static_cast<double>(this->visit_count_);
     double parent_visits_pending_val = static_cast<double>(this->pending_visits_);
     double parent_total_effective_visits = parent_visits_real + parent_visits_pending_val;
 
-
     // U(s,a) = c_puct * P(s,a) * sqrt(N(s)) / (1 + N'(s,a))
-    // Where P(s,a) is the prior probability of the child action.
     double u_value = c_puct * child->prior_ *
-                     std::sqrt(parent_total_effective_visits + epsilon) / // Add epsilon for sqrt safety
+                     std::sqrt(parent_total_effective_visits + epsilon) / 
                      (1.0 + effective_child_visits);
 
-    return q_value_for_parent_perspective + u_value;
+    return q_value_for_parent + u_value;
 }
-
 
 } // namespace chaturaji_cpp

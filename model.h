@@ -26,7 +26,7 @@ struct ChaturajiNNImpl : torch::nn::Module {
 
     // Returns policy logits (before softmax) and value estimate
     // Input shape: [B, C, H, W]
-    // Output shapes: { [B, 4096], [B, 1] }
+    // Output shapes: { [B, 4096] (policy_logits), [B, 4] (value_estimates_for_each_player) } // MODIFIED
     std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x);
 
     // --- Batched Evaluation Interface ---
@@ -62,7 +62,7 @@ private:
     torch::nn::Conv2d value_conv_{nullptr};
     torch::nn::BatchNorm2d value_bn_{nullptr};
     torch::nn::Linear value_fc1_{nullptr};
-    torch::nn::Linear value_fc2_{nullptr};
+    torch::nn::Linear value_fc2_{nullptr}; // Output will be 4
 };
 TORCH_MODULE(ChaturajiNN); // Creates ChaturajiNN class from ChaturajiNNImpl
 

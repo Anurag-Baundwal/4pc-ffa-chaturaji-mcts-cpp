@@ -4,6 +4,7 @@
 #include <functional> // For std::hash
 #include <cstdint>    // For uint64_t
 #include <torch/torch.h> // Include for Tensor type
+#include <array> // For std::array
 
 namespace chaturaji_cpp {
   
@@ -101,7 +102,8 @@ struct EvaluationRequest {
 struct EvaluationResult {
     RequestId request_id;         // ID from the corresponding request
     torch::Tensor policy_logits;  // Raw policy logits [4096] (on CPU)
-    float value;                  // Single value estimate (scalar)
+    std::array<float, 4> value;   // MODIFIED: Value estimates for each of the 4 players (RED, BLUE, YELLOW, GREEN)
+                                  // Order corresponds to Player enum (0-3)
     // Add Game ID if needed
     // uint64_t game_id;
 };

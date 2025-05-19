@@ -2,40 +2,34 @@
 
 #include <string>
 #include <vector>
+#include <array> // For std::array
 #include <torch/torch.h>
 
-#include "model.h"      // Needs network definition
-#include "self_play.h"  // Needs ReplayBuffer type definition
-#include "types.h"      // Basic types
-#include "utils.h"      // move_to_policy_index
+#include "model.h"      
+#include "self_play.h"  // For ReplayBuffer and GameDataStep
+#include "types.h"      
+#include "utils.h"      
 
 namespace chaturaji_cpp {
 
-// --- Training Dataset ---
 class ChaturajiDataset : public torch::data::datasets::Dataset<ChaturajiDataset> {
 public:
-    // Constructor takes data from the replay buffer
-    explicit ChaturajiDataset(const std::vector<GameDataStep>& data);
+    explicit ChaturajiDataset(const std::vector<GameDataStep>& data); // GameDataStep now has std::array<double,4>
 
-    // State tensor goes into .data
-    // Concatenated policy + value tensor goes into .target
+    // State tensor -> .data [C,H,W]
+    // Target policy_tensor[4096] + value_tensor[4] -> .target [4100]
     torch::data::Example<torch::Tensor, torch::Tensor> get(size_t index) override;
-
-    // Returns the size of the dataset
     torch::optional<size_t> size() const override;
 
 private:
-    // Convert policy map to target tensor
     torch::Tensor policy_to_tensor(const std::map<Move, double>& policy_map) const;
 
-    // Store pre-processed tensors for efficiency
-    std::vector<torch::Tensor> states_;   // Board state tensors [C, H, W]
-    std::vector<torch::Tensor> policies_; // Target policy tensors [4096]
-    std::vector<torch::Tensor> values_;   // Target value tensors [1]
+    std::vector<torch::Tensor> states_;   
+    std::vector<torch::Tensor> policies_; 
+    std::vector<torch::Tensor> values_;   // Each tensor will be of shape [4]
 };
 
 
-// --- Training Function ---
 void train(
     int num_iterations = 65536,
     int num_games_per_iteration = 128, 
@@ -48,8 +42,7 @@ void train(
     double weight_decay = 1e-4,
     int simulations_per_move = 128,   
     const std::string& model_save_dir = "/content/drive/MyDrive/models", 
-    const std::string& initial_model_path = "" // Path to load initial model from
+    const std::string& initial_model_path = "" 
 );
-
 
 } // namespace chaturaji_cpp
