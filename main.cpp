@@ -6,6 +6,7 @@
 #include <torch/torch.h>
 #include <chrono> // For timing
 #include <algorithm> // For std::find 
+#include <memory> // For std::shared_ptr
 
 
 #include "board.h"
@@ -15,6 +16,7 @@
 #include "search.h" // Includes sync MCTS function now
 #include "train.h" // Include train function header
 #include "strength_test.h" // Include strength test function header
+#include "mcts_node.h" // For MCTSNode type
 
 namespace fs = std::filesystem;
 
@@ -180,6 +182,7 @@ int main(int argc, char* argv[]) {
         chaturaji_cpp::Board board;
         double total_execution_time = 0.0;
         int num_searches = 0;
+        std::shared_ptr<chaturaji_cpp::MCTSNode> mcts_root_node_main = nullptr; // For tree reuse
 
         // Game loop (example: play N moves)
         int max_moves_to_play = 100;
@@ -194,6 +197,7 @@ int main(int argc, char* argv[]) {
                  if(board.get_termination_reason()) {
                      std::cout << "Reason: " << *board.get_termination_reason() << std::endl;
                  }
+                 mcts_root_node_main = nullptr; // Reset tree
                  break;
             }
 
@@ -203,6 +207,7 @@ int main(int argc, char* argv[]) {
              // Get best move using SYNCHRONOUS MCTS
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( // Use sync function
               board, network, simulations, device,
+              mcts_root_node_main, // Pass shared_ptr for tree reuse
               1.0, // Default c_puct
               mcts_sync_batch_size // Pass sync MCTS batch size
               );
@@ -227,10 +232,14 @@ int main(int argc, char* argv[]) {
                  board.make_move(best_move);
              } else {
                  std::cout << "No valid moves found for player " << static_cast<int>(board.get_current_player()) << "." << std::endl;
+                 mcts_root_node_main = nullptr; // Reset tree
                  if (!board.is_game_over()) {
                       std::cout << "Player " << static_cast<int>(board.get_current_player()) << " resigns." << std::endl;
                       board.resign();
                  }
+             }
+             if (board.is_game_over()){
+                 mcts_root_node_main = nullptr; // Reset tree if game ended after move
              }
         }
 

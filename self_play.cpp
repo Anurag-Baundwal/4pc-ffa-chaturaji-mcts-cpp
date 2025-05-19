@@ -7,6 +7,7 @@
 #include <vector>   
 #include <future>   
 #include <mutex>    
+#include <memory> // For std::unique_ptr, std::make_unique
 
 namespace chaturaji_cpp {
 
@@ -63,7 +64,7 @@ void SelfPlay::clear_buffer() {
 
 void SelfPlay::process_worker_batch(
   std::vector<SimulationState>& pending_batch,
-  Player root_player, // root_player might be less relevant now for value perspective
+  Player root_player, 
   bool& root_noise_applicable 
 ) {
   if (pending_batch.empty()) {
@@ -93,7 +94,7 @@ void SelfPlay::process_worker_batch(
       if (!leaf_node) continue; 
 
       try {
-          EvaluationResult result = futures[i].get(); // result.value is std::array<float, 4>
+          EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
           bool is_root_node_eval = (leaf_node == path[0]); 
@@ -110,7 +111,6 @@ void SelfPlay::process_worker_batch(
                 std::cerr << "Warning (Worker Batch): Empty policy from NN for non-terminal leaf." << std::endl;
           }
           
-          // MODIFIED: Convert result.value (std::array<float, 4>) to std::array<double, 4> for backpropagation
           std::array<double, 4> player_values_for_backprop;
           for(int p_idx = 0; p_idx < 4; ++p_idx) {
               player_values_for_backprop[p_idx] = static_cast<double>(result.value[p_idx]);
@@ -218,15 +218,25 @@ void SelfPlay::run_game_simulation(
   std::mt19937 thread_rng(std::random_device{}() + worker_id);
 
   while (games_completed_counter < target_games) {
-      Board board;
-      // Store intermediate data before final rewards are known
+      Board board; // Master board state for the game
+      std::unique_ptr<MCTSNode> mcts_root_uptr = nullptr; // For tree reuse
+
       std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_history_for_rewards;
       int move_count = 0;
 
       while (!board.is_game_over()) {
           if (games_completed_counter >= target_games) break;
 
-          MCTSNode current_root(board); 
+          // Ensure mcts_root_uptr matches current 'board' state
+          if (mcts_root_uptr && mcts_root_uptr->get_board().get_position_key() == board.get_position_key()) {
+              // Root is valid, reuse
+              // std::cout << "Worker " << worker_id << ": Reusing MCTS root." << std::endl;
+          } else {
+              // std::cout << "Worker " << worker_id << ": Creating new MCTS root for board key " << board.get_position_key() << std::endl;
+              mcts_root_uptr = std::make_unique<MCTSNode>(board); // Create new root
+          }
+          MCTSNode& current_root_ref = *mcts_root_uptr; // Use this reference for MCTS operations
+
           Player root_player = board.get_current_player(); 
 
           std::vector<SimulationState> pending_worker_batch;
@@ -235,15 +245,15 @@ void SelfPlay::run_game_simulation(
 
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;
-              current_mcts_path.current_node = &current_root;
+              current_mcts_path.current_node = &current_root_ref; // Start from current root
               current_mcts_path.path.push_back(current_mcts_path.current_node);
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
                   MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
                   if (next_node == nullptr || next_node == current_mcts_path.current_node) {
-                       std::cerr << "Worker " << worker_id << ": MCTS select_child failed or didn't advance. Node:"
-                                 << (next_node ? " same" : " null") << ". Sims left: " << (simulations_per_move_ - sim - 1) << std::endl;
+                       // std::cerr << "Worker " << worker_id << ": MCTS select_child failed or didn't advance. Node:"
+                       //           << (next_node ? " same" : " null") << ". Sims left: " << (simulations_per_move_ - sim - 1) << std::endl;
                        selection_failed = true; 
                        break; 
                   }
@@ -275,28 +285,68 @@ void SelfPlay::run_game_simulation(
           }
 
           double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
-          std::map<Move, double> final_policy = get_action_probs(current_root, current_temperature);
+          std::map<Move, double> final_policy = get_action_probs(current_root_ref, current_temperature);
 
           if (final_policy.empty()) {
                if (!board.is_game_over()) {
                    std::cerr << "Worker " << worker_id << ": Warning - No moves generated from MCTS search, but game not over. Ending game." << std::endl;
                }
+              mcts_root_uptr = nullptr; // Reset tree as game is stuck/over
               break; 
           }
 
-          // Store board, policy, and player whose turn it was (for assigning rewards later)
+          // Store board state *before* move, policy, and current player
           game_history_for_rewards.emplace_back(board, final_policy, root_player);
 
-          Move chosen_move = choose_move(current_root, current_temperature);
-          board.make_move(chosen_move);
+          Move chosen_move = choose_move(current_root_ref, current_temperature);
+          
+          // Make the move on the main game board
+          board.make_move(chosen_move); 
+
+          // --- Tree Reuse Logic for SelfPlay ---
+          MCTSNode* chosen_child_raw_ptr = nullptr;
+          for (const auto& child_uptr_loop : current_root_ref.get_children()) {
+              if (child_uptr_loop->get_move() && child_uptr_loop->get_move().value() == chosen_move) {
+                  chosen_child_raw_ptr = child_uptr_loop.get();
+                  break;
+              }
+          }
+
+          if (chosen_child_raw_ptr) {
+              auto& old_root_children_vec = current_root_ref.get_children_for_reuse();
+              std::unique_ptr<MCTSNode> new_root_candidate_uptr;
+              for (auto it = old_root_children_vec.begin(); it != old_root_children_vec.end(); ++it) {
+                  if (it->get() == chosen_child_raw_ptr) {
+                      new_root_candidate_uptr = std::move(*it); 
+                      old_root_children_vec.erase(it);          
+                      break;
+                  }
+              }
+              if (new_root_candidate_uptr) {
+                  new_root_candidate_uptr->set_parent(nullptr);
+                  mcts_root_uptr = std::move(new_root_candidate_uptr);
+                  // Sanity check: new root's board should match the main 'board'
+                  if (mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
+                      std::cerr << "SelfPlay Worker " << worker_id << " Tree Reuse Warning: Board key mismatch. Resetting tree." << std::endl;
+                      mcts_root_uptr = std::make_unique<MCTSNode>(board); 
+                  }
+              } else {
+                  mcts_root_uptr = std::make_unique<MCTSNode>(board); // Fallback
+              }
+          } else {
+              mcts_root_uptr = std::make_unique<MCTSNode>(board); // Fallback if chosen move not found in children
+          }
+          // --- End Tree Reuse Logic ---
+          
           move_count++;
       } 
 
       int completed_count = games_completed_counter.fetch_add(1) + 1;
-      std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games
-                << " (" << move_count << " moves)." << std::endl;
+      if (completed_count <= target_games) { // Only log if within target
+        std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games
+                    << " (" << move_count << " moves)." << std::endl;
+      }
       
-      // MODIFIED: Pass game_history_for_rewards to process_game_result
       process_game_result(game_history_for_rewards, board, local_buffer);
 
   } 
@@ -366,23 +416,18 @@ Move SelfPlay::choose_move(const MCTSNode& root, double temperature) {
 }
 
 void SelfPlay::process_game_result(
-    std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_history_for_rewards, // Renamed for clarity
+    std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_history_for_rewards, 
     const Board& final_board,
     std::vector<GameDataStep>& output_buffer 
 ) {
     std::map<Player, int> final_scores = final_board.get_game_result();
     std::map<Player, double> reward_map_for_game = get_reward_map(final_scores);
     
-    // Convert the single game-level reward map to an array of rewards for all players
     std::array<double, 4> game_rewards_array = convert_reward_map_to_array(reward_map_for_game);
 
     for (const auto& history_step : game_history_for_rewards) {
         const Board& board_state = std::get<0>(history_step);
         const std::map<Move, double>& policy = std::get<1>(history_step);
-        // Player player_turn_in_history = std::get<2>(history_step); // Player whose turn it was at this step
-
-        // The GameDataStep stores the board state, the policy from that state,
-        // the player whose turn it WAS at that state, and the FINAL outcome array for ALL players.
         output_buffer.emplace_back(board_state, policy, std::get<2>(history_step), game_rewards_array);
     }
 }

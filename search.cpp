@@ -6,6 +6,7 @@
 #include <map>
 #include <limits>
 #include <iostream> 
+#include <memory> // For std::shared_ptr, std::make_shared, std::move
 
 namespace chaturaji_cpp {
 
@@ -158,7 +159,7 @@ void run_mcts_simulations_sync(
       root_state.current_node = &root;
       root_state.path.push_back(&root);
       initial_eval.push_back(std::move(root_state));
-      std::cout << "Info (Sync MCTS): simulations=0, evaluating root node directly for policy." << std::endl;
+      // std::cout << "Info (Sync MCTS): simulations=0, evaluating root node directly for policy." << std::endl;
       evaluate_and_expand_batch_sync(initial_eval, network, device);
       return; 
   }
@@ -218,60 +219,93 @@ std::optional<Move> get_best_move_mcts_sync(
     ChaturajiNN& network,
     int simulations,
     torch::Device device,
+    std::shared_ptr<MCTSNode>& current_mcts_root_shptr, // MODIFIED for tree reuse
     double c_puct,
     int mcts_batch_size) 
 {
     if (board.is_game_over()) {
+      current_mcts_root_shptr = nullptr; // Clear tree if game is over
       return std::nullopt;
     }
-    network->eval();
-    MCTSNode root(board);
-    run_mcts_simulations_sync(root, network, simulations, device, c_puct, mcts_batch_size); 
 
-    const auto& children = root.get_children();
-    if (children.empty()) {
+    // Tree Reuse Logic: Check if the passed-in root matches the current board state
+    if (current_mcts_root_shptr && current_mcts_root_shptr->get_board().get_position_key() == board.get_position_key()) {
+        // std::cout << "Info (get_best_move): Reusing existing MCTS root node." << std::endl;
+    } else {
+        // std::cout << "Info (get_best_move): Creating new MCTS root node for board key " << board.get_position_key() << std::endl;
+        current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
+    }
+    
+    network->eval(); // Ensure network is in eval mode (might be redundant if always called before)
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, device, c_puct, mcts_batch_size); 
+
+    const auto& children_const_ref = current_mcts_root_shptr->get_children(); // Const reference for selection
+    if (children_const_ref.empty()) {
         auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
         if (legal_moves.empty()) {
             std::cerr << "Warning (get_best_move): Root has no children and no legal moves. Returning nullopt." << std::endl;
+            current_mcts_root_shptr = nullptr; // No future tree
             return std::nullopt; 
         } else {
             std::cerr << "Warning (get_best_move): Root has no children despite legal moves existing (Sims=" << simulations << "). Returning first legal move as fallback." << std::endl;
+            current_mcts_root_shptr = nullptr; // No tree to reuse based on this fallback
             return legal_moves[0];
         }
     }
 
-    auto best_child_by_visit_it = std::max_element(children.begin(), children.end(),
+    // Select best child by visit count
+    auto best_child_by_visit_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
         [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
             return a->get_visit_count() < b->get_visit_count();
         });
 
-    if (best_child_by_visit_it != children.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
-        if((*best_child_by_visit_it)->get_move()) {
-             return (*best_child_by_visit_it)->get_move();
-        } else {
-            std::cerr << "Error (get_best_move): Best child by visit has no associated move." << std::endl;
-            if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
-            return std::nullopt;
-        }
+    MCTSNode* chosen_child_raw_ptr = nullptr;
+    if (best_child_by_visit_it != children_const_ref.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
+        chosen_child_raw_ptr = (*best_child_by_visit_it).get();
     } else {
+        // Fallback: if all children have zero visits, pick by prior
         std::cerr << "Warning (get_best_move): All child nodes have zero visits (Sims=" << simulations << "). Using prior probabilities from policy." << std::endl;
-         auto best_child_by_prior_it = std::max_element(children.begin(), children.end(),
-             [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
-                 return a->get_prior() < b->get_prior(); 
-             });
-         if (best_child_by_prior_it != children.end()) {
-              if ((*best_child_by_prior_it)->get_move()) {
-                   return (*best_child_by_prior_it)->get_move();
-              } else {
-                   std::cerr << "Error (get_best_move): Best child by prior has no associated move." << std::endl;
-                   if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
-                   return std::nullopt;
-              }
-         } else {
-             std::cerr << "Error (get_best_move): Could not determine best move from priors even though children exist." << std::endl;
-              if (!children.empty() && children[0]->get_move()) return children[0]->get_move();
-             return std::nullopt;
-         }
+        auto best_child_by_prior_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
+            [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
+                return a->get_prior() < b->get_prior(); 
+            });
+        if (best_child_by_prior_it != children_const_ref.end()) {
+            chosen_child_raw_ptr = (*best_child_by_prior_it).get();
+        }
+    }
+
+    if (chosen_child_raw_ptr && chosen_child_raw_ptr->get_move()) {
+        std::optional<Move> chosen_move = chosen_child_raw_ptr->get_move();
+        
+        // Transfer ownership of the chosen child to become the new root
+        auto& old_root_children_vec_for_reuse = current_mcts_root_shptr->get_children_for_reuse(); // Non-const access
+        std::unique_ptr<MCTSNode> new_root_candidate_uptr;
+
+        for (auto it = old_root_children_vec_for_reuse.begin(); it != old_root_children_vec_for_reuse.end(); ++it) {
+            if (it->get() == chosen_child_raw_ptr) {
+                new_root_candidate_uptr = std::move(*it); // Steal the unique_ptr
+                old_root_children_vec_for_reuse.erase(it); // Remove the now-empty slot
+                break;
+            }
+        }
+
+        if (new_root_candidate_uptr) {
+            new_root_candidate_uptr->set_parent(nullptr); // Detach from old parent
+            current_mcts_root_shptr = std::move(new_root_candidate_uptr); // Update the shared_ptr to point to the new root
+        } else {
+            std::cerr << "Error (get_best_move): Failed to extract chosen child unique_ptr for tree reuse. Resetting tree." << std::endl;
+            current_mcts_root_shptr = nullptr; // Fallback: reset tree
+        }
+        return chosen_move;
+
+    } else {
+        std::cerr << "Error (get_best_move): Could not determine a valid best child. Resetting tree." << std::endl;
+        current_mcts_root_shptr = nullptr; // Cannot reuse, reset for next turn.
+        // Fallback to first legal move if any children existed, or nullopt
+        if (!children_const_ref.empty() && children_const_ref[0]->get_move()) {
+            return children_const_ref[0]->get_move();
+        }
+        return std::nullopt;
     }
 }
 

@@ -30,6 +30,8 @@ public:
     bool is_root() const;
     MCTSNode* get_parent() const;
     const std::vector<std::unique_ptr<MCTSNode>>& get_children() const; 
+    std::vector<std::unique_ptr<MCTSNode>>& get_children_for_reuse(); // Added for tree reuse
+    void set_parent(MCTSNode* p); // Added for tree reuse
     const Board& get_board() const;
     const std::optional<Move>& get_move() const; 
 

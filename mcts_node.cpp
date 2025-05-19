@@ -34,6 +34,16 @@ const std::vector<std::unique_ptr<MCTSNode>>& MCTSNode::get_children() const {
     return children_;
 }
 
+// Added for tree reuse
+std::vector<std::unique_ptr<MCTSNode>>& MCTSNode::get_children_for_reuse() {
+    return children_;
+}
+
+// Added for tree reuse
+void MCTSNode::set_parent(MCTSNode* p) {
+    parent_ = p;
+}
+
 const Board& MCTSNode::get_board() const {
     return board_state_;
 }

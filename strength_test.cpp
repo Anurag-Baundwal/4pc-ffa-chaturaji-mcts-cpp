@@ -5,6 +5,7 @@
 #include "search.h" // For get_best_move_mcts_sync, get_reward_map (implicitly needed for ranking)
 #include "types.h"
 #include "utils.h"     // For move string conversion
+#include "mcts_node.h" // For MCTSNode type
 #include <torch/torch.h>
 #include <iostream>
 #include <string>
@@ -16,6 +17,7 @@
 #include <algorithm> // For std::sort, std::find_if
 #include <iomanip>   // For std::fixed, std::setprecision
 #include <map>       // For std::map
+#include <memory>    // For std::shared_ptr
 
 namespace fs = std::filesystem;
 
@@ -111,6 +113,7 @@ void run_strength_test(
     for (int game_idx = 0; game_idx < num_games; ++game_idx) {
         auto game_start_time = std::chrono::high_resolution_clock::now();
         Board board; // Start a fresh game
+        std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; // For tree reuse, reset per game
 
         // Determine which player gets the new model for this game
         Player new_model_player = static_cast<Player>(game_idx % 4);
@@ -124,6 +127,7 @@ void run_strength_test(
             // Get best move using SYNCHRONOUS MCTS
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
                 board, current_network, simulations_per_move, device,
+                mcts_root_node_strength_test, // Pass shared_ptr for tree reuse
                 1.0, // Default c_puct
                 mcts_batch_size
             );
@@ -131,22 +135,15 @@ void run_strength_test(
             if (best_move_opt) {
                 board.make_move(*best_move_opt);
             } else {
-                // No valid moves found, the player might be stalemated or checkmated implicitly
-                 // (though Chaturaji doesn't have checkmate in the same way).
-                 // Or MCTS failed. Assume player must pass/resign if possible.
+                mcts_root_node_strength_test = nullptr; // Reset tree if no move found
                 if (!board.is_game_over() && board.get_active_players().count(current_player)) {
-                    // std::cout << "Info: No move found for player " << player_to_string(current_player) << ". Resigning." << std::endl;
-                    board.resign(); // Player resigns if no move is found by MCTS
+                    board.resign(); 
                 }
-                // If already game over or player inactive, the loop condition will handle it.
+            }
+            if (board.is_game_over()) {
+                mcts_root_node_strength_test = nullptr; // Reset tree if game ended
             }
             move_count++;
-            // Optional: Print board state every move for debugging
-            // if (game_idx < 2) { // Only for first few games
-            //     std::cout << "Move " << move_count << " (" << player_to_string(current_player) << "): "
-            //               << (best_move_opt ? get_uci_string(*best_move_opt) : "resign") << std::endl;
-            //     board.print_board();
-            // }
         } // End single game loop
 
         auto game_end_time = std::chrono::high_resolution_clock::now();
@@ -186,13 +183,12 @@ void run_strength_test(
         }
         
         // --- Print Progress ---
-        // Update to use new_model_rank_counts[1] for "wins"
         if ((game_idx + 1) % 1 == 0 || (game_idx + 1) == num_games) {
             double avg_game_time = total_game_time / (game_idx + 1);
              std::cout << "Progress: Game " << std::setw(3) << (game_idx + 1) << "/" << num_games << " completed."
                        << " New Model (" << player_to_string(new_model_player) << ") got rank: " << current_new_model_rank << "."
                        << " Last game duration: " << std::fixed << std::setprecision(2) << game_duration.count() << "s."
-                       << " New Model First Place Finishes: " << new_model_rank_counts[1] << "." // Use map for 1st place count
+                       << " New Model First Place Finishes: " << new_model_rank_counts[1] << "."
                        << " Avg game time: " << std::fixed << std::setprecision(2) << avg_game_time << "s." << std::endl;
         }
 

@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <array> // For std::array
+#include <memory> // For std::shared_ptr
 #include <torch/torch.h> 
 
 #include "board.h"     
@@ -41,6 +42,7 @@ std::optional<Move> get_best_move_mcts_sync(
     ChaturajiNN& network, 
     int simulations,
     torch::Device device,
+    std::shared_ptr<MCTSNode>& current_mcts_root_shptr, // MODIFIED: Added for tree reuse
     double c_puct = 2.5,
     int mcts_batch_size = 16 
 );
