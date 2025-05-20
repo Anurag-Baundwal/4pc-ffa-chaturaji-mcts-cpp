@@ -149,7 +149,7 @@ void train(
 
   SelfPlay self_play_generator(
     network, device, num_workers, simulations_per_move, 1250000, 
-    nn_batch_size, worker_batch_size, 2.5, 25, 0.45, 0.25
+    nn_batch_size, worker_batch_size, 2.5, 8, 0.45, 0.25
     );
   
   const size_t TARGET_INITIAL_BUFFER_SIZE = 10000;
