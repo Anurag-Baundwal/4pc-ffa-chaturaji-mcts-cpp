@@ -63,13 +63,7 @@ private:
     int max_batch_size_;
 
     // Communication mechanisms
-    ThreadSafeQueue<EvaluationRequest> request_queue_;
-    std::map<RequestId, std::promise<EvaluationResult>> pending_results_map_;
-
-    // Synchronization
-    std::mutex map_mutex_; // Protects pending_results_map_
-    std::condition_variable evaluator_cv_; // For evaluator to wait on requests
-    // Note: std::promise/future handles worker waiting implicitly
+    ThreadSafeQueue<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> request_queue_;
 
     // Thread management
     std::thread evaluator_thread_;

@@ -39,10 +39,8 @@ void Evaluator::stop() {
         return; // Nothing to stop
     }
     stop_requested_ = true;
-    // Notify the evaluator_cv_ in case the try_pop_for in ThreadSafeQueue
-    // is also designed to be interruptible by an external CV (though not typical for a generic queue).
-    // Primarily, stop_requested_ flag will be checked after try_pop_for returns.
-    evaluator_cv_.notify_one();
+    // The evaluation_loop will check stop_requested_ after its try_pop_for
+    // or on its next iteration. No explicit notify_one() on a separate CV is needed here.
     evaluator_thread_.join();
     std::cout << "Evaluator thread stopped." << std::endl;
 }
@@ -55,143 +53,114 @@ std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest reques
     std::promise<EvaluationResult> result_promise;
     std::future<EvaluationResult> result_future = result_promise.get_future();
 
-    // Store the promise in the map (protected by mutex)
-    {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        pending_results_map_[request.request_id] = std::move(result_promise);
-    }
-
-    // Push the request onto the queue
-    request_queue_.push(std::move(request));
-    // The request_queue_ itself should notify its condition variable, which
-    // try_pop_for will be waiting on.
-    // An explicit evaluator_cv_.notify_one() here might be redundant if try_pop_for
-    // is only waiting on the queue's internal CV.
-    // However, it doesn't hurt and might be useful if the queue's CV logic changes.
-    // evaluator_cv_.notify_one(); // This might be redundant if try_pop_for is well-implemented
+    // Push the request and promise together into the queue.
+    // No mutex needed here as ThreadSafeQueue handles its own internal locking.
+    request_queue_.push({std::move(request), std::move(result_promise)});
 
     return result_future;
 }
 
 
 void Evaluator::evaluation_loop() {
-    std::vector<EvaluationRequest> batch_requests;
-    batch_requests.reserve(max_batch_size_);
+    std::vector<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> batch_with_promises;
+    batch_with_promises.reserve(max_batch_size_); // Reserve capacity once
 
     while (!stop_requested_) {
-        // --- Initialize Batch for Current Iteration ---
-        batch_requests.clear();
+        batch_with_promises.clear(); // Clear batch for this iteration
 
-        // --- Attempt to Get First Request with Timeout ---
-        // This allows the loop to wake up periodically to check stop_requested_
-        // and to form batches more effectively if requests arrive in bursts.
-        std::optional<EvaluationRequest> first_request_opt = request_queue_.try_pop_for(std::chrono::milliseconds(1));
+        // 1. Get first request with timeout
+        // Use the updated queue type for try_pop_for
+        std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> first_pair_opt =
+            request_queue_.try_pop_for(std::chrono::milliseconds(1));
 
-        // --- Check for Stop Signal or Timeout ---
-        if (stop_requested_) {
-            break; // Exit loop if stop is requested
+        if (stop_requested_) { break; } // Check stop after potential wait
+        if (!first_pair_opt) { continue; } // Timeout, no request, try again
+
+        batch_with_promises.push_back(std::move(*first_pair_opt));
+
+        // 2. Greedily fill the rest of the batch
+        while (batch_with_promises.size() < static_cast<size_t>(max_batch_size_)) {
+            std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> next_pair = request_queue_.try_pop(); // Non-blocking pop
+            if (next_pair) {
+                batch_with_promises.push_back(std::move(*next_pair));
+            } else {
+                break; // No more requests immediately available
+            }
         }
-        if (!first_request_opt) {
-            // Timeout occurred, no request available in the given time.
-            // Loop again to check stop_requested_ or wait for new requests.
+
+        // If no requests were collected (e.g., initial pop failed after previous batch was empty)
+        if (batch_with_promises.empty()) {
             continue;
         }
 
-        // --- Start Building Batch ---
-        batch_requests.push_back(std::move(*first_request_opt));
-
-        // --- Fill Batch (Greedy Non-Blocking) ---
-        // Greedily fill the rest of the batch up to max_batch_size or until queue is empty.
-        while (batch_requests.size() < static_cast<size_t>(max_batch_size_)) {
-            std::optional<EvaluationRequest> next_req = request_queue_.try_pop(); // Non-blocking pop
-            if (next_req) {
-                batch_requests.push_back(std::move(*next_req));
-            } else {
-                break; // No more requests immediately available in the queue
-            }
+        // 3. Prepare requests for NN (collect just the EvaluationRequest objects)
+        std::vector<EvaluationRequest> requests_for_nn;
+        requests_for_nn.reserve(batch_with_promises.size());
+        for (const auto& pair : batch_with_promises) {
+            requests_for_nn.push_back(pair.first); // Copy the request, promise remains in batch_with_promises
         }
-        // At this point, batch_requests contains at least one request.
 
-        // --- Perform Batched Neural Network Inference ---
+        // 4. Perform Batched Neural Network Inference
         std::vector<EvaluationResult> batch_results;
         try {
-            // The network_->evaluate_batch method is responsible for handling
-            // tensor movement to the correct device (this->device_).
-            batch_results = network_->evaluate_batch(batch_requests, device_);
+            // This call will be optimized as per the next section (CPU stack before GPU transfer)
+            batch_results = network_->evaluate_batch(requests_for_nn, device_);
         } catch (const std::exception& e) {
             std::cerr << "!!! EXCEPTION during NN batch evaluation: " << e.what() << std::endl;
-            // Error handling: Fulfill promises with an error, or skip.
-            // For now, skipping fulfillment for errored batches.
-            // This means workers waiting on these futures might time out or block indefinitely
-            // if not handled by the worker (e.g., future.wait_for with timeout).
-            // TODO: Implement robust error propagation to workers.
-            std::cerr << "Skipping result fulfillment for errored batch. Request IDs involved: ";
-            for(const auto& req : batch_requests) { std::cerr << req.request_id << " "; }
-            std::cerr << std::endl;
-            continue; // Continue to the next iteration to try processing more requests
-        }
-        // --- End Inference ---
-
-        // --- Fulfill Promises with Results ---
-        {
-            std::lock_guard<std::mutex> lock(map_mutex_);
-            for (auto& result : batch_results) { // Iterate through results from NN
-                auto it = pending_results_map_.find(result.request_id);
-                if (it != pending_results_map_.end()) {
-                    try {
-                        it->second.set_value(std::move(result)); // Fulfill the promise for the worker
-                    } catch (const std::exception& e) {
-                        // General exception while setting value (less common).
-                        // If set_value throws (other than future_error for already_satisfied),
-                        // the promise is still unfulfilled or in an error state.
-                        // It's usually better to try and set an exception on the promise here.
-                        std::cerr << "!!! EXCEPTION setting promise value for RequestId " << result.request_id << ": " << e.what() << std::endl;
-                        try {
-                            it->second.set_exception(std::current_exception());
-                        } catch (const std::future_error& fe) {
-                             std::cerr << "Warning: std::future_error while trying to set_exception for RequestId "
-                                      << result.request_id << ": " << fe.what() << std::endl;
-                        }
-                    }
-                    // Whether successful or an error occurred trying to set the value/exception,
-                    // we should remove the promise from the map as we've attempted to handle it.
-                    pending_results_map_.erase(it);
-                } else {
-                    // This indicates a result was generated for a request ID that's no longer
-                    // in the pending_results_map_. This could be due to a worker timing out
-                    // and removing its own promise, or a logic error.
-                    std::cerr << "Warning: No pending promise found for received ResultId: " << result.request_id << std::endl;
+            // On error, set exception for all promises in this batch to unblock workers
+            for (auto& pair : batch_with_promises) {
+                try {
+                    pair.second.set_exception(std::current_exception());
+                } catch (const std::future_error& fe) {
+                    // This can happen if a worker timed out or cancelled its future.
+                    std::cerr << "Warning: Error setting exception for promise (future error): " << fe.what() << std::endl;
                 }
             }
-        } // Mutex unlock
-        // --- End Fulfill Promises ---
+            continue; // Continue to next batch
+        }
 
+        // Ensure results match requests (important if evaluate_batch reorders or drops requests)
+        // Assuming evaluate_batch maintains order:
+        if (batch_results.size() != batch_with_promises.size()) {
+            std::cerr << "Error: NN output batch size mismatch with input batch size! Expected "
+                      << batch_with_promises.size() << ", got " << batch_results.size() << std::endl;
+            for (auto& pair : batch_with_promises) { // Unblock remaining promises with an error
+                try {
+                    pair.second.set_exception(std::make_exception_ptr(std::runtime_error("NN output size mismatch.")));
+                } catch (const std::future_error& fe) { /* ignore */ }
+            }
+            continue;
+        }
+
+        // 5. Fulfill Promises with Results (NO mutex needed here anymore!)
+        for (size_t i = 0; i < batch_results.size(); ++i) {
+            try {
+                batch_with_promises[i].second.set_value(std::move(batch_results[i]));
+            } catch (const std::future_error& e) {
+                // This indicates the future was already detached or set (e.g., worker timed out).
+                // It's usually safe to ignore promise_already_satisfied or no_state errors.
+                if (e.code() != std::future_errc::promise_already_satisfied && e.code() != std::future_errc::no_state) {
+                    std::cerr << "Warning: std::future_error setting value for RequestId "
+                              << batch_results[i].request_id << ": " << e.what() << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "!!! EXCEPTION setting promise value for RequestId " << batch_results[i].request_id << ": " << e.what() << std::endl;
+                try {
+                    batch_with_promises[i].second.set_exception(std::current_exception());
+                } catch (const std::future_error& fe) { /* ignore */ }
+            }
+        }
     } // End while (!stop_requested_)
 
-    std::cout << "Evaluation loop finished." << std::endl;
-
-    // --- Cleanup on Stop (Optional but Recommended) ---
-    // When stopping, there might be pending requests or promises.
-    // It's good practice to signal any remaining promises with an error
-    // to unblock any waiting worker threads.
+    // Cleanup on Stop: Unblock any remaining workers
     if (stop_requested_) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        for (auto& pair : pending_results_map_) {
+        std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> remaining_pair_opt;
+        while((remaining_pair_opt = request_queue_.try_pop())) {
+            std::pair<EvaluationRequest, std::promise<EvaluationResult>> remaining_pair = std::move(*remaining_pair_opt);
             try {
-                // Signal with an error indicating the evaluator is shutting down
-                pair.second.set_exception(std::make_exception_ptr(std::runtime_error("Evaluator shutting down; request cancelled.")));
-            } catch (const std::future_error& e) {
-                // Promise might already be satisfied or future abandoned.
-                if (e.code() != std::future_errc::promise_already_satisfied && e.code() != std::future_errc::no_state) {
-                    std::cerr << "Warning: std::future_error during evaluator cleanup for RequestId "
-                              << pair.first << ": " << e.what() << std::endl;
-                }
-            }
+                remaining_pair.second.set_exception(std::make_exception_ptr(std::runtime_error("Evaluator shutting down; request cancelled.")));
+            } catch (const std::future_error& e) { /* ignore already set or no state errors */ }
         }
-        pending_results_map_.clear();
-
-        // Drain any remaining requests from the queue (they won't be processed)
-        while(request_queue_.try_pop()) {}
     }
 }
 

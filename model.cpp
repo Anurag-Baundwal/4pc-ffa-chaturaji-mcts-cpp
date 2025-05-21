@@ -118,28 +118,31 @@ std::vector<EvaluationResult> ChaturajiNNImpl::evaluate_batch(
         return {};
     }
 
-    // 1. Collect state tensors and check dimensions
-    std::vector<torch::Tensor> state_tensors;
-    state_tensors.reserve(requests.size());
+    // 1. Collect state tensors (all assumed to be on CPU initially)
+    std::vector<torch::Tensor> state_tensors_cpu;
+    state_tensors_cpu.reserve(requests.size());
     for (const auto& req : requests) {
         if (req.state_tensor.dim() != 3 || req.state_tensor.size(0) != 33 || req.state_tensor.size(1) != 8 || req.state_tensor.size(2) != 8) {
              throw std::runtime_error("Invalid tensor dimensions in EvaluationRequest. Expected [33, 8, 8], got " + std::string(req.state_tensor.sizes().vec().begin(), req.state_tensor.sizes().vec().end()));
         }
-        state_tensors.push_back(req.state_tensor.to(device));
+        state_tensors_cpu.push_back(req.state_tensor); // Keep on CPU
     }
 
-    // 2. Stack tensors into a batch
-    torch::Tensor batch_tensor = torch::stack(state_tensors, 0);
+    // 2. Stack tensors into a batch on CPU
+    torch::Tensor batch_tensor_cpu = torch::stack(state_tensors_cpu, 0);
 
-    // 3. Perform batched NN inference
-    torch::Tensor policy_logits_batch, value_batch; // value_batch will be [B, 4]
+    // 3. Move the entire batch tensor to the target device once
+    torch::Tensor batch_tensor_device = batch_tensor_cpu.to(device);
+
+    // 4. Perform batched NN inference
+    torch::Tensor policy_logits_batch, value_batch;
     {
         torch::NoGradGuard no_grad;
-        this->eval(); 
-        std::tie(policy_logits_batch, value_batch) = this->forward(batch_tensor);
+        this->eval();
+        std::tie(policy_logits_batch, value_batch) = this->forward(batch_tensor_device); // Use the device tensor
     }
 
-    // 4. Move results to CPU
+    // 5. Move results to CPU
     policy_logits_batch = policy_logits_batch.to(torch::kCPU); // Shape [B, 4096]
     value_batch = value_batch.to(torch::kCPU);           // Shape [B, 4]
 
