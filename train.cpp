@@ -152,66 +152,66 @@ void train(
     nn_batch_size, worker_batch_size, 2.5, 8, 0.45, 0.25
     );
   
-  const size_t TARGET_INITIAL_BUFFER_SIZE = 10000;
-  std::cout << "\n--- Pre-filling Replay Buffer to " << TARGET_INITIAL_BUFFER_SIZE << " positions ---" << std::endl;
-  if (log_file.is_open()) { 
-      log_file << "\n--- Pre-filling Replay Buffer to " << TARGET_INITIAL_BUFFER_SIZE << " positions ---" << std::endl; 
-      log_file.flush(); // ADDED FLUSH
-  }
+  // const size_t TARGET_INITIAL_BUFFER_SIZE = 10000;
+  // std::cout << "\n--- Pre-filling Replay Buffer to " << TARGET_INITIAL_BUFFER_SIZE << " positions ---" << std::endl;
+  // if (log_file.is_open()) { 
+  //     log_file << "\n--- Pre-filling Replay Buffer to " << TARGET_INITIAL_BUFFER_SIZE << " positions ---" << std::endl; 
+  //     log_file.flush(); // ADDED FLUSH
+  // }
 
-  while (self_play_generator.get_buffer().size() < TARGET_INITIAL_BUFFER_SIZE) {
-      if (num_games_per_iteration <= 0) {
-          std::cerr << "Error: num_games_per_iteration (" << num_games_per_iteration 
-                    << ") is not positive. Cannot pre-fill buffer. Aborting pre-fill." << std::endl;
-          if (log_file.is_open()) { 
-              log_file << "Error: num_games_per_iteration (" << num_games_per_iteration 
-                       << ") is not positive. Cannot pre-fill buffer. Aborting pre-fill." << std::endl; 
-              log_file.flush(); // ADDED FLUSH
-          }
-          break; 
-      }
-      std::cout << "Current buffer size: " << self_play_generator.get_buffer().size() 
-                << ". Generating " << num_games_per_iteration << " more games for pre-fill..." << std::endl;
-      if (log_file.is_open()) {
-          log_file << "Current buffer size: " << self_play_generator.get_buffer().size() 
-                   << ". Generating " << num_games_per_iteration << " more games for pre-fill..." << std::endl;
-          log_file.flush(); // ADDED FLUSH
-      }
+  // while (self_play_generator.get_buffer().size() < TARGET_INITIAL_BUFFER_SIZE) {
+  //     if (num_games_per_iteration <= 0) {
+  //         std::cerr << "Error: num_games_per_iteration (" << num_games_per_iteration 
+  //                   << ") is not positive. Cannot pre-fill buffer. Aborting pre-fill." << std::endl;
+  //         if (log_file.is_open()) { 
+  //             log_file << "Error: num_games_per_iteration (" << num_games_per_iteration 
+  //                      << ") is not positive. Cannot pre-fill buffer. Aborting pre-fill." << std::endl; 
+  //             log_file.flush(); // ADDED FLUSH
+  //         }
+  //         break; 
+  //     }
+  //     std::cout << "Current buffer size: " << self_play_generator.get_buffer().size() 
+  //               << ". Generating " << num_games_per_iteration << " more games for pre-fill..." << std::endl;
+  //     if (log_file.is_open()) {
+  //         log_file << "Current buffer size: " << self_play_generator.get_buffer().size() 
+  //                  << ". Generating " << num_games_per_iteration << " more games for pre-fill..." << std::endl;
+  //         log_file.flush(); // ADDED FLUSH
+  //     }
 
-      auto start_prefill_batch = std::chrono::high_resolution_clock::now();
-      size_t num_generated_prefill = self_play_generator.generate_data(num_games_per_iteration);
-      auto end_prefill_batch = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> prefill_batch_duration = end_prefill_batch - start_prefill_batch;
+  //     auto start_prefill_batch = std::chrono::high_resolution_clock::now();
+  //     size_t num_generated_prefill = self_play_generator.generate_data(num_games_per_iteration);
+  //     auto end_prefill_batch = std::chrono::high_resolution_clock::now();
+  //     std::chrono::duration<double> prefill_batch_duration = end_prefill_batch - start_prefill_batch;
 
-      std::cout << "Pre-fill batch generated " << num_generated_prefill << " data points in " 
-                << prefill_batch_duration.count() << " seconds. Buffer size: " << self_play_generator.get_buffer().size() << std::endl;
-      if (log_file.is_open()) {
-          log_file << "Pre-fill batch generated " << num_generated_prefill << " data points in " 
-                   << prefill_batch_duration.count() << " seconds. Buffer size: " << self_play_generator.get_buffer().size() << std::endl;
-          log_file.flush(); // ADDED FLUSH
-      }
+  //     std::cout << "Pre-fill batch generated " << num_generated_prefill << " data points in " 
+  //               << prefill_batch_duration.count() << " seconds. Buffer size: " << self_play_generator.get_buffer().size() << std::endl;
+  //     if (log_file.is_open()) {
+  //         log_file << "Pre-fill batch generated " << num_generated_prefill << " data points in " 
+  //                  << prefill_batch_duration.count() << " seconds. Buffer size: " << self_play_generator.get_buffer().size() << std::endl;
+  //         log_file.flush(); // ADDED FLUSH
+  //     }
       
-      if (self_play_generator.get_buffer().size() < TARGET_INITIAL_BUFFER_SIZE &&
-          self_play_generator.get_buffer().size() >= 1250000) { 
-            std::cout << "Warning: Replay buffer reached its maximum capacity (" 
-                      << self_play_generator.get_buffer().size() 
-                      << ") but is still less than the target pre-fill size ("
-                      << TARGET_INITIAL_BUFFER_SIZE << "). Stopping pre-fill." << std::endl;
-            if (log_file.is_open()) {
-                log_file << "Warning: Replay buffer reached its maximum capacity (" 
-                         << self_play_generator.get_buffer().size() 
-                         << ") but is still less than the target pre-fill size ("
-                         << TARGET_INITIAL_BUFFER_SIZE << "). Stopping pre-fill." << std::endl;
-                log_file.flush(); // ADDED FLUSH
-            }
-            break; 
-      }
-  }
-  std::cout << "--- Replay Buffer pre-filled. Final size: " << self_play_generator.get_buffer().size() << " ---" << std::endl;
-  if (log_file.is_open()) { 
-      log_file << "--- Replay Buffer pre-filled. Final size: " << self_play_generator.get_buffer().size() << " ---" << std::endl; 
-      log_file.flush(); // ADDED FLUSH
-  }
+  //     if (self_play_generator.get_buffer().size() < TARGET_INITIAL_BUFFER_SIZE &&
+  //         self_play_generator.get_buffer().size() >= 1250000) { 
+  //           std::cout << "Warning: Replay buffer reached its maximum capacity (" 
+  //                     << self_play_generator.get_buffer().size() 
+  //                     << ") but is still less than the target pre-fill size ("
+  //                     << TARGET_INITIAL_BUFFER_SIZE << "). Stopping pre-fill." << std::endl;
+  //           if (log_file.is_open()) {
+  //               log_file << "Warning: Replay buffer reached its maximum capacity (" 
+  //                        << self_play_generator.get_buffer().size() 
+  //                        << ") but is still less than the target pre-fill size ("
+  //                        << TARGET_INITIAL_BUFFER_SIZE << "). Stopping pre-fill." << std::endl;
+  //               log_file.flush(); // ADDED FLUSH
+  //           }
+  //           break; 
+  //     }
+  // }
+  // std::cout << "--- Replay Buffer pre-filled. Final size: " << self_play_generator.get_buffer().size() << " ---" << std::endl;
+  // if (log_file.is_open()) { 
+  //     log_file << "--- Replay Buffer pre-filled. Final size: " << self_play_generator.get_buffer().size() << " ---" << std::endl; 
+  //     log_file.flush(); // ADDED FLUSH
+  // }
 
   std::mt19937 buffer_rng(std::random_device{}());
 
