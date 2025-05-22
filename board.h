@@ -22,6 +22,9 @@ constexpr int NUM_SQUARES_BB_LOCAL = 64; // Renamed
 // Forward declaration
 class Board;
 
+// --- TAG FOR MCTS-SPECIFIC COPY CONSTRUCTOR ---
+struct MCTSChildCopyTag {}; // Empty struct used purely for tagging/overloading
+
 struct UndoInfo {
     Move move;                     // The move that was made
     std::optional<Piece> captured_piece; // The piece that was on the 'to' square (or nullopt)
@@ -55,6 +58,18 @@ public:
     Board(); // Default constructor initializes the board
     Board(const Board& other); // Copy constructor
     Board(Board&& other) noexcept; // Move constructor
+
+    // --- MCTS-SPECIFIC COPY CONSTRUCTOR DECLARATION ---
+    /**
+     * @brief Special copy constructor for MCTS child node creation.
+     * It performs a deep copy of essential game state (like bitboards, hashes,
+     * player info, and crucially, position_history_) but initializes
+     * MCTS-transient states like undo_stack_ as empty and termination_reason_
+     * as nullopt.
+     * @param other The parent board to copy from.
+     * @param tag An empty tag struct to differentiate this constructor.
+     */
+    Board(const Board& other, MCTSChildCopyTag tag);
 
     // --- Static Factory for MCTS Child Boards ---
     // Creates a lightweight board state from parent for MCTS expansion.

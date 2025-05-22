@@ -383,6 +383,22 @@ Board::Board(const Board &other)
       occupied_bitboard_(other.occupied_bitboard_)
        {}
 
+// 
+Board::Board(const Board &other, MCTSChildCopyTag)
+    : active_players_(other.active_players_),
+      player_points_(other.player_points_),
+      current_player_(other.current_player_),
+      position_history_(other.position_history_), // << Deep copy this
+      full_move_number_(other.full_move_number_),
+      move_number_of_last_reset_(other.move_number_of_last_reset_),
+      termination_reason_(std::nullopt),          // << Initialize as nullopt
+      current_hash_(other.current_hash_),
+      // undo_stack_ is default-initialized (empty)    // << Skip copying this
+      piece_bitboards_(other.piece_bitboards_),
+      player_bitboards_(other.player_bitboards_),
+      occupied_bitboard_(other.occupied_bitboard_)
+       {}
+
 // --- Move Constructor ---
 Board::Board(Board &&other) noexcept
     : active_players_(std::move(other.active_players_)),
@@ -460,17 +476,8 @@ Board &Board::operator=(Board &&other) noexcept {
 
 // --- MCTS Child Board Creation ---
 Board Board::create_mcts_child_board(const Board& parent_board, const Move& move) {
-  Board child_board; 
-  child_board.active_players_ = parent_board.active_players_;
-  child_board.player_points_ = parent_board.player_points_;
-  child_board.current_player_ = parent_board.current_player_;
-  child_board.full_move_number_ = parent_board.full_move_number_;
-  child_board.move_number_of_last_reset_ = parent_board.move_number_of_last_reset_;
-  child_board.current_hash_ = parent_board.current_hash_;
-  child_board.piece_bitboards_ = parent_board.piece_bitboards_;
-  child_board.player_bitboards_ = parent_board.player_bitboards_;
-  child_board.occupied_bitboard_ = parent_board.occupied_bitboard_;
-  child_board.make_move_for_mcts(move);
+  Board child_board(parent_board, MCTSChildCopyTag{}); 
+  child_board.make_move_for_mcts(move); 
   return child_board;
 }
 
@@ -853,7 +860,10 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
 
   if (is_resetting_move) {
     move_number_of_last_reset_ = full_move_number_;
+    position_history_.clear();
   }
+  position_history_.push_back(current_hash_);
+
   advance_turn();
   is_game_over();
   return captured_piece_opt;
