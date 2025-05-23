@@ -5,6 +5,41 @@
 
 namespace chaturaji_cpp {
 
+// Define and initialize the static MCTSNodePool member.
+// The constructor MCTSNodePool(size_t) will be called automatically once at program startup.
+MCTSNodePool MCTSNode::s_node_pool(sizeof(MCTSNode), 100000); // Initialized with 100,000 node capacity
+
+// Implementation of custom operator new
+void* MCTSNode::operator new(size_t size) {
+    // Ensure that only objects of exactly MCTSNode size are allocated from this pool.
+    // This is crucial for fixed-size allocators.
+    if (size != sizeof(MCTSNode)) {
+        // If a derived class or an object of incorrect size tries to use this new,
+        // it's an error for a fixed-size pool.
+        throw std::logic_error("MCTSNodePool: Attempted to allocate object of wrong size. Using global operator new.");
+    }
+    // Delegate the allocation to the static node pool
+    return s_node_pool.allocate();
+}
+
+// Implementation of custom operator delete (C++14 sized delete)
+void MCTSNode::operator delete(void* ptr, size_t size) {
+    // Standard behavior: ignore nullptr
+    if (ptr == nullptr) return; 
+
+    // Safety check: ensure the size matches before returning to pool
+    if (size != sizeof(MCTSNode)) {
+        std::cerr << "MCTSNodePool: Attempted to deallocate object of wrong size (" << size 
+                  << " vs expected " << sizeof(MCTSNode) << "). Deferring to global delete." << std::endl;
+        // If the size mismatches, it's safer to call the global delete operator
+        // (e.g., if memory was allocated by global new or a different custom allocator).
+        ::operator delete(ptr, size); 
+        return;
+    }
+    // Delegate the deallocation to the static node pool
+    s_node_pool.deallocate(ptr);
+}
+
 // --- Constructor ---
 MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move, double prior) :
     board_state_(std::move(board_state)), 

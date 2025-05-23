@@ -39,7 +39,7 @@ Arguments:
   --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during inference (default: 16, check main.cpp).
 
 Example:
-.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_YYYYMMDD_HHMMSS\chaturaji_iter_N.pt" --sims 1000 --mcts-batch 64
+.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\Downloads\chaturaji_iter_16.pt" --sims 256 --mcts-batch 16
 
 Terminal Setup (Windows):
 To ensure print_board displays the pieces correctly in the Windows terminal, run this command *before* running the engine executable:

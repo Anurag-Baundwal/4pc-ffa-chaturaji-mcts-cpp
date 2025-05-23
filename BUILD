@@ -1,6 +1,6 @@
 # BUILD (or BUILD.bazel)
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary", "cc_test") # Added cc_test
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -46,7 +46,7 @@ cc_library(
 
 # === Magic Utilities Library ===
 cc_library(
-    name = "chaturaji_magic_utils",  # Consistent naming convention
+    name = "chaturaji_magic_utils",
     srcs = ["magic_utils.cpp"],
     hdrs = ["magic_utils.h"],
     copts = select({
@@ -54,8 +54,7 @@ cc_library(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_types", # magic_utils.h includes types.h
-                           # No need for libtorch_configured directly here if types.h handles it
+        ":chaturaji_types",
     ],
 )
 
@@ -69,7 +68,7 @@ cc_library(
     }),
     deps = [
         ":chaturaji_types",
-        ":chaturaji_magic_utils", # board.h and board.cpp use magic_utils
+        ":chaturaji_magic_utils",
     ],
 )
 
@@ -84,10 +83,35 @@ cc_library(
     deps = [
         ":chaturaji_board",
         ":chaturaji_types",
-        ":chaturaji_magic_utils", # utils.cpp uses magic_utils
+        ":chaturaji_magic_utils",
         ":libtorch_configured",
     ],
 )
+
+# === MCTSNode Forward Declaration Library ===
+# This library just contains the forward declaration header for MCTSNode.
+cc_library(
+    name = "chaturaji_mcts_node_fwd",
+    hdrs = ["mcts_node_fwd.h"],
+)
+
+# === Node Pool Library ===
+# Manages memory allocation for MCTSNode objects.
+cc_library(
+    name = "chaturaji_mcts_node_pool",
+    srcs = ["mcts_node_pool.cpp"],
+    hdrs = ["mcts_node_pool.h"],
+    copts = select({
+        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
+        "//conditions:default": [ "/std:c++17", ],
+    }),
+    deps = [
+        ":chaturaji_mcts_node_fwd", # mcts_node_pool.h needs the forward declaration
+          ":chaturaji_types",         # For std::mutex, etc. (and transitive libtorch if needed)
+          # REMOVED: ":chaturaji_mcts_node", # This was the direct cause of the cycle!
+    ],
+)
+
 
 # === Core ML and Search Components ===
 
@@ -116,6 +140,7 @@ cc_library(
     deps = [
         ":chaturaji_model",
         ":chaturaji_types",
+        # thread_safe_queue.h is declared in chaturaji_types's hdrs, so this dependency is sufficient.
         ":libtorch_configured",
     ],
 )
@@ -129,9 +154,9 @@ cc_library(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_board", # mcts_node.cpp includes board.h which now includes magic_utils.h
+        ":chaturaji_board",
         ":chaturaji_types",
-        # ":chaturaji_magic_utils", # Implicitly included via chaturaji_board
+        ":chaturaji_mcts_node_pool", # Direct dependency on the node pool library
     ],
 )
 
@@ -148,9 +173,7 @@ cc_library(
         ":chaturaji_mcts_node",
         ":chaturaji_model",
         ":chaturaji_types",
-        ":chaturaji_utils", # utils.h might be included directly or transitively.
-                            # search.h includes utils.h.
-        # ":chaturaji_magic_utils", # Implicit via board or utils
+        ":chaturaji_utils",
         ":libtorch_configured",
     ],
 )
@@ -173,7 +196,6 @@ cc_library(
         ":chaturaji_search",
         ":chaturaji_types",
         ":chaturaji_utils",
-        # ":chaturaji_magic_utils", # Implicit
         ":libtorch_configured",
     ],
 )
@@ -191,7 +213,6 @@ cc_library(
         ":chaturaji_self_play",
         ":chaturaji_types",
         ":chaturaji_utils",
-        # ":chaturaji_magic_utils", # Implicit
         ":libtorch_configured",
     ],
 )
@@ -215,7 +236,7 @@ cc_binary(
         ":chaturaji_training",
         ":chaturaji_types",
         ":chaturaji_utils",
-        ":chaturaji_magic_utils", # main.cpp might not directly use it, but good to link all our libs
+        ":chaturaji_magic_utils",
         ":libtorch_configured",
     ],
 )
@@ -228,8 +249,11 @@ cc_test(
         "//conditions:default": [ "/std:c++17", ],
     }),
     deps = [
-        ":chaturaji_board", # board.h includes magic_utils.h
+        ":chaturaji_board",
         ":chaturaji_types",
+        ":chaturaji_mcts_node", # Zobrist test doesn't directly use MCTSNode, but if it runs through main.cpp
+                               # or initializes a board, it might pull in related dependencies.
+                               # It's better to ensure its dependencies are complete.
     ],
 )
 
@@ -247,7 +271,6 @@ cc_library(
         ":chaturaji_search",
         ":chaturaji_types",
         ":chaturaji_utils",
-        # ":chaturaji_magic_utils", # Implicit
         ":libtorch_configured",
     ],
 )
@@ -266,6 +289,6 @@ cc_binary(
     }),
     deps = [
         ":chaturaji_types",
-        ":chaturaji_magic_utils", # magic_finder.cpp directly includes magic_utils.h
+        ":chaturaji_magic_utils",
     ],
 )
