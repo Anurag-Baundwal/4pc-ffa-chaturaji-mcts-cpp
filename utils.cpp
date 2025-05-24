@@ -26,7 +26,8 @@ const std::map<PieceType, int> UTIL_PIECE_TYPE_TO_INDEX = []{
 
 
 torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
-  auto options = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+  // 1. Always create and populate on CPU first
+  auto cpu_options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
   
   constexpr int NUM_ACTUAL_PIECE_TYPES = 5; // P, N, B, R, K
   constexpr int NUM_PIECE_CHANNELS_ONLY = 4 * NUM_ACTUAL_PIECE_TYPES; // 20
@@ -34,9 +35,12 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) = 33 channels
   constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1; 
   // Use magic_utils::BOARD_SIZE
-  torch::Tensor tensor = torch::zeros({NUM_CHANNELS_TOTAL, magic_utils::BOARD_SIZE, magic_utils::BOARD_SIZE}, options);
+  torch::Tensor tensor_cpu = torch::zeros({NUM_CHANNELS_TOTAL, magic_utils::BOARD_SIZE, magic_utils::BOARD_SIZE}, cpu_options);
+  
+  // Get an accessor for efficient CPU writes to piece planes
+  auto piece_accessor = tensor_cpu.accessor<float, 3>();
 
-  // Piece Placement Channels (0-19) using bitboards
+  // Piece Placement Channels (0-19)
   for (int p_idx = 0; p_idx < 4; ++p_idx) { // Iterate players
       Player player_enum = static_cast<Player>(p_idx);
       for (int pt_idx = 0; pt_idx < NUM_ACTUAL_PIECE_TYPES; ++pt_idx) { // Iterate piece types
@@ -49,13 +53,11 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
               int sq_idx = magic_utils::pop_lsb(temp_bb); // Use magic_utils::pop_lsb
               BoardLocation loc = magic_utils::from_sq_idx(sq_idx); // Use magic_utils::from_sq_idx
               if (channel >= 0 && channel < NUM_PIECE_CHANNELS_ONLY) {
-                  // Use magic_utils::BOARD_SIZE for bounds checking
-                  if(loc.row >=0 && loc.row < magic_utils::BOARD_SIZE && loc.col >=0 && loc.col < magic_utils::BOARD_SIZE) {
-                     tensor[channel][loc.row][loc.col] = 1.0f;
-                  } else {
-                      std::cerr << "Warning: sq_idx " << sq_idx << " gave invalid loc " << loc.row << "," << loc.col << std::endl;
-                  }
+                  // Use magic_utils::BOARD_SIZE for bounds checking (implicitly handled by valid sq_idx)
+                  // Direct write using accessor for piece planes
+                  piece_accessor[channel][loc.row][loc.col] = 1.0f;
               } else {
+                  // This case should ideally not be reached if loop bounds are correct
                   std::cerr << "Warning: Invalid piece channel in board_to_tensor (from bitboard): " << channel << std::endl;
               }
           }
@@ -67,24 +69,22 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   int active_status_channel_offset = NUM_PIECE_CHANNELS_ONLY; // Starts at 20
   for (int i = 0; i < 4; ++i) {
       Player p_iter = static_cast<Player>(i);
-      if (active_players_set.count(p_iter)) {
-          tensor[active_status_channel_offset + i].fill_(1.0f);
-      } else {
-          tensor[active_status_channel_offset + i].fill_(0.0f); 
-      }
+      float val_to_fill = active_players_set.count(p_iter) ? 1.0f : 0.0f;
+      // Use select().fill_() for setting entire planes on the CPU tensor
+      tensor_cpu.select(0, active_status_channel_offset + i).fill_(val_to_fill);
   }
 
   // Current Player Channels (24-27)
   Player current_player = board.get_current_player();
   int current_player_channel_offset = active_status_channel_offset + 4; // Starts at 24
   int current_player_idx_val = static_cast<int>(current_player);
+  // Initialize all player turn planes to 0
+  for (int i = 0; i < 4; ++i) {
+    tensor_cpu.select(0, current_player_channel_offset + i).fill_(0.0f);
+  }
+  // Set the current player's turn plane to 1
   if (current_player_idx_val >= 0 && current_player_idx_val < 4) {
-    tensor[current_player_channel_offset + current_player_idx_val].fill_(1.0f);
-  } else {
-      // This case implies current_player is somehow invalid, which shouldn't happen if active_players is managed.
-      // If game is over and current_player is one of the last active, this is fine.
-      // If current_player is not in active_players, then no turn plane should be set.
-      // The current logic is okay: if current_player_idx_val is out of 0-3, no plane is set.
+    tensor_cpu.select(0, current_player_channel_offset + current_player_idx_val).fill_(1.0f);
   }
 
 
@@ -99,7 +99,8 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
           player_points_val = static_cast<float>(it->second);
       }
       // Normalize points 
-      tensor[points_channel_offset + i].fill_(player_points_val / 100.0f); 
+      float val_to_fill = player_points_val / 100.0f; 
+      tensor_cpu.select(0, points_channel_offset + i).fill_(val_to_fill);
   }
 
   // 50-Move Rule Counter Channel (32)
@@ -107,14 +108,21 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
   float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
   
-  if (tensor.size(0) == NUM_CHANNELS_TOTAL && counter_channel_idx == NUM_CHANNELS_TOTAL - 1) {
-       tensor[counter_channel_idx].fill_(normalized_count); 
+  if (tensor_cpu.size(0) == NUM_CHANNELS_TOTAL && counter_channel_idx == NUM_CHANNELS_TOTAL - 1) {
+       tensor_cpu.select(0, counter_channel_idx).fill_(normalized_count); 
   } else {
       throw std::runtime_error("Internal error: Tensor channel dimension mismatch for 50-move counter. Expected "
                                + std::to_string(NUM_CHANNELS_TOTAL) + " channels, offset " + std::to_string(counter_channel_idx));
   }
 
-  return tensor.unsqueeze(0);
+  // 2. Move to target device if necessary, then unsqueeze
+  torch::Tensor final_tensor_on_device;
+  if (device.type() != torch::kCPU) {
+      final_tensor_on_device = tensor_cpu.to(device); // Default is non_blocking=false
+  } else {
+      final_tensor_on_device = tensor_cpu;
+  }
+  return final_tensor_on_device.unsqueeze(0);
 }
 
 torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device) {
