@@ -65,12 +65,12 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
   }
 
   // Active Player Status Channels (20-23)
-  const auto& active_players_set = board.get_active_players();
+  // OPTIMIZATION FIX: Access std::array<bool, 4> directly by index
+  const auto& active_players_array = board.get_active_players();
   int active_status_channel_offset = NUM_PIECE_CHANNELS_ONLY; // Starts at 20
   for (int i = 0; i < 4; ++i) {
-      Player p_iter = static_cast<Player>(i);
-      float val_to_fill = active_players_set.count(p_iter) ? 1.0f : 0.0f;
-      // Use select().fill_() for setting entire planes on the CPU tensor
+      // Direct access since it's now an array
+      float val_to_fill = active_players_array[i] ? 1.0f : 0.0f;
       tensor_cpu.select(0, active_status_channel_offset + i).fill_(val_to_fill);
   }
 
@@ -89,15 +89,12 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
 
 
   // Player Points Channels (28-31)
+  // OPTIMIZATION FIX: Access std::array<int, 4> directly
   const auto& points = board.get_player_points();
   int points_channel_offset = current_player_channel_offset + 4; // Starts at 28
   for (int i = 0; i < 4; ++i) {
-      Player p_iter = static_cast<Player>(i);
-      float player_points_val = 0.0f;
-      auto it = points.find(p_iter);
-      if(it != points.end()){
-          player_points_val = static_cast<float>(it->second);
-      }
+      // Direct access since it's now an array
+      float player_points_val = static_cast<float>(points[i]);
       // Normalize points 
       float val_to_fill = player_points_val / 100.0f; 
       tensor_cpu.select(0, points_channel_offset + i).fill_(val_to_fill);

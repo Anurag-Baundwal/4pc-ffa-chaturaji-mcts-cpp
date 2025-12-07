@@ -5,6 +5,7 @@
 #include <cstdint>    // For uint64_t
 #include <torch/torch.h> // Include for Tensor type
 #include <array> // For std::array
+#include <cassert> // For assert in MoveList
 
 namespace chaturaji_cpp {
   
@@ -79,6 +80,32 @@ struct Move {
         // std::optional comparison: nullopt is less than any value
         return promotion_piece_type < other.promotion_piece_type;
     }
+};
+
+// --- MoveList: Fixed-size container to avoid heap allocations during search ---
+struct MoveList {
+    // Reduced to 128 to reduce stack pressure. Chaturaji has fewer pieces than chess.
+    static constexpr int MAX_MOVES = 128; 
+    std::array<Move, MAX_MOVES> moves;
+    int count = 0;
+
+    void push_back(const Move& m) {
+        assert(count < MAX_MOVES);
+        moves[count++] = m;
+    }
+
+    void clear() { count = 0; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+
+    const Move& operator[](int index) const { return moves[index]; }
+    Move& operator[](int index) { return moves[index]; }
+
+    // Iterators for range-based loops
+    Move* begin() { return moves.data(); }
+    Move* end() { return moves.data() + count; }
+    const Move* begin() const { return moves.data(); }
+    const Move* end() const { return moves.data() + count; }
 };
 
 // --- Structures for Asynchronous Evaluation ---

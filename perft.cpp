@@ -39,8 +39,9 @@ uint64_t perft(Board& board, int depth) {
     uint64_t nodes = 0;
     Player current_player = board.get_current_player();
     
-    // Get moves for the current player
-    std::vector<Move> moves = board.get_pseudo_legal_moves(current_player);
+    // OPTIMIZATION: Use stack-allocated MoveList instead of std::vector
+    MoveList moves;
+    board.get_pseudo_legal_moves(current_player, moves);
 
     for (const auto& move : moves) {
         // Make the move
@@ -66,7 +67,10 @@ uint64_t divide(Board& board, int depth) {
     
     uint64_t total_nodes = 0;
     Player current_player = board.get_current_player();
-    std::vector<Move> moves = board.get_pseudo_legal_moves(current_player);
+
+    // OPTIMIZATION: Use stack-allocated MoveList
+    MoveList moves;
+    board.get_pseudo_legal_moves(current_player, moves);
 
     for (const auto& move : moves) {
         board.make_move(move);

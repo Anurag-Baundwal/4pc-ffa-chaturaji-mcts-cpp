@@ -36,13 +36,7 @@ struct UndoInfo {
     std::optional<Player> eliminated_player; // Player eliminated by this move (if any)
     ZobristKey previous_hash;      // Hash *before* the move was made
 
-    // New fields for bitboard state, no original comments for these specific fields
-    std::array<std::array<Bitboard, 5>, 4> original_piece_bitboards;
-    std::array<Bitboard, 4> original_player_bitboards;
-    Bitboard original_occupied_bitboard;
-
-    // No need to store points delta; can be recalculated from captured_piece
-    // No need to store previous position history; just pop the last hash during undo
+    // Optimized: No heavy bitboard copies here.
 };
 
 class Board {
@@ -51,8 +45,14 @@ public:
     using PositionKey = ZobristKey;
     using PositionHistory = std::vector<PositionKey>;
     using GameHistory = std::vector<Move>; // Represents a sequence of moves played in a game
-    using PlayerPointMap = std::map<Player, int>;
-    using ActivePlayerSet = std::set<Player>;
+    
+    // OPTIMIZATION: Replaced map/set with std::array for O(1) access
+    using PlayerPointArray = std::array<int, 4>;
+    using ActivePlayerArray = std::array<bool, 4>;
+    
+    // Compatibility typedefs (though API semantics have changed slightly for speed)
+    using PlayerPointMap = PlayerPointArray; 
+    using ActivePlayerSet = ActivePlayerArray;
 
     // --- Constructors ---
     Board(); // Default constructor initializes the board
@@ -62,18 +62,10 @@ public:
     // --- MCTS-SPECIFIC COPY CONSTRUCTOR DECLARATION ---
     /**
      * @brief Special copy constructor for MCTS child node creation.
-     * It performs a deep copy of essential game state (like bitboards, hashes,
-     * player info, and crucially, position_history_) but initializes
-     * MCTS-transient states like undo_stack_ as empty and termination_reason_
-     * as nullopt.
-     * @param other The parent board to copy from.
-     * @param tag An empty tag struct to differentiate this constructor.
      */
     Board(const Board& other, MCTSChildCopyTag tag);
 
     // --- Static Factory for MCTS Child Boards ---
-    // Creates a lightweight board state from parent for MCTS expansion.
-    // Copies essential state, but initializes history/undo stacks as empty.
     static Board create_mcts_child_board(const Board& parent_board, const Move& move);
 
     // --- Operators ---
@@ -84,17 +76,25 @@ public:
     void setup_initial_board();
     bool is_valid_square(int row, int col) const; // Checks if (row, col) is within board boundaries
     static bool is_valid_sq_idx(int sq_idx);      // Checks if a square index (0-63) is valid
-    // to_sq_idx and from_sq_idx are now in magic_utils
     std::optional<Piece> get_piece_at_sq(int sq_idx) const; // Get piece from bitboards
 
-    std::vector<Move> get_pseudo_legal_moves(Player player) const;
+    // Optimized move generation using MoveList&
+    void get_pseudo_legal_moves(Player player, MoveList& moves) const;
+    // Wrapper for backward compatibility returning vector
+    std::vector<Move> get_pseudo_legal_moves_vec(Player player) const;
+
     std::optional<Piece> make_move(const Move& move);
     std::optional<Piece> make_move_for_mcts(const Move& move);
     void undo_move();
 
     // --- Game State Accessors ---
-    const ActivePlayerSet& get_active_players() const;
-    const PlayerPointMap& get_player_points() const;
+    // Returns reference to array of booleans (index is Player enum)
+    const ActivePlayerArray& get_active_players() const;
+    bool is_player_active(Player p) const;
+    
+    const PlayerPointArray& get_player_points() const;
+    int get_player_points(Player p) const;
+
     Player get_current_player() const;
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
@@ -106,11 +106,14 @@ public:
 
     // --- Game Status ---
     bool is_game_over() const;             // Checks and sets termination_reason if true
-    PlayerPointMap get_game_result() const; // Calculates final scores based on state
+    
+    // Returns a Map for API compatibility with other parts of the engine expecting maps
+    std::map<Player, int> get_game_result() const; 
+    
     std::optional<Player> get_winner() const; // Determines winner based on game result
 
     // --- Evaluation ---
-    PlayerPointMap evaluate() const; // Hand-crafted evaluation (can be removed later if only NN is used)
+    std::map<Player, double> evaluate() const; // Hand-crafted evaluation
     int get_piece_value(const Piece& piece) const;
     int get_piece_capture_value(const Piece& piece) const;
 
@@ -121,18 +124,16 @@ public:
     // --- Utility ---
     void print_board() const;
     PositionKey get_position_key() const;
-    // print_bitboard now uses magic_utils::get_bit and magic_utils::to_sq_idx
     static void print_bitboard(Bitboard bb, const std::string& label = ""); 
-
-    // --- Bitboard Manipulation Helpers removed, use magic_utils::set_bit, etc. ---
-    
-    // Helper to map PieceType to 0-4 index for bitboards_
     static int piece_type_to_bb_idx(PieceType pt);
 
 private:
     // --- Internal State ---
-    ActivePlayerSet active_players_;
-    PlayerPointMap player_points_;
+    // OPTIMIZATION: Replaced std::set/map with arrays and counters
+    ActivePlayerArray is_active_;
+    int active_player_count_;
+    PlayerPointArray points_;
+    
     Player current_player_;
     PositionHistory position_history_; // Stores Zobrist keys of past positions
     int full_move_number_;
@@ -147,50 +148,41 @@ private:
     Bitboard occupied_bitboard_;                             // All pieces on the board
 
     // Precomputed attack/move lookup tables for bitboards
-    // These are specific to Board's internal representation and initialization
     static std::array<Bitboard, magic_utils::NUM_SQUARES> knight_attacks_;
     static std::array<Bitboard, magic_utils::NUM_SQUARES> king_attacks_;
-    // Pawn attacks are direction-dependent per player (and color)
     static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_red_;
     static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_blue_;
     static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_yellow_;
     static std::array<std::array<Bitboard, magic_utils::NUM_SQUARES>, 4> pawn_attacks_green_;
-    // Pawn forward (non-capturing) moves
     static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_red_;
     static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_blue_;
     static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_yellow_;
     static std::array<Bitboard, magic_utils::NUM_SQUARES> pawn_fwd_moves_green_;
 
-    // --- Magic Bitboard Data for Sliding Pieces (Rooks, Bishops) ---
-    // These are populated by initialize_lookup_tables using magic_utils functions and constants
+    // --- Magic Bitboard Data ---
     static std::array<Bitboard, magic_utils::NUM_SQUARES> rook_masks_;
     static std::array<Bitboard, magic_utils::NUM_SQUARES> bishop_masks_;
     static std::array<int, magic_utils::NUM_SQUARES> rook_shift_bits_;
     static std::array<int, magic_utils::NUM_SQUARES> bishop_shift_bits_;
-    
     static std::vector<Bitboard> rook_attack_table_;
     static std::vector<Bitboard> bishop_attack_table_;
     static std::array<unsigned int, magic_utils::NUM_SQUARES> rook_attack_offsets_;
     static std::array<unsigned int, magic_utils::NUM_SQUARES> bishop_attack_offsets_;
-    // --- End Magic Bitboard Data ---
 
-    // Helper to initialize static lookup tables (including magic bitboards)
     static void initialize_lookup_tables();
-    // Static initializer trick to call initialize_lookup_tables() before main()
     struct StaticInitializer { StaticInitializer() { initialize_lookup_tables(); } };
     static StaticInitializer static_initializer_;
 
-    // --- Private Helper Methods for Move Generation (Bitboard based) ---
-    void get_pawn_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_knight_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_bishop_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_rook_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_king_moves_bb(Player player, std::vector<Move>& moves) const;
+    // --- Private Helper Methods ---
+    void get_pawn_moves_bb(Player player, MoveList& moves) const;
+    void get_knight_moves_bb(Player player, MoveList& moves) const;
+    void get_bishop_moves_bb(Player player, MoveList& moves) const;
+    void get_rook_moves_bb(Player player, MoveList& moves) const;
+    void get_king_moves_bb(Player player, MoveList& moves) const;
 
-    // Private Helper for Turn Advancement
     void advance_turn();
-    // Helper to find the last player in sequence (numerically highest enum value) among active players
     Player get_last_active_player() const;
+    inline void toggle_piece(Player p, PieceType pt, int sq_idx);
 };
 
 } // namespace chaturaji_cpp
