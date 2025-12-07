@@ -292,3 +292,30 @@ cc_binary(
         ":chaturaji_magic_utils",
     ],
 )
+
+# === Perft ===
+
+cc_binary(
+    name = "perft",
+    srcs = ["perft.cpp"],
+    copts = select({
+        "//:cuda_build": [
+            "-std=c++17",
+            "-D AT_CUDA_ENABLED=1",
+        ],
+        "//conditions:default": [
+            "/std:c++17",
+        ],
+    }),
+    deps = [
+        ":chaturaji_board",
+        ":chaturaji_utils",
+        ":chaturaji_types",
+        ":chaturaji_magic_utils",
+        # Note: We generally don't need the neural network libs for perft
+        # unless types.h or board.h implicitly pulls them in via includes.
+        # Based on your files, board.h pulls types.h which pulls libtorch.
+        # So we might need libtorch here solely for linking purposes if headers use it.
+        ":libtorch_configured", 
+    ],
+)
