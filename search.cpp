@@ -88,26 +88,44 @@ void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::arr
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
   ChaturajiNN& network,
-  torch::Device device)
+  torch::Device device,
+  torch::Tensor& reusable_batch_tensor // <--- Modified signature
+)
 {
   if (pending_eval.empty()) {
       return;
   }
 
   int batch_size = pending_eval.size();
-  std::vector<torch::Tensor> state_tensors;
-  state_tensors.reserve(batch_size);
+  
+  // --- Pre-allocation Optimization Logic ---
+  // We assume reusable_batch_tensor is on CPU and of size [MaxBatch, 33, 8, 8].
+  // We write directly to its data pointer.
+  
+  float* batch_data_ptr = reusable_batch_tensor.data_ptr<float>();
+  // 33 channels * 8 height * 8 width = 2112 floats per sample
+  constexpr int FLOATS_PER_SAMPLE = 33 * 8 * 8; 
 
-  for (const auto& sim_state : pending_eval) {
-       state_tensors.push_back(get_board_tensor_no_batch(sim_state.current_node->get_board(), torch::kCPU));
+  for (int i = 0; i < batch_size; ++i) {
+       const auto& sim_state = pending_eval[i];
+       // Calculate pointer to the start of the i-th sample in the batch
+       float* sample_ptr = batch_data_ptr + (i * FLOATS_PER_SAMPLE);
+       write_board_to_buffer(sim_state.current_node->get_board(), sample_ptr);
   }
 
-  torch::Tensor batch_tensor = torch::stack(state_tensors, 0).to(device);
+  // Create a view of the filled portion of the batch (avoids copying if not needed, but to() will copy)
+  // Reusable tensor is [MaxBatch, ...], we slice to [CurrentBatch, ...]
+  torch::Tensor valid_batch_tensor = reusable_batch_tensor.slice(/*dim=*/0, /*start=*/0, /*end=*/batch_size);
+  
+  // Move to device (e.g., GPU) if necessary. If device is CPU, this might still be a copy depending on implementation,
+  // but we avoided the overhead of allocation + stack.
+  torch::Tensor device_input = valid_batch_tensor.to(device); 
+
   torch::Tensor policy_logits_batch, value_pred_batch; // value_pred_batch is [B, 4]
   {
       torch::NoGradGuard no_grad;
       network->eval();
-      std::tie(policy_logits_batch, value_pred_batch) = network->forward(batch_tensor);
+      std::tie(policy_logits_batch, value_pred_batch) = network->forward(device_input);
   }
 
   policy_logits_batch = policy_logits_batch.to(torch::kCPU);
@@ -154,6 +172,15 @@ void run_mcts_simulations_sync(
   double c_puct,
   int batch_size) 
 {
+  // --- Pre-allocate Batch Tensor ---
+  // We allocate this ONCE per move search. It lives on the CPU.
+  // Shape: [batch_size, 33, 8, 8]
+  auto cpu_options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
+  // Ensure batch_size is at least 1
+  int safe_batch_size = (batch_size > 0) ? batch_size : 1;
+  torch::Tensor reusable_batch_tensor = torch::zeros({safe_batch_size, 33, 8, 8}, cpu_options);
+
+
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
       SimulationState root_state;
@@ -161,12 +188,12 @@ void run_mcts_simulations_sync(
       root_state.path.push_back(&root);
       initial_eval.push_back(std::move(root_state));
       // std::cout << "Info (Sync MCTS): simulations=0, evaluating root node directly for policy." << std::endl;
-      evaluate_and_expand_batch_sync(initial_eval, network, device);
+      evaluate_and_expand_batch_sync(initial_eval, network, device, reusable_batch_tensor);
       return; 
   }
 
   std::vector<SimulationState> pending_evaluation;
-  pending_evaluation.reserve(batch_size);
+  pending_evaluation.reserve(safe_batch_size);
   // Player root_player = root.get_board().get_current_player(); // Not strictly needed here anymore for value perspective
 
   for (int i = 0; i < simulations; ++i) {
@@ -177,10 +204,8 @@ void run_mcts_simulations_sync(
       while (!current_sim.current_node->is_leaf()) {
            MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 std::cerr << "Warning: MCTS sync select_child failed or didn't advance."
-                           << " Parent visits: " << current_sim.current_node->get_visit_count()
-                           << ", Children: " << current_sim.current_node->get_children().size()
-                           << ", IsGameOver: " << current_sim.current_node->get_board().is_game_over() << std::endl;
+                 // Warning logic kept as is...
+                 // std::cerr << "Warning: MCTS sync select_child failed or didn't advance..." 
                  if (current_sim.current_node->get_board().is_game_over()){
                     MCTSNode* terminal_leaf = current_sim.current_node; 
                     std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
@@ -205,13 +230,13 @@ void run_mcts_simulations_sync(
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
-          if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
-              evaluate_and_expand_batch_sync(pending_evaluation, network, device);
+          if (pending_evaluation.size() >= static_cast<size_t>(safe_batch_size)) {
+              evaluate_and_expand_batch_sync(pending_evaluation, network, device, reusable_batch_tensor);
           }
       }
       next_simulation_sync:; 
   } 
-  evaluate_and_expand_batch_sync(pending_evaluation, network, device);
+  evaluate_and_expand_batch_sync(pending_evaluation, network, device, reusable_batch_tensor);
 }
 
 

@@ -43,6 +43,16 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device);
  */
 torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device);
 
+/**
+ * @brief Writes board features directly into a pre-allocated raw float buffer.
+ * Optimization to avoid allocating individual tensors and stacking them.
+ * 
+ * @param board The board object to read from.
+ * @param buffer Pointer to a float array of size 33 * 8 * 8. 
+ *               The buffer is assumed to be uninitialized or contain garbage (it will be zeroed internally).
+ */
+void write_board_to_buffer(const Board& board, float* buffer);
+
 // --- Move Indexing ---
 
 /**

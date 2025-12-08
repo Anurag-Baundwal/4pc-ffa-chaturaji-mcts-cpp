@@ -57,5 +57,15 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
  */
 std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>& reward_map, double default_value = 0.0);
 
+/**
+ * @brief Helper for synchronous batch evaluation. 
+ *        Modified to use a pre-allocated tensor to avoid reallocation.
+ */
+void evaluate_and_expand_batch_sync(
+  std::vector<SimulationState>& pending_eval,
+  ChaturajiNN& network,
+  torch::Device device,
+  torch::Tensor& reusable_batch_tensor // <--- Added
+);
 
 } // namespace chaturaji_cpp

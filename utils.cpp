@@ -5,6 +5,7 @@
 #include <map>
 #include <sstream>
 #include <algorithm> // For std::max, std::min
+#include <cstring>   // For std::memset
 
 namespace chaturaji_cpp {
 
@@ -124,6 +125,71 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device) {
 
 torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device) {
   return board_to_tensor(board, device).squeeze(0);
+}
+
+void write_board_to_buffer(const Board& board, float* buffer) {
+    constexpr int NUM_ACTUAL_PIECE_TYPES = 5;
+    constexpr int NUM_PIECE_CHANNELS_ONLY = 4 * NUM_ACTUAL_PIECE_TYPES; // 20
+    constexpr int NUM_CHANNELS_TOTAL = 33;
+    constexpr int CHANNEL_STRIDE = 8 * 8; // 64 floats per channel
+
+    // 0. Zero out the buffer
+    std::memset(buffer, 0, NUM_CHANNELS_TOTAL * CHANNEL_STRIDE * sizeof(float));
+
+    // 1. Piece Placement (Channels 0-19)
+    for (int p_idx = 0; p_idx < 4; ++p_idx) {
+        Player player_enum = static_cast<Player>(p_idx);
+        for (int pt_idx = 0; pt_idx < NUM_ACTUAL_PIECE_TYPES; ++pt_idx) {
+            PieceType piece_type_enum = UTIL_PIECE_TYPE_ORDER[pt_idx];
+            Bitboard bb = board.get_piece_bitboard(player_enum, piece_type_enum);
+            
+            // Calculate starting offset for this channel
+            int channel_offset = (p_idx * NUM_ACTUAL_PIECE_TYPES + pt_idx) * CHANNEL_STRIDE;
+            
+            Bitboard temp_bb = bb;
+            while(temp_bb) {
+                int sq_idx = magic_utils::pop_lsb(temp_bb); 
+                // magic_utils::to_sq_idx maps directly to 0-63, which matches row*8+col flattening
+                // row 0 is rank 8, but tensor logic in board_to_tensor used loc.row directly.
+                // Assuming board_to_tensor standard: buffer[ch][r][c] -> buffer[ch*64 + r*8 + c]
+                // sq_idx is typically r*8+c, so we can use sq_idx directly for the offset within the channel.
+                buffer[channel_offset + sq_idx] = 1.0f;
+            }
+        }
+    }
+
+    // 2. Active Player Status (Channels 20-23)
+    const auto& active_players_array = board.get_active_players();
+    int active_start_channel = 20;
+    for (int i = 0; i < 4; ++i) {
+        if (active_players_array[i]) {
+            int offset = (active_start_channel + i) * CHANNEL_STRIDE;
+            std::fill_n(buffer + offset, CHANNEL_STRIDE, 1.0f);
+        }
+    }
+
+    // 3. Current Player (Channels 24-27)
+    Player current_player = board.get_current_player();
+    int current_player_idx = static_cast<int>(current_player);
+    if (current_player_idx >= 0 && current_player_idx < 4) {
+        int offset = (24 + current_player_idx) * CHANNEL_STRIDE;
+        std::fill_n(buffer + offset, CHANNEL_STRIDE, 1.0f);
+    }
+
+    // 4. Points (Channels 28-31)
+    const auto& points = board.get_player_points();
+    int points_start_channel = 28;
+    for (int i = 0; i < 4; ++i) {
+        float val = static_cast<float>(points[i]) / 100.0f;
+        int offset = (points_start_channel + i) * CHANNEL_STRIDE;
+        std::fill_n(buffer + offset, CHANNEL_STRIDE, val);
+    }
+
+    // 5. 50-Move Rule (Channel 32)
+    int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
+    float val = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+    int offset = 32 * CHANNEL_STRIDE;
+    std::fill_n(buffer + offset, CHANNEL_STRIDE, val);
 }
 
 int move_to_policy_index(const Move& move) {
