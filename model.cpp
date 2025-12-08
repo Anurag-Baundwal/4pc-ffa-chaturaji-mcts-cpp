@@ -6,14 +6,14 @@ namespace chaturaji_cpp {
 
 // --- Configuration Constants ---
 // Network Body
-const int NUM_RES_BLOCKS = 10;
-const int NUM_CHANNELS = 128;
+const int NUM_RES_BLOCKS = 4;
+const int NUM_CHANNELS = 64;
 
 // Policy Head
-const int POLICY_HEAD_CONV_CHANNELS = 16;
+const int POLICY_HEAD_CONV_CHANNELS = 8;
 
 // Value Head
-const int VALUE_HEAD_CONV_CHANNELS = 16;
+const int VALUE_HEAD_CONV_CHANNELS = 12;
 const int VALUE_FC_HIDDEN_CHANNELS = 256;
 const int NUM_VALUE_OUTPUTS = 4; // MODIFIED: Output 4 values for the 4 players
 // --- End Configuration Constants ---
