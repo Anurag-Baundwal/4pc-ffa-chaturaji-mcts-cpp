@@ -136,7 +136,7 @@ void run_strength_test(
                 board.make_move(*best_move_opt);
             } else {
                 mcts_root_node_strength_test = nullptr; // Reset tree if no move found
-                if (!board.is_game_over() && board.get_active_players().count(current_player)) {
+                if (!board.is_game_over() && board.is_player_active(current_player)) {
                     board.resign(); 
                 }
             }
@@ -151,7 +151,7 @@ void run_strength_test(
         total_game_time += game_duration.count();
 
         // --- Analyze Result for Ranking ---
-        Board::PlayerPointMap final_scores = board.get_game_result();
+        std::map<Player, int> final_scores = board.get_game_result();
         std::vector<std::pair<Player, int>> sorted_scores_vec;
         // Ensure all players are in the vector for consistent sorting and ranking
         for (int p_idx = 0; p_idx < 4; ++p_idx) {

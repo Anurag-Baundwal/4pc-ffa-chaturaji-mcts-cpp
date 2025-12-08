@@ -28,7 +28,8 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
 
 std::map<Move, double> process_policy(const torch::Tensor& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
-    std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+    MoveList legal_moves;
+    board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
 
     if (legal_moves.empty()) {
         return policy_probs; 
@@ -241,7 +242,8 @@ std::optional<Move> get_best_move_mcts_sync(
 
     const auto& children_const_ref = current_mcts_root_shptr->get_children(); // Const reference for selection
     if (children_const_ref.empty()) {
-        auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+        MoveList legal_moves;
+        board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);    
         if (legal_moves.empty()) {
             std::cerr << "Warning (get_best_move): Root has no children and no legal moves. Returning nullopt." << std::endl;
             current_mcts_root_shptr = nullptr; // No future tree

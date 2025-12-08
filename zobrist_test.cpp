@@ -91,13 +91,22 @@ void print_state_comparison(const Board& board, const std::string& label) {
               << ", 50-Move Clock: " << (board.get_full_move_number() - board.get_move_number_of_last_reset())
               << std::endl;
     std::cout << "Position Hash: " << board.get_position_key() << std::endl;
-    // Compare active players set
+
+    // Compare active players
     std::cout << "Active Players Set: { ";
-    for (Player p : board.get_active_players()) { std::cout << static_cast<int>(p) << " "; }
+    for (int i = 0; i < 4; ++i) { 
+        if(board.is_player_active(static_cast<Player>(i))) {
+            std::cout << i << " "; 
+        }
+    }
     std::cout << "}" << std::endl;
+    
     // Compare points map
     std::cout << "Points Map: { ";
-    for (const auto& pair : board.get_player_points()) { std::cout << static_cast<int>(pair.first) << ":" << pair.second << " "; }
+    const auto& points = board.get_player_points(); // std::array<int, 4>
+    for (int i = 0; i < 4; ++i) { 
+        std::cout << i << ":" << points[i] << " "; 
+    }
     std::cout << "}" << std::endl;
     std::cout << "--------------------------" << std::endl;
 }
@@ -110,6 +119,7 @@ bool compare_board_states(const Board& b1, const Board& b2) {
     if (b1.get_move_number_of_last_reset() != b2.get_move_number_of_last_reset()) return false;
     if (b1.get_active_players() != b2.get_active_players()) return false;
     if (b1.get_player_points() != b2.get_player_points()) return false;
+
     // Compare bitboards directly for thoroughness
     if (b1.get_occupied_bitboard() != b2.get_occupied_bitboard()) {
         std::cerr << "State Compare Fail: Occupied bitboard mismatch" << std::endl;
@@ -225,7 +235,7 @@ bool test_resignation(Board& board) {
      ZobristKey hash_after = board.get_position_key();
      print_state_comparison(board, "After Resignation");
      assert(hash_before != hash_after && "Hash did not change after resignation");
-     assert(board.get_active_players().find(resigning_player) == board.get_active_players().end() && "Resigning player still active");
+     assert(!board.is_player_active(resigning_player) && "Resigning player still active");
 
 
      board.undo_move(); // Undo the resignation (uses the same undo stack)
@@ -455,7 +465,7 @@ int main() {
       else { /* Should not happen with manual list */ }
 
       // Check if expected player is active and whose turn it is
-      if (!board.get_active_players().count(expected_player)) {
+      if (!board.is_player_active(expected_player)) {
            std::cout << "--- INFO: Skipping move " << label << " because expected player "
                      << static_cast<int>(expected_player) << " is not active." << std::endl;
            continue; // Skip this move
