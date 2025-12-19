@@ -1,4 +1,5 @@
 #include "self_play.h"
+#include "data_writer.h"
 #include <iostream> 
 #include <numeric>  
 #include <cmath>    

@@ -5,6 +5,7 @@
 #include <iostream>
 #include <torch/torch.h>
 #include "types.h"
+#include "utils.h"
 
 namespace chaturaji_cpp {
 

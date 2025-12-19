@@ -8,7 +8,7 @@
 #include <random> 
 #include <thread> 
 #include <atomic> 
-#include <array> // For std::array
+#include <array> 
 
 #include "board.h"
 #include "mcts_node.h"
@@ -18,13 +18,13 @@
 #include "utils.h" 
 #include "evaluator.h" 
 
-
 namespace chaturaji_cpp {
 
-// MODIFIED: GameDataStep now stores an array of 4 rewards
+// Forward declaration
+class DataWriter;
+
 using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 4>>;
 using ReplayBuffer = std::deque<GameDataStep>;
-
 
 class SelfPlay {
 public:
@@ -45,9 +45,10 @@ public:
     ~SelfPlay(); 
 
     size_t generate_data(int num_games);
+    
+    // These are less relevant now that we write to disk, but we'll keep them to avoid breaking interface
     const ReplayBuffer& get_buffer() const;
     void clear_buffer();
-
 
 private:
     void run_game_simulation(
@@ -60,13 +61,13 @@ private:
     std::map<Move, double> get_action_probs(const MCTSNode& root, double temperature) const;
     Move choose_move(const MCTSNode& root, double temperature);
     
-    // MODIFIED: process_game_result now takes std::array<double, 4> in GameDataStep
     void process_game_result(
-        std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp, // Intermediate storage before final rewards
+        std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,
         const Board& final_board,
         std::vector<GameDataStep>& output_buffer 
     );
-     std::map<Move, double> add_dirichlet_noise(
+    
+    std::map<Move, double> add_dirichlet_noise(
       const std::map<Move, double>& policy_probs,
       double alpha,
       double epsilon
@@ -74,7 +75,7 @@ private:
 
     void process_worker_batch(
       std::vector<SimulationState>& pending_batch,
-      Player root_player, // root_player might not be needed anymore for value perspective
+      Player root_player, 
       bool& apply_root_noise 
     );
 
@@ -94,7 +95,9 @@ private:
 
     std::unique_ptr<Evaluator> evaluator_; 
     std::vector<std::thread> worker_threads_;
-    std::unique_ptr<DataWriter> data_writer_;
+    
+    // The DataWriter instance (managed by unique_ptr)
+    std::unique_ptr<DataWriter> data_writer_; 
 };
 
 } // namespace chaturaji_cpp

@@ -4,10 +4,6 @@
 #include "utils.h" 
 
 #include <torch/torch.h>
-#include <torch/data/dataloader.h> 
-#include <torch/data/datasets/base.h> 
-#include <torch/optim/adam.h>     
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -15,67 +11,11 @@
 #include <iomanip>
 #include <filesystem>
 #include <fstream> 
-#include <algorithm> // for std::copy with std::array
-#include <cmath>     // For std::round
+#include <cstdlib> // For std::system
 
 namespace fs = std::filesystem;
 
 namespace chaturaji_cpp {
-
-inline torch::Tensor policy_to_tensor_static_train(const std::map<Move, double>& policy_map) { // Renamed for local use
-  torch::Tensor policy_tensor = torch::zeros({4096}, torch::kFloat32);
-  auto policy_accessor = policy_tensor.accessor<float, 1>();
-  for (const auto& pair : policy_map) {
-      int index = move_to_policy_index(pair.first);
-      if (index >= 0 && index < 4096) {
-          policy_accessor[index] = static_cast<float>(pair.second);
-      }
-  }
-  return policy_tensor;
-}
-
-ChaturajiDataset::ChaturajiDataset(const std::vector<GameDataStep>& data) {
-    states_.reserve(data.size());
-    policies_.reserve(data.size());
-    values_.reserve(data.size());
-    torch::Device cpu_device = torch::kCPU;
-
-    for (const auto& step : data) {
-        torch::Tensor state_t = board_to_tensor(std::get<0>(step), cpu_device).squeeze(0); 
-        torch::Tensor policy_t = policy_to_tensor(std::get<1>(step)); 
-        
-        // MODIFIED: Convert std::array<double, 4> to torch::Tensor of shape [4]
-        const std::array<double, 4>& player_rewards_array = std::get<3>(step);
-        // Create a temporary C-style array to initialize tensor from data
-        float rewards_float_carray[4];
-        for(int i=0; i<4; ++i) rewards_float_carray[i] = static_cast<float>(player_rewards_array[i]);
-        torch::Tensor value_t = torch::tensor(at::ArrayRef<float>(rewards_float_carray, 4), torch::kFloat32); // Shape [4]
-
-
-        states_.push_back(state_t);
-        policies_.push_back(policy_t);
-        values_.push_back(value_t); 
-    }
-}
-
-torch::data::Example<torch::Tensor, torch::Tensor> ChaturajiDataset::get(size_t index) {
-     torch::Tensor state_tensor = states_[index]; 
-     torch::Tensor policy_tensor = policies_[index]; 
-     torch::Tensor value_tensor = values_[index];   // MODIFIED: Shape [4]
-
-     // Concatenate policy [4096] and value [4] -> Target shape [4100]
-     torch::Tensor target_tensor = torch::cat({policy_tensor, value_tensor}, /*dim=*/0);
-
-     return {state_tensor, target_tensor};
-}
-
-torch::optional<size_t> ChaturajiDataset::size() const {
-    return states_.size();
-}
-
-torch::Tensor ChaturajiDataset::policy_to_tensor(const std::map<Move, double>& policy_map) const {
-     return policy_to_tensor_static_train(policy_map); // Use local static helper
-}
 
 void train(
   int num_iterations,
@@ -93,102 +33,99 @@ void train(
 {
   torch::Device device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
   std::cout << "Using device: " << device << std::endl;
+  
+  // Setup directories
   auto now = std::chrono::system_clock::now();
   auto now_c = std::chrono::system_clock::to_time_t(now);
   std::stringstream ss_ts;
   ss_ts << std::put_time(std::localtime(&now_c), "%Y%m%d_%H%M%S");
   std::string timestamp = ss_ts.str();
   fs::path model_dir = fs::path(model_save_dir_base) / ("run_" + timestamp);
-  std::ofstream log_file; 
-  fs::path log_file_path = model_dir / "detailed_training_log.txt"; 
+  fs::path training_data_dir = "training_data";
 
-  try { fs::create_directories(model_dir); std::cout << "Model directory created: " << model_dir << std::endl; }
-  catch (const std::exception& e) { std::cerr << "Error creating model directory: " << e.what() << std::endl; return; }
-
-  log_file.open(log_file_path.string(), std::ios_base::app); 
-  if (!log_file.is_open()) { std::cerr << "Warning: Could not open log file: " << log_file_path << std::endl; }
-  else { 
-      log_file << "Log file opened successfully: " << log_file_path << std::endl; 
-      log_file.flush(); // ADDED FLUSH
+  try { 
+      fs::create_directories(model_dir); 
+      fs::create_directories(training_data_dir);
+      std::cout << "Model directory: " << model_dir << std::endl; 
   }
+  catch (const std::exception& e) { std::cerr << "Error creating directories: " << e.what() << std::endl; return; }
 
-  if (log_file.is_open()) { 
-      log_file << "Using device: " << device << std::endl; 
-      log_file.flush(); // ADDED FLUSH
-  }
-  if (log_file.is_open()) { 
-      log_file << "Model directory created: " << model_dir << std::endl; 
-      log_file.flush(); // ADDED FLUSH
-  }
-
+  // Load or Initialize Network
   ChaturajiNN network;
   network->to(device); 
+  
   if (!initial_model_path.empty() && fs::exists(initial_model_path)) {
-      try { torch::load(network, initial_model_path, device); 
-            std::cout << "Loaded initial model from: " << initial_model_path << std::endl; 
-            if (log_file.is_open()) { 
-                log_file << "Loaded initial model from: " << initial_model_path << std::endl; 
-                log_file.flush(); // ADDED FLUSH
-            }
+      try { 
+          torch::load(network, initial_model_path, device); 
+          std::cout << "Loaded initial model from: " << initial_model_path << std::endl; 
       }
       catch (const c10::Error& e) { 
           std::cerr << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; 
-          if (log_file.is_open()) { 
-              log_file << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; 
-              log_file.flush(); // ADDED FLUSH
-          }
       }
   } else { 
-      std::cout << "No initial model provided or found. Starting from scratch." << std::endl; 
-      if (log_file.is_open()) { 
-          log_file << "No initial model provided or found. Starting from scratch." << std::endl; 
-          log_file.flush(); // ADDED FLUSH
-      }
+      std::cout << "No initial model provided. Starting from scratch." << std::endl; 
   }
-  torch::optim::Adam optimizer(network->parameters(), torch::optim::AdamOptions(learning_rate).weight_decay(weight_decay));
 
+  // Initialize SelfPlay engine
   SelfPlay self_play_generator(
-    network, device, num_workers, simulations_per_move, 1250000, 
-    nn_batch_size, worker_batch_size, 2.5, 8, 0.45, 0.25
-    );
-
-  std::mt19937 buffer_rng(std::random_device{}());
+    network, 
+    device, 
+    num_workers, 
+    simulations_per_move, 
+    1250000, // max_buffer (unused now but kept for constructor)
+    nn_batch_size, 
+    worker_batch_size, 
+    2.5, // c_puct
+    8,   // temp decay
+    0.45, // alpha
+    0.25  // epsilon
+  );
 
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
-      std::cout << "\n--- ITERATION " << (iteration + 1) << " ---" << std::endl;
+      std::cout << "\n========== ITERATION " << (iteration + 1) << " / " << num_iterations << " ==========" << std::endl;
 
       // 1. DATA GENERATION (C++)
-      SelfPlay self_play_generator(network, device, num_workers, simulations_per_move, ...);
-      self_play_generator.generate_data(num_games_per_iteration);
+      std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
+      auto start_gen = std::chrono::high_resolution_clock::now();
+      
+      size_t points = self_play_generator.generate_data(num_games_per_iteration);
+      
+      auto end_gen = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> duration_gen = end_gen - start_gen;
+      std::cout << "[C++] Generated " << points << " positions in " << duration_gen.count() << "s." << std::endl;
 
       // 2. MODEL TRAINING (PYTHON)
-      std::cout << "Invoking Python training..." << std::endl;
+      std::cout << "[Python] Starting training process..." << std::endl;
+      // Note: Ensure train.py is in the current working directory or in PATH
       int ret = std::system("python train.py"); 
+      
       if (ret != 0) {
-          std::cerr << "Python training failed!" << std::endl;
-          return;
+          std::cerr << "!!! Python training script failed with exit code " << ret << " !!!" << std::endl;
+          // Optionally break here, or continue with old model
+          // return; 
       }
 
-      // 3. RELOAD MODEL (C++ / Libtorch)
-      // Load the model that Python just exported via JIT trace
-      try {
-          torch::load(network, "model.pt", device);
-          std::cout << "Reloaded updated model from Python." << std::endl;
-      } catch (const std::exception& e) {
-          std::cerr << "Failed to reload model: " << e.what() << std::endl;
+      // 3. RELOAD MODEL (C++)
+      // Python script exports JIT model to "model.pt"
+      if (fs::exists("model.pt")) {
+          try {
+              torch::load(network, "model.pt", device);
+              network->to(device); // Ensure it's on correct device
+              network->eval();
+              std::cout << "[C++] Reloaded updated model (model.pt)." << std::endl;
+              
+              // Archive the model for this iteration
+              fs::path iter_model_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".pt");
+              fs::copy("model.pt", iter_model_path, fs::copy_options::overwrite_existing);
+          } catch (const std::exception& e) {
+              std::cerr << "[C++] Failed to reload model: " << e.what() << std::endl;
+          }
+      } else {
+          std::cerr << "[C++] Warning: model.pt not found. Using previous weights." << std::endl;
       }
-    }
   } 
 
   std::cout << "\nTraining finished." << std::endl;
-  if (log_file.is_open()) {
-      log_file << "\nTraining finished." << std::endl;
-      log_file.flush(); // ADDED FLUSH (before closing)
-      log_file.close(); // Close also flushes
-      std::cout << "Detailed log saved to: " << log_file_path << std::endl; 
-  } else {
-      std::cout << "Detailed log was not saved as the file could not be opened: " << log_file_path << std::endl;
-  }
 }
 
 } // namespace chaturaji_cpp
