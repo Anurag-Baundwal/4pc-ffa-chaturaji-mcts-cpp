@@ -13,9 +13,9 @@ NUM_VALUE_OUTPUTS = 4
 class ResBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=True)
         self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=True)
         self.bn2 = nn.BatchNorm2d(channels)
 
     def forward(self, x):
@@ -30,7 +30,7 @@ class ChaturajiNN(nn.Module):
     def __init__(self):
         super().__init__()
         # Input: 33 channels (pieces + aux planes)
-        self.conv1 = nn.Conv2d(33, NUM_CHANNELS, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(33, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
         self.bn1 = nn.BatchNorm2d(NUM_CHANNELS)
 
         self.resblocks = nn.ModuleList([
@@ -38,13 +38,13 @@ class ChaturajiNN(nn.Module):
         ])
 
         # Policy Head
-        self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=1, bias=False)
+        self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
         self.policy_bn = nn.BatchNorm2d(POLICY_HEAD_CONV_CHANNELS)
         # 8*8 board size * policy channels
         self.policy_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS * 8 * 8, 4096)
 
         # Value Head
-        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=False)
+        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
         self.value_fc1 = nn.Linear(VALUE_HEAD_CONV_CHANNELS * 8 * 8, VALUE_FC_HIDDEN_CHANNELS)
         self.value_fc2 = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, NUM_VALUE_OUTPUTS)
