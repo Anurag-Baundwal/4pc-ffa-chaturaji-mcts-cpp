@@ -75,8 +75,8 @@ cc_library(
 cc_library(
     name = "chaturaji_utils",
     srcs = ["utils.cpp"],
-    hdrs = ["utils.h"],
-     copts = select({
+    hdrs = ["utils.h", "data_writer.h"], # Added data_writer.h here
+    copts = select({
         "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
         "//conditions:default": [ "/std:c++17", ],
     }),

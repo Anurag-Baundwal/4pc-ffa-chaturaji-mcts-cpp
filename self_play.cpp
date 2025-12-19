@@ -172,41 +172,30 @@ size_t SelfPlay::generate_data(int num_games) {
     std::atomic<int> games_completed_counter(0);
     std::vector<std::vector<GameDataStep>> local_buffers(num_workers_);
 
-    std::cout << "Starting data generation with " << num_workers_ << " workers for " << num_games << " games..." << std::endl;
+    // 1. Initialize the DataWriter with a unique filename for this iteration
+    std::string filename = "training_data/gen_" + std::to_string(std::time(nullptr)) + ".bin";
+    auto writer = std::make_unique<DataWriter>(filename);
 
     for (int i = 0; i < num_workers_; ++i) {
         worker_threads_.emplace_back(
             &SelfPlay::run_game_simulation, 
-            this,                            
-            i,                               
-            std::ref(games_completed_counter),
-            num_games,                       
-            std::ref(local_buffers[i])       
+            this, i, std::ref(games_completed_counter), num_games, std::ref(local_buffers[i])       
         );
     }
 
     for (auto& thread : worker_threads_) {
-        if (thread.joinable()) {
-            thread.join();
-        }
+        if (thread.joinable()) thread.join();
     }
 
-    std::cout << "All workers finished. Combining results..." << std::endl;
-    size_t total_data_points_generated_this_iteration = 0;
-    { 
-        std::lock_guard<std::mutex> lock(buffer_mutex_self_play);
-        for (const auto& local_buf : local_buffers) {
-            total_data_points_generated_this_iteration += local_buf.size();
-            for (const auto& step : local_buf) {
-                if (buffer_.size() >= max_buffer_size_) {
-                    buffer_.pop_front(); 
-                }
-                buffer_.push_back(step); 
-            }
-        }
-         std::cout << "Combined " << total_data_points_generated_this_iteration << " data steps. Final buffer size: " << buffer_.size() << std::endl;
-    } 
-    return total_data_points_generated_this_iteration;
+    // 2. Write everything to disk and clear memory
+    size_t total_points = 0;
+    for (auto& local_buf : local_buffers) {
+        total_points += local_buf.size();
+        writer->write_batch(local_buf);
+        local_buf.clear(); // Free memory immediately
+    }
+
+    return total_points;
 }
 
 void SelfPlay::run_game_simulation(

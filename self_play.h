@@ -94,6 +94,7 @@ private:
 
     std::unique_ptr<Evaluator> evaluator_; 
     std::vector<std::thread> worker_threads_;
+    std::unique_ptr<DataWriter> data_writer_;
 };
 
 } // namespace chaturaji_cpp
