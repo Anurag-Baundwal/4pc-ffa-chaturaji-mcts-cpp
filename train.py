@@ -6,7 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 import struct
 import os
 import glob
-from model import ChaturajiNN, export_for_cpp
+from model import ChaturajiNN, export_for_cpp, export_to_onnx 
 
 # Data dimensions
 INPUT_SIZE = 33 * 8 * 8
@@ -139,9 +139,13 @@ def train_loop():
     # Save Python weights
     torch.save(model.state_dict(), MODEL_SAVE_PATH)
     
-    # Export for C++
+    # Export for C++ (Legacy Libtorch)
     export_for_cpp(MODEL_SAVE_PATH, JIT_EXPORT_PATH)
-    print("Training complete. Model exported.")
+    
+    # Export for C++ (New ONNX Runtime)
+    export_to_onnx(MODEL_SAVE_PATH, "model.onnx")
+
+    print("Training complete. Models exported (JIT and ONNX).")
 
 if __name__ == "__main__":
     train_loop()

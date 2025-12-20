@@ -1,10 +1,8 @@
-#pragma once // Use pragma once for include guard (common practice)
-
-#include <optional> // For optional promotion piece type
-#include <functional> // For std::hash
-#include <cstdint>    // For uint64_t
-#include <torch/torch.h> // Include for Tensor type
-#include <array> // For std::array
+#pragma once
+#include <vector>
+#include <array>
+#include <cstdint>
+#include <optional>
 
 namespace chaturaji_cpp {
   
@@ -90,22 +88,17 @@ using RequestId = uint64_t;
  * @brief Data sent from an MCTS worker to the evaluator.
  */
 struct EvaluationRequest {
-    RequestId request_id;        // Unique ID to correlate request and result
-    torch::Tensor state_tensor;  // Board state tensor [C, H, W] (on CPU or specified device?) - Assume CPU for transfer simplicity for now
-    // Add Game ID if needed for multi-game workers later
-    // uint64_t game_id;
+    RequestId request_id;
+    std::vector<float> state_floats; // Size: 33 * 8 * 8
 };
 
 /**
  * @brief Data sent from the evaluator back to the MCTS worker.
  */
 struct EvaluationResult {
-    RequestId request_id;         // ID from the corresponding request
-    torch::Tensor policy_logits;  // Raw policy logits [4096] (on CPU)
-    std::array<float, 4> value;   // MODIFIED: Value estimates for each of the 4 players (RED, BLUE, YELLOW, GREEN)
-                                  // Order corresponds to Player enum (0-3)
-    // Add Game ID if needed
-    // uint64_t game_id;
+    RequestId request_id;
+    std::array<float, 4096> policy_logits; 
+    std::array<float, 4> value;
 };
 
 

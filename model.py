@@ -97,10 +97,56 @@ def export_for_cpp(model_path, output_path):
     traced_script_module.save(output_path)
     print(f"Exported JIT model to {output_path}")
 
+def export_to_onnx(model_path, output_path):
+    """
+    Loads weights from model_path and exports to ONNX format at output_path.
+    """
+    print(f"Exporting ONNX: Loading weights from {model_path}...")
+    model = ChaturajiNN()
+    
+    # Load weights (map_location ensures it works even if trained on GPU)
+    try:
+        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    except FileNotFoundError:
+        print("Warning: Model weights not found. Exporting with random initialization.")
+    
+    model.eval()
+
+    # Dummy input: [Batch=1, Channels=33, Height=8, Width=8]
+    dummy_input = torch.randn(1, 33, 8, 8)
+
+    # Export
+    torch.onnx.export(
+        model,
+        dummy_input,
+        output_path,
+        export_params=True,        # Store the trained parameter weights inside the model file
+        opset_version=14,          # Opset 14 is widely supported by recent ORT versions
+        do_constant_folding=True,  # Optimization
+        input_names=['input'],     # The name the C++ code will use to feed data
+        output_names=['policy', 'value'], # The names C++ will use to fetch results
+        dynamic_axes={
+            'input': {0: 'batch_size'},  # Allow variable batch size
+            'policy': {0: 'batch_size'},
+            'value': {0: 'batch_size'}
+        }
+    )
+    print(f"Successfully exported ONNX model to {output_path}")
+
 if __name__ == "__main__":
-    # Smoke test
-    net = ChaturajiNN()
-    dummy = torch.randn(2, 33, 8, 8)
-    p, v = net(dummy)
-    print(f"Policy Shape: {p.shape} (Expected [2, 4096])")
-    print(f"Value Shape:  {v.shape} (Expected [2, 4])")
+    import sys
+    
+    # Usage: python model.py export model.pth model.onnx
+    if len(sys.argv) > 1 and sys.argv[1] == "export":
+        input_pth = sys.argv[2] if len(sys.argv) > 2 else "model.pth"
+        output_onnx = sys.argv[3] if len(sys.argv) > 3 else "model.onnx"
+        export_to_onnx(input_pth, output_onnx)
+    else:
+        # Standard smoke test
+        net = ChaturajiNN()
+        dummy = torch.randn(2, 33, 8, 8)
+        p, v = net(dummy)
+        print("--- Smoke Test ---")
+        print(f"Policy Shape: {p.shape} (Expected [2, 4096])")
+        print(f"Value Shape:  {v.shape} (Expected [2, 4])")
+        print("To export ONNX, run: python model.py export <input.pth> <output.onnx>")
