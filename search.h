@@ -35,7 +35,7 @@ struct SimulationState {
 void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players); // MODIFIED
 
 
-std::map<Move, double> process_policy(const torch::Tensor& policy_logits, const Board& board);
+std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logits, const Board& board);
 
 std::optional<Move> get_best_move_mcts_sync( 
     const Board& board,

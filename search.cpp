@@ -26,49 +26,54 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
 }
 
 
-std::map<Move, double> process_policy(const torch::Tensor& policy_logits, const Board& board) {
+std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
     std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
 
     if (legal_moves.empty()) {
-        return policy_probs; 
+        return policy_probs;
     }
-    if (policy_logits.device().type() != torch::kCPU) {
-         std::cerr << "Warning: process_policy received logits not on CPU." << std::endl;
-    }
-     if (policy_logits.dim() != 1 || policy_logits.size(0) != 4096) {
-        std::string shape_str = "[";
-        for(int64_t s : policy_logits.sizes()) { shape_str += std::to_string(s) + ","; }
-        if (shape_str.length() > 1) shape_str.pop_back(); 
-        shape_str += "]";
-        throw std::runtime_error("process_policy expects logits shape [4096], got shape " + shape_str);
-     }
 
-    torch::Tensor masked_logits = torch::full_like(policy_logits, -std::numeric_limits<float>::infinity());
-    auto logits_accessor = policy_logits.accessor<float, 1>();
-    auto masked_logits_accessor = masked_logits.accessor<float, 1>();
-    std::vector<int> legal_indices;
-    legal_indices.reserve(legal_moves.size());
+    // 1. Gather logits for legal moves only
+    std::vector<float> legal_logits;
+    legal_logits.reserve(legal_moves.size());
+    std::vector<Move> valid_moves;
+    valid_moves.reserve(legal_moves.size());
+
+    float max_logit = -std::numeric_limits<float>::infinity();
 
     for (const auto& move : legal_moves) {
         int index = move_to_policy_index(move);
-        if (index >= 0 && index < 4096) { 
-            masked_logits_accessor[index] = logits_accessor[index];
-            legal_indices.push_back(index); 
-        } else {
-             std::cerr << "Error: move_to_policy_index returned out-of-bounds index: " << index << std::endl;
+        if (index >= 0 && index < 4096) {
+            float logit = policy_logits[index];
+            legal_logits.push_back(logit);
+            valid_moves.push_back(move);
+            // Track max logit for numerical stability during softmax
+            if (logit > max_logit) {
+                max_logit = logit;
+            }
         }
     }
 
-    torch::Tensor probs_tensor = torch::softmax(masked_logits, /*dim=*/0);
-    auto probs_accessor = probs_tensor.accessor<float, 1>();
+    if (legal_logits.empty()) return policy_probs;
 
-    for (size_t i = 0; i < legal_moves.size(); ++i) {
-        int index = legal_indices[i]; 
-         if (index >= 0 && index < 4096) { 
-            policy_probs[legal_moves[i]] = static_cast<double>(probs_accessor[index]);
-         }
+    // 2. Compute Softmax manually
+    float sum_exp = 0.0f;
+    for (float& val : legal_logits) {
+        val = std::exp(val - max_logit); // Subtract max for stability
+        sum_exp += val;
     }
+
+    // 3. Normalize and populate map
+    for (size_t i = 0; i < valid_moves.size(); ++i) {
+        if (sum_exp > 0.0f) {
+            policy_probs[valid_moves[i]] = static_cast<double>(legal_logits[i] / sum_exp);
+        } else {
+            // Fallback for extremely unlikely edge case (all logits -inf)
+            policy_probs[valid_moves[i]] = 1.0 / valid_moves.size();
+        }
+    }
+
     return policy_probs;
 }
 
@@ -101,48 +106,50 @@ void evaluate_and_expand_batch_sync(
       std::vector<float> floats = board_to_floats(pending_eval[i].current_node->get_board());
       std::memcpy(batch_ptr + (i * feature_size), floats.data(), feature_size * sizeof(float));
   }
-  
-  batch_tensor = batch_tensor.to(device);
+
+  torch::Tensor batch_tensor_device = batch_tensor.to(device); // Move to device
 
   torch::Tensor policy_logits_batch, value_pred_batch;
   {
       torch::NoGradGuard no_grad;
       network->eval();
-      std::tie(policy_logits_batch, value_pred_batch) = network->forward(batch_tensor);
+      // Forward still returns Tensors [Batch, 4096] and [Batch, 4]
+      std::tie(policy_logits_batch, value_pred_batch) = network->forward(batch_tensor_device);
   }
 
   policy_logits_batch = policy_logits_batch.to(torch::kCPU);
-  value_pred_batch = value_pred_batch.to(torch::kCPU); // value_pred_batch is [B, 4]
+  value_pred_batch = value_pred_batch.to(torch::kCPU);
 
-  auto value_accessor = value_pred_batch.accessor<float, 2>(); // Access as [Batch, NumPlayers]
+  // Get accessors for fast CPU reading
+  auto policy_accessor = policy_logits_batch.accessor<float, 2>();
+  auto value_accessor = value_pred_batch.accessor<float, 2>();
 
   for (int i = 0; i < batch_size; ++i) {
       const SimulationState& sim_state = pending_eval[i]; 
       MCTSNode* leaf_node = sim_state.current_node;
       const std::vector<MCTSNode*>& path = sim_state.path; 
 
-      if (!leaf_node) { 
-          std::cerr << "Error: Nullptr leaf_node found in pending evaluation batch." << std::endl;
-          continue;
-      }
+      if (!leaf_node) continue;
 
-      torch::Tensor policy_logits_single = policy_logits_batch[i];
-      std::map<Move, double> policy_probs = process_policy(policy_logits_single, leaf_node->get_board());
+      std::array<float, 4096> logits_array;
+      for(int k=0; k<4096; ++k) {
+          logits_array[k] = policy_accessor[i][k];
+      }
+      
+      std::map<Move, double> policy_probs = process_policy(logits_array, leaf_node->get_board());
+      // ---------------------------
 
       if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
            if (!policy_probs.empty()) {
                 leaf_node->expand(policy_probs);
-           } else {
-                std::cerr << "Warning (Sync MCTS): Empty policy from NN for non-terminal leaf node during batch processing." << std::endl;
            }
       } 
       
-      // MODIFIED: Extract the 4 player values
       std::array<double, 4> player_values_from_nn;
       for(int p_idx = 0; p_idx < 4; ++p_idx) {
           player_values_from_nn[p_idx] = static_cast<double>(value_accessor[i][p_idx]);
       }
-      backpropagate_mcts_value(path, player_values_from_nn); // Pass the array of 4 values
+      backpropagate_mcts_value(path, player_values_from_nn);
   }
   pending_eval.clear();
 }

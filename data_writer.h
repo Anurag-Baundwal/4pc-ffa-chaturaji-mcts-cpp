@@ -28,15 +28,21 @@ public:
         if (!outfile_.is_open()) return;
 
         for (const auto& step : data) {
-            // 1. Board State Tensor (33, 8, 8)
-            // We assume board_to_tensor works and returns a CPU tensor [1, 33, 8, 8]
-            // We need to construct it here because GameDataStep holds the Board object, not the tensor
-            // Note: This relies on linking against board_to_tensor from utils
-            torch::Tensor state = board_to_tensor(std::get<0>(step), torch::kCPU).squeeze(0); // [33, 8, 8]
+            // 1. Board State
+            // OLD: Used board_to_tensor (Torch dependency)
+            // torch::Tensor state = board_to_tensor(std::get<0>(step), torch::kCPU).squeeze(0);
+            // state = state.contiguous();
+            // outfile_.write(reinterpret_cast<const char*>(state.data_ptr<float>()), sizeof(float) * 33 * 8 * 8);
+
+            std::vector<float> state_floats = board_to_floats(std::get<0>(step));
             
-            // Ensure contiguous memory for raw write
-            state = state.contiguous();
-            outfile_.write(reinterpret_cast<const char*>(state.data_ptr<float>()), sizeof(float) * 33 * 8 * 8);
+            // Validate size (33 channels * 8 * 8)
+            if (state_floats.size() != 33 * 8 * 8) {
+                std::cerr << "Error: board_to_floats returned incorrect size: " << state_floats.size() << std::endl;
+                // You might want to handle this error or just write zeros/skip
+            }
+            
+            outfile_.write(reinterpret_cast<const char*>(state_floats.data()), sizeof(float) * state_floats.size());
 
             // 2. Policy Tensor (4096)
             // Convert map to dense vector
