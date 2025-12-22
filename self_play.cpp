@@ -83,7 +83,7 @@ void SelfPlay::process_worker_batch(
            continue;
       }
       EvaluationRequest req;
-      req.state_tensor = get_board_tensor_no_batch(leaf_node->get_board(), torch::kCPU);
+      req.state_floats = board_to_floats(leaf_node->get_board());
       futures.push_back(evaluator_->submit_request(std::move(req)));
       pending_batch[i].pending_request_id = req.request_id; 
   }

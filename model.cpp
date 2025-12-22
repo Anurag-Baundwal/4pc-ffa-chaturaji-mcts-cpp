@@ -118,57 +118,62 @@ std::vector<EvaluationResult> ChaturajiNNImpl::evaluate_batch(
         return {};
     }
 
-    // 1. Collect state tensors (all assumed to be on CPU initially)
-    std::vector<torch::Tensor> state_tensors_cpu;
-    state_tensors_cpu.reserve(requests.size());
-    for (const auto& req : requests) {
-        if (req.state_tensor.dim() != 3 || req.state_tensor.size(0) != 33 || req.state_tensor.size(1) != 8 || req.state_tensor.size(2) != 8) {
-             throw std::runtime_error("Invalid tensor dimensions in EvaluationRequest. Expected [33, 8, 8], got " + std::string(req.state_tensor.sizes().vec().begin(), req.state_tensor.sizes().vec().end()));
+    // 1. Convert std::vector<float> (from requests) into a single Batch Tensor
+    // We assume input is [33, 8, 8] which is 2112 floats.
+    int64_t batch_size = static_cast<int64_t>(requests.size());
+    int64_t feature_size = 33 * 8 * 8;
+
+    // Create a large tensor to hold the entire batch of floats
+    torch::Tensor batch_tensor_cpu = torch::empty({batch_size, 33, 8, 8}, torch::kFloat);
+    float* batch_ptr = batch_tensor_cpu.data_ptr<float>();
+
+    // Copy data from each request's vector into the batch tensor's memory
+    for (int64_t i = 0; i < batch_size; ++i) {
+        const auto& floats = requests[i].state_floats;
+        if (floats.size() != feature_size) {
+            throw std::runtime_error("Invalid state_floats size. Expected 2112.");
         }
-        state_tensors_cpu.push_back(req.state_tensor); // Keep on CPU
+        // Copy memory: Destination, Source, Size
+        std::memcpy(batch_ptr + (i * feature_size), floats.data(), feature_size * sizeof(float));
     }
 
-    // 2. Stack tensors into a batch on CPU
-    torch::Tensor batch_tensor_cpu = torch::stack(state_tensors_cpu, 0);
-
-    // 3. Move the entire batch tensor to the target device once
+    // 2. Move to device (GPU)
     torch::Tensor batch_tensor_device = batch_tensor_cpu.to(device);
 
-    // 4. Perform batched NN inference
+    // 3. Perform Inference
     torch::Tensor policy_logits_batch, value_batch;
     {
         torch::NoGradGuard no_grad;
         this->eval();
-        std::tie(policy_logits_batch, value_batch) = this->forward(batch_tensor_device); // Use the device tensor
+        std::tie(policy_logits_batch, value_batch) = this->forward(batch_tensor_device);
     }
 
-    // 5. Move results to CPU
-    policy_logits_batch = policy_logits_batch.to(torch::kCPU); // Shape [B, 4096]
-    value_batch = value_batch.to(torch::kCPU);           // Shape [B, 4]
+    // 4. Move results back to CPU
+    policy_logits_batch = policy_logits_batch.to(torch::kCPU); // [B, 4096]
+    value_batch = value_batch.to(torch::kCPU);                 // [B, 4]
 
-    if (policy_logits_batch.size(0) != static_cast<int64_t>(requests.size()) || value_batch.size(0) != static_cast<int64_t>(requests.size())) {
-        throw std::runtime_error("Mismatch between request batch size and NN output batch size.");
-    }
-    if (value_batch.size(1) != NUM_VALUE_OUTPUTS) { // Check second dimension of value_batch
-        throw std::runtime_error("NN value output has incorrect number of player values. Expected " +
-                                 std::to_string(NUM_VALUE_OUTPUTS) + ", got " + std::to_string(value_batch.size(1)));
-    }
-
-
-    // 5. Create EvaluationResult objects
+    // 5. Pack results into EvaluationResult (std::array)
     std::vector<EvaluationResult> results;
     results.reserve(requests.size());
-    auto value_accessor = value_batch.accessor<float, 2>(); // Access as [Batch, NumPlayers]
+
+    // Get raw pointers for fast access
+    auto policy_accessor = policy_logits_batch.accessor<float, 2>();
+    auto value_accessor = value_batch.accessor<float, 2>();
 
     for (size_t i = 0; i < requests.size(); ++i) {
         EvaluationResult res;
         res.request_id = requests[i].request_id;
-        res.policy_logits = policy_logits_batch[i]; 
-        
-        // MODIFIED: Populate the std::array<float, 4>
-        for (int j = 0; j < NUM_VALUE_OUTPUTS; ++j) {
-            res.value[j] = value_accessor[i][j];
+
+        // Manually copy Policy (Tensor -> std::array)
+        for (int k = 0; k < 4096; ++k) {
+            res.policy_logits[k] = policy_accessor[i][k];
         }
+
+        // Manually copy Value (Tensor -> std::array)
+        for (int k = 0; k < 4; ++k) {
+            res.value[k] = value_accessor[i][k];
+        }
+
         results.push_back(res);
     }
 

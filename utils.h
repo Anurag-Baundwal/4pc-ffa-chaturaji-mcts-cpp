@@ -43,6 +43,8 @@ torch::Tensor board_to_tensor(const Board& board, torch::Device device);
  */
 torch::Tensor get_board_tensor_no_batch(const Board& board, torch::Device device);
 
+std::vector<float> board_to_floats(const Board& board);
+
 // --- Move Indexing ---
 
 /**

@@ -89,20 +89,22 @@ void evaluate_and_expand_batch_sync(
   ChaturajiNN& network,
   torch::Device device)
 {
-  if (pending_eval.empty()) {
-      return;
+  if (pending_eval.empty()) return;
+
+  int64_t batch_size = pending_eval.size();
+  int64_t feature_size = 33 * 8 * 8;
+
+  torch::Tensor batch_tensor = torch::empty({batch_size, 33, 8, 8}, torch::kFloat);
+  float* batch_ptr = batch_tensor.data_ptr<float>();
+
+  for (int64_t i = 0; i < batch_size; ++i) {
+      std::vector<float> floats = board_to_floats(pending_eval[i].current_node->get_board());
+      std::memcpy(batch_ptr + (i * feature_size), floats.data(), feature_size * sizeof(float));
   }
+  
+  batch_tensor = batch_tensor.to(device);
 
-  int batch_size = pending_eval.size();
-  std::vector<torch::Tensor> state_tensors;
-  state_tensors.reserve(batch_size);
-
-  for (const auto& sim_state : pending_eval) {
-       state_tensors.push_back(get_board_tensor_no_batch(sim_state.current_node->get_board(), torch::kCPU));
-  }
-
-  torch::Tensor batch_tensor = torch::stack(state_tensors, 0).to(device);
-  torch::Tensor policy_logits_batch, value_pred_batch; // value_pred_batch is [B, 4]
+  torch::Tensor policy_logits_batch, value_pred_batch;
   {
       torch::NoGradGuard no_grad;
       network->eval();
