@@ -103,6 +103,9 @@ public:
     Bitboard get_occupied_bitboard() const; // Get combined occupied bitboard
     Bitboard get_player_bitboard(Player p) const; // Get bitboard for a specific player's pieces
     Bitboard get_piece_bitboard(Player p, PieceType pt) const; // Get bitboard for specific player and piece type
+    
+    Bitboard get_squares_attacked_by(Player player) const;
+
 
     // --- Game Status ---
     bool is_game_over() const;             // Checks and sets termination_reason if true

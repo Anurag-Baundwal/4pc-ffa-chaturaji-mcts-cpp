@@ -921,6 +921,60 @@ Bitboard Board::get_piece_bitboard(Player p, PieceType pt) const {
     return piece_bitboards_[static_cast<int>(p)][piece_type_to_bb_idx(pt)];
 }
 
+Bitboard Board::get_squares_attacked_by(Player player) const {
+    Bitboard attacks = 0ULL;
+    int p_idx = static_cast<int>(player);
+    Bitboard occ = occupied_bitboard_;
+
+    // 1. Pawns
+    // Note: We use the attack tables. Pawn attacks are static based on the square.
+    Bitboard pawns = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::PAWN)];
+    while (pawns) {
+        int sq = magic_utils::pop_lsb(pawns);
+        switch (player) {
+            case Player::RED:    attacks |= pawn_attacks_red_[static_cast<int>(Player::RED)][sq]; break;
+            case Player::BLUE:   attacks |= pawn_attacks_blue_[static_cast<int>(Player::BLUE)][sq]; break;
+            case Player::YELLOW: attacks |= pawn_attacks_yellow_[static_cast<int>(Player::YELLOW)][sq]; break;
+            case Player::GREEN:  attacks |= pawn_attacks_green_[static_cast<int>(Player::GREEN)][sq]; break;
+        }
+    }
+
+    // 2. Knights
+    Bitboard knights = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KNIGHT)];
+    while (knights) {
+        int sq = magic_utils::pop_lsb(knights);
+        attacks |= knight_attacks_[sq];
+    }
+
+    // 3. Kings
+    Bitboard king = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+    if (king) {
+        int sq = magic_utils::get_lsb_index(king);
+        attacks |= king_attacks_[sq];
+    }
+
+    // 4. Rooks (Sliding)
+    Bitboard rooks = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::ROOK)];
+    while (rooks) {
+        int sq = magic_utils::pop_lsb(rooks);
+        // Look up attacks using Magic Bitboards (same logic as get_rook_moves but accumulating attacks)
+        Bitboard blockers = occ & rook_masks_[sq];
+        unsigned int magic_idx = (blockers * magic_utils::RookMagics[sq]) >> rook_shift_bits_[sq];
+        attacks |= rook_attack_table_[rook_attack_offsets_[sq] + magic_idx];
+    }
+
+    // 5. Bishops (Sliding)
+    Bitboard bishops = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::BISHOP)];
+    while (bishops) {
+        int sq = magic_utils::pop_lsb(bishops);
+        Bitboard blockers = occ & bishop_masks_[sq];
+        unsigned int magic_idx = (blockers * magic_utils::BishopMagics[sq]) >> bishop_shift_bits_[sq];
+        attacks |= bishop_attack_table_[bishop_attack_offsets_[sq] + magic_idx];
+    }
+
+    return attacks;
+}
+
 // Utility to print a bitboard for debugging
 void Board::print_bitboard(Bitboard bb, const std::string& label) {
     std::cout << "Bitboard: " << label << " (0x" << std::hex << bb << std::dec << ")" << std::endl;

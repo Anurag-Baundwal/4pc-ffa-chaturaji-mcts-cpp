@@ -89,7 +89,7 @@ using RequestId = uint64_t;
  */
 struct EvaluationRequest {
     RequestId request_id;
-    std::vector<float> state_floats; // Size: 33 * 8 * 8
+    std::vector<float> state_floats; // Size: 34 * 8 * 8
 };
 
 /**

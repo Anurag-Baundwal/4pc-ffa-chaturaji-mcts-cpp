@@ -22,10 +22,10 @@ std::vector<float> board_to_floats(const Board& board) {
     constexpr int NUM_ACTUAL_PIECE_TYPES = 5; // P, N, B, R, K
     constexpr int NUM_PIECE_CHANNELS_ONLY = 4 * NUM_ACTUAL_PIECE_TYPES; // 20
     
-    // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) = 33 channels
-    constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1; 
+    // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) 1 (incoming attacks) = 34 channels
+    constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1 + 1; // 34 
 
-    // Initialize flat vector with zeros. Size: 33 * 64 = 2112 floats.
+    // Initialize flat vector with zeros. Size: 34 * 64 = 2176 floats.
     std::vector<float> tensor_data(NUM_CHANNELS_TOTAL * BOARD_AREA, 0.0f);
 
     auto fill_plane = [&](int channel_idx, float value) {
@@ -92,6 +92,27 @@ std::vector<float> board_to_floats(const Board& board) {
     int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
     float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
     fill_plane(counter_channel_idx, normalized_count);
+
+    // Incoming Attacks Channel (33)
+    int attack_channel_idx = 33;
+    
+    Player current_p = board.get_current_player();
+    const auto& active_players = board.get_active_players();
+    
+    Bitboard all_enemy_attacks = 0ULL;
+    
+    for (Player p : active_players) {
+        if (p != current_p) {
+            // OR together the attacks from all active opponents
+            all_enemy_attacks |= board.get_squares_attacked_by(p);
+        }
+    }
+    
+    // Fill the plane based on the bitboard
+    while (all_enemy_attacks) {
+        int sq_idx = magic_utils::pop_lsb(all_enemy_attacks);
+        set_pixel(attack_channel_idx, sq_idx, 1.0f);
+    }
 
     return tensor_data;
 }

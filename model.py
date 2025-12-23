@@ -29,8 +29,8 @@ class ResBlock(nn.Module):
 class ChaturajiNN(nn.Module):
     def __init__(self):
         super().__init__()
-        # Input: 33 channels (pieces + aux planes)
-        self.conv1 = nn.Conv2d(33, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
+        # Input: 34 channels (pieces + aux planes)
+        self.conv1 = nn.Conv2d(34, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
         self.bn1 = nn.BatchNorm2d(NUM_CHANNELS)
 
         self.resblocks = nn.ModuleList([
@@ -87,8 +87,8 @@ def export_for_cpp(model_path, output_path):
         print("Model file not found, exporting random initialization.")
         model.eval()
 
-    # Create dummy input for tracing (Batch=1, Channels=33, H=8, W=8)
-    example_input = torch.rand(1, 33, 8, 8)
+    # Create dummy input for tracing (Batch=1, Channels=34, H=8, W=8)
+    example_input = torch.rand(1, 34, 8, 8)
     
     # Trace the model
     traced_script_module = torch.jit.trace(model, example_input)
@@ -112,8 +112,8 @@ def export_to_onnx(model_path, output_path):
     
     model.eval()
 
-    # Dummy input: [Batch=1, Channels=33, Height=8, Width=8]
-    dummy_input = torch.randn(1, 33, 8, 8)
+    # Dummy input: [Batch=1, Channels=34, Height=8, Width=8]
+    dummy_input = torch.randn(1, 34, 8, 8)
 
     # Export
     torch.onnx.export(
@@ -154,7 +154,7 @@ if __name__ == "__main__":
             # Initialize random model
             model = ChaturajiNN()
             model.eval()
-            dummy_input = torch.randn(1, 33, 8, 8)
+            dummy_input = torch.randn(1, 34, 8, 8)
             torch.onnx.export(
                 model, dummy_input, output_onnx,
                 export_params=True, opset_version=14, do_constant_folding=True,
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     else:
         # Standard smoke test
         net = ChaturajiNN()
-        dummy = torch.randn(2, 33, 8, 8)
+        dummy = torch.randn(2, 34, 8, 8)
         p, v = net(dummy)
         print("--- Smoke Test ---")
         print(f"Policy Shape: {p.shape}")

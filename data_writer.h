@@ -30,8 +30,8 @@ public:
             // 1. Board State (using std::vector<float>)
             std::vector<float> state_floats = board_to_floats(std::get<0>(step));
             
-            // Validate size (33 channels * 8 * 8)
-            if (state_floats.size() != 33 * 8 * 8) {
+            // Validate size (34 channels * 8 * 8)
+            if (state_floats.size() != 34 * 8 * 8) {
                 std::cerr << "Error: board_to_floats returned incorrect size: " << state_floats.size() << std::endl;
             }
             

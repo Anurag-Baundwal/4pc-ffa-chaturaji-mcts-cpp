@@ -17,7 +17,7 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
     if (requests.empty()) return {};
 
     size_t batch_size = requests.size();
-    size_t input_count = 33 * 8 * 8;
+    size_t input_count = 34 * 8 * 8;
     
     // 1. Flatten all requests into one contiguous buffer
     std::vector<float> input_tensor_values(batch_size * input_count);
@@ -31,7 +31,7 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
     }
 
     // 2. Wrap buffer in ORT Tensor
-    std::array<int64_t, 4> input_shape = { (int64_t)batch_size, 33, 8, 8 };
+    std::array<int64_t, 4> input_shape = { (int64_t)batch_size, 34, 8, 8 };
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         memory_info_, input_tensor_values.data(), input_tensor_values.size(), 
         input_shape.data(), input_shape.size());

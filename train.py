@@ -11,7 +11,8 @@ import numpy as np
 from model import ChaturajiNN, export_for_cpp, export_to_onnx 
 
 # Data dimensions
-INPUT_SIZE = 33 * 8 * 8
+INPUT_CHANNELS = 34
+INPUT_SIZE = INPUT_CHANNELS * 8 * 8
 POLICY_SIZE = 4096
 VALUE_SIZE = 4
 SAMPLE_SIZE_BYTES = (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE) * 4 # 4 bytes per float
@@ -62,8 +63,8 @@ class ReplayBuffer:
             np_data = np_data.reshape(num_samples_in_file, INPUT_SIZE + POLICY_SIZE + VALUE_SIZE)
 
             # Split columns
-            # State: [N, 2112]
-            s = torch.from_numpy(np_data[:, :INPUT_SIZE]).view(num_samples_in_file, 33, 8, 8)
+            # State: [N, 2176]
+            s = torch.from_numpy(np_data[:, :INPUT_SIZE]).view(num_samples_in_file, INPUT_CHANNELS, 8, 8)
             # Policy: [N, 4096]
             p = torch.from_numpy(np_data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE])
             # Value: [N, 4]
