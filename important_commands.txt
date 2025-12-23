@@ -3,6 +3,10 @@ Commands that you can run in the project root.
 To compile the engine:
 bazel build //:chaturaji_engine -c opt
 
+Note: On Windows, always run the resulting executable from the root folder 
+(e.g., .\bazel-bin\chaturaji_engine.exe) so it can find your Python scripts 
+and DLLs correctly.
+
 ---------------------------------------------------------------------
 
 To train a model:
@@ -24,12 +28,10 @@ Arguments:
   --wd VALUE              : Weight decay (default: 1e-4, check train.cpp).
 
 Example - Test Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 1 --games-per-iter 5 --target-sampling-rate 1.5 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 64 
+.\bazel-bin\chaturaji_engine.exe --train --iterations 1 --games-per-iter 5 --target-sampling-rate 1.5 --train-batch 64 --workers 4 --nn-batch 128 --worker-batch 16 --save-dir ./models --sims 64 
 
-Example - Serious Training Run (adjust workers/batches based on your CPU/GPU):
-bazel run //:chaturaji_engine -c opt -- --train --iterations 32768 --games-per-iter 32 --target-sampling-rate 1.5 --train-batch 512 --workers 10 --nn-batch 1024 --worker-batch 48 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 225
-
-bazel run //:chaturaji_engine -c opt -- --train --iterations 32768 --games-per-iter 50 --target-sampling-rate 1.5 --train-batch 512 --workers 8 --nn-batch 128 --worker-batch 64 --save-dir C:/Users/dell3/source/repos3/4pc-ffa-chaturaji-mcts-cpp/models --sims 250
+Example - Serious Training Run:
+.\bazel-bin\chaturaji_engine.exe --train --iterations 32768 --games-per-iter 32 --target-sampling-rate 1.5 --train-batch 512 --workers 10 --nn-batch 1024 --worker-batch 48 --save-dir ./models --sims 225
 
 ---------------------------------------------------------------------
 
@@ -41,7 +43,7 @@ Arguments:
   --mcts-batch N          : Batch size for *synchronous* MCTS NN calls during inference (default: 16, check main.cpp).
 
 Example:
-.\bazel-bin\chaturaji_engine.exe --model "C:\Users\dell3\Downloads\chaturaji_iter_16.pt" --sims 256 --mcts-batch 16
+.\bazel-bin\chaturaji_engine.exe --model "model.pt" --sims 256 --mcts-batch 16
 
 Terminal Setup (Windows):
 To ensure print_board displays the pieces correctly in the Windows terminal, run this command *before* running the engine executable:
@@ -66,7 +68,7 @@ Details:
   '--new-model' based on achieving the highest score.
 
 Example:
-.\bazel-bin\chaturaji_engine.exe --strength-test --new-model "C:\Users\dell3\Downloads\chaturaji_iter_26.pt" --old-model "C:\Users\dell3\Downloads\chaturaji_iter_1.pt" --games 100 --sims 256 --mcts-batch 64
+.\bazel-bin\chaturaji_engine.exe --strength-test --new-model "./models/run_xxx/iter_10.pt" --old-model "./model.pt" --games 100 --sims 256 --mcts-batch 64
 
 ---------------------------------------------------------------------
 
@@ -77,3 +79,13 @@ bazel build //:zobrist_test
 
 Run the test and show output:
 bazel test //:zobrist_test --test_output=all
+
+---------------------------------------------------------------------
+
+To run Perft (Performance Test):
+
+Compile the perft:
+bazel build //:perft
+
+Run the test:
+.\bazel-bin\perft.exe --depth 4 --divide
