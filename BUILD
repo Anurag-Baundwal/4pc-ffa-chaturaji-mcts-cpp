@@ -120,12 +120,13 @@ cc_library(
     srcs = ["model.cpp"],
     hdrs = ["model.h"],
     copts = select({
-        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
-        "//conditions:default": [ "/std:c++17", ],
+        "//:cuda_build": [ "-std=c++17" ], # Removed AT_CUDA_ENABLED
+        "//conditions:default": [ "/std:c++17" ],
     }),
     deps = [
         ":chaturaji_types",
-        ":libtorch_configured",
+        "@onnxruntime//:onnxruntime", # Added ONNX
+        # ":libtorch_configured",      # REMOVED
     ],
 )
 
@@ -134,14 +135,13 @@ cc_library(
     srcs = ["evaluator.cpp"],
     hdrs = ["evaluator.h"],
     copts = select({
-        "//:cuda_build": [ "-std=c++17", "-D AT_CUDA_ENABLED=1", ],
-        "//conditions:default": [ "/std:c++17", ],
+        "//:cuda_build": [ "-std=c++17" ],
+        "//conditions:default": [ "/std:c++17" ],
     }),
     deps = [
         ":chaturaji_model",
         ":chaturaji_types",
-        # thread_safe_queue.h is declared in chaturaji_types's hdrs, so this dependency is sufficient.
-        ":libtorch_configured",
+        # ":libtorch_configured", # REMOVED (transitively handled via types if needed, but we want it gone)
     ],
 )
 
