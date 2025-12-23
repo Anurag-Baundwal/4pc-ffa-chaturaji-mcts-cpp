@@ -3,7 +3,6 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
-#include <torch/torch.h>
 #include "types.h"
 #include "utils.h"
 
@@ -28,24 +27,17 @@ public:
         if (!outfile_.is_open()) return;
 
         for (const auto& step : data) {
-            // 1. Board State
-            // OLD: Used board_to_tensor (Torch dependency)
-            // torch::Tensor state = board_to_tensor(std::get<0>(step), torch::kCPU).squeeze(0);
-            // state = state.contiguous();
-            // outfile_.write(reinterpret_cast<const char*>(state.data_ptr<float>()), sizeof(float) * 33 * 8 * 8);
-
+            // 1. Board State (using std::vector<float>)
             std::vector<float> state_floats = board_to_floats(std::get<0>(step));
             
             // Validate size (33 channels * 8 * 8)
             if (state_floats.size() != 33 * 8 * 8) {
                 std::cerr << "Error: board_to_floats returned incorrect size: " << state_floats.size() << std::endl;
-                // You might want to handle this error or just write zeros/skip
             }
             
             outfile_.write(reinterpret_cast<const char*>(state_floats.data()), sizeof(float) * state_floats.size());
 
             // 2. Policy Tensor (4096)
-            // Convert map to dense vector
             std::vector<float> policy_dense(4096, 0.0f);
             const auto& policy_map = std::get<1>(step);
             for (const auto& kv : policy_map) {
