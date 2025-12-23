@@ -20,7 +20,6 @@
 
 namespace chaturaji_cpp {
 
-// Forward declaration
 class DataWriter;
 
 using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 4>>;
@@ -29,8 +28,7 @@ using ReplayBuffer = std::deque<GameDataStep>;
 class SelfPlay {
 public:
     SelfPlay(
-        ChaturajiNN network, 
-        torch::Device device,
+        Model* network, 
         int num_workers = 4,
         int simulations_per_move = 100,
         size_t max_buffer_size = 1250000,
@@ -46,7 +44,6 @@ public:
 
     size_t generate_data(int num_games);
     
-    // These are less relevant now that we write to disk, but we'll keep them to avoid breaking interface
     const ReplayBuffer& get_buffer() const;
     void clear_buffer();
 
@@ -79,8 +76,7 @@ private:
       bool& apply_root_noise 
     );
 
-    ChaturajiNN network_handle_; 
-    torch::Device device_; 
+    Model* network_handle_; // Non-owning pointer
     int num_workers_;
     int simulations_per_move_;
     size_t max_buffer_size_;
@@ -96,7 +92,6 @@ private:
     std::unique_ptr<Evaluator> evaluator_; 
     std::vector<std::thread> worker_threads_;
     
-    // The DataWriter instance (managed by unique_ptr)
     std::unique_ptr<DataWriter> data_writer_; 
 };
 

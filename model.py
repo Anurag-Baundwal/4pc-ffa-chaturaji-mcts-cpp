@@ -136,17 +136,37 @@ def export_to_onnx(model_path, output_path):
 if __name__ == "__main__":
     import sys
     
-    # Usage: python model.py export model.pth model.onnx
-    if len(sys.argv) > 1 and sys.argv[1] == "export":
-        input_pth = sys.argv[2] if len(sys.argv) > 2 else "model.pth"
-        output_onnx = sys.argv[3] if len(sys.argv) > 3 else "model.onnx"
-        export_to_onnx(input_pth, output_onnx)
+    # Usage: 
+    # 1. python model.py export <input.pth> <output.onnx>
+    # 2. python model.py export_random <output.onnx>
+    
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+        
+        if cmd == "export":
+            input_pth = sys.argv[2] if len(sys.argv) > 2 else "model.pth"
+            output_onnx = sys.argv[3] if len(sys.argv) > 3 else "model.onnx"
+            export_to_onnx(input_pth, output_onnx)
+            
+        elif cmd == "export_random":
+            output_onnx = sys.argv[2] if len(sys.argv) > 2 else "initial_random.onnx"
+            print(f"Exporting random initialized model to {output_onnx}...")
+            # Initialize random model
+            model = ChaturajiNN()
+            model.eval()
+            dummy_input = torch.randn(1, 33, 8, 8)
+            torch.onnx.export(
+                model, dummy_input, output_onnx,
+                export_params=True, opset_version=14, do_constant_folding=True,
+                input_names=['input'], output_names=['policy', 'value'],
+                dynamic_axes={'input': {0: 'batch_size'}, 'policy': {0: 'batch_size'}, 'value': {0: 'batch_size'}}
+            )
+            print("Done.")
     else:
         # Standard smoke test
         net = ChaturajiNN()
         dummy = torch.randn(2, 33, 8, 8)
         p, v = net(dummy)
         print("--- Smoke Test ---")
-        print(f"Policy Shape: {p.shape} (Expected [2, 4096])")
-        print(f"Value Shape:  {v.shape} (Expected [2, 4])")
-        print("To export ONNX, run: python model.py export <input.pth> <output.onnx>")
+        print(f"Policy Shape: {p.shape}")
+        print(f"Value Shape:  {v.shape}")

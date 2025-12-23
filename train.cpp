@@ -3,7 +3,6 @@
 #include "model.h"
 #include "utils.h" 
 
-#include <torch/torch.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -11,7 +10,10 @@
 #include <iomanip>
 #include <filesystem>
 #include <fstream> 
-#include <cstdlib> // For std::system
+#include <cstdlib> 
+#include <memory>
+#include <sstream> // <--- ADDED THIS (Fixes C2079)
+#include <ctime>   // <--- ADDED THIS (For std::localtime)
 
 namespace fs = std::filesystem;
 
@@ -31,10 +33,6 @@ void train(
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
-  torch::Device device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
-  std::cout << "Using device: " << device << std::endl;
-  
-  // Setup directories
   auto now = std::chrono::system_clock::now();
   auto now_c = std::chrono::system_clock::to_time_t(now);
   std::stringstream ss_ts;
@@ -51,77 +49,81 @@ void train(
   catch (const std::exception& e) { std::cerr << "Error creating directories: " << e.what() << std::endl; return; }
 
   // Load or Initialize Network
-  ChaturajiNN network;
-  network->to(device); 
+  std::unique_ptr<Model> network = nullptr;
   
   if (!initial_model_path.empty() && fs::exists(initial_model_path)) {
       try { 
-          torch::load(network, initial_model_path, device); 
+          network = std::make_unique<Model>(initial_model_path);
           std::cout << "Loaded initial model from: " << initial_model_path << std::endl; 
       }
-      catch (const c10::Error& e) { 
-          std::cerr << "Error loading initial model: " << e.what() << ". Starting from scratch." << std::endl; 
+      catch (const std::exception& e) { 
+          std::cerr << "Error loading initial model: " << e.what() << ". Training will fail if self-play starts without model." << std::endl;
+          return;
       }
   } else { 
-      std::cout << "No initial model provided. Starting from scratch." << std::endl; 
+      std::cout << "No initial model provided. Triggering Python script to generate random initialization..." << std::endl;
+      // Note: Make sure model.py is updated with export_random before running this
+      int ret = std::system("python model.py export_random initial_random.onnx"); 
+      if (ret == 0 && fs::exists("initial_random.onnx")) {
+           network = std::make_unique<Model>("initial_random.onnx");
+           std::cout << "Loaded random initial model." << std::endl;
+      } else {
+           std::cerr << "Failed to generate random model via Python. Aborting." << std::endl;
+           return;
+      }
   }
-
-  // Initialize SelfPlay engine
-  SelfPlay self_play_generator(
-    network, 
-    device, 
-    num_workers, 
-    simulations_per_move, 
-    1250000, // max_buffer (unused now but kept for constructor)
-    nn_batch_size, 
-    worker_batch_size, 
-    2.5, // c_puct
-    8,   // temp decay
-    0.45, // alpha
-    0.25  // epsilon
-  );
 
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
       std::cout << "\n========== ITERATION " << (iteration + 1) << " / " << num_iterations << " ==========" << std::endl;
 
-      // 1. DATA GENERATION (C++)
-      std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
-      auto start_gen = std::chrono::high_resolution_clock::now();
-      
-      size_t points = self_play_generator.generate_data(num_games_per_iteration);
-      
-      auto end_gen = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> duration_gen = end_gen - start_gen;
-      std::cout << "[C++] Generated " << points << " positions in " << duration_gen.count() << "s." << std::endl;
+      {
+        // Scope the SelfPlay instance so it releases the Model pointer before we reload
+        SelfPlay self_play_generator(
+            network.get(), 
+            num_workers, 
+            simulations_per_move, 
+            1250000, 
+            nn_batch_size, 
+            worker_batch_size, 
+            2.5, 
+            8,   
+            0.45, 
+            0.25  
+        );
+
+        // 1. DATA GENERATION (C++)
+        std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
+        auto start_gen = std::chrono::high_resolution_clock::now();
+        
+        size_t points = self_play_generator.generate_data(num_games_per_iteration);
+        
+        auto end_gen = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration_gen = end_gen - start_gen;
+        std::cout << "[C++] Generated " << points << " positions in " << duration_gen.count() << "s." << std::endl;
+      } // self_play_generator destroyed here
 
       // 2. MODEL TRAINING (PYTHON)
       std::cout << "[Python] Starting training process..." << std::endl;
-      // Note: Ensure train.py is in the current working directory or in PATH
       int ret = std::system("python train.py"); 
       
       if (ret != 0) {
           std::cerr << "!!! Python training script failed with exit code " << ret << " !!!" << std::endl;
-          // Optionally break here, or continue with old model
-          // return; 
       }
 
       // 3. RELOAD MODEL (C++)
-      // Python script exports JIT model to "model.pt"
-      if (fs::exists("model.pt")) {
+      if (fs::exists("model.onnx")) {
           try {
-              torch::load(network, "model.pt", device);
-              network->to(device); // Ensure it's on correct device
-              network->eval();
-              std::cout << "[C++] Reloaded updated model (model.pt)." << std::endl;
+              // Destroy old model and load new one
+              network = std::make_unique<Model>("model.onnx");
+              std::cout << "[C++] Reloaded updated model (model.onnx)." << std::endl;
               
-              // Archive the model for this iteration
-              fs::path iter_model_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".pt");
-              fs::copy("model.pt", iter_model_path, fs::copy_options::overwrite_existing);
+              fs::path iter_model_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".onnx");
+              fs::copy("model.onnx", iter_model_path, fs::copy_options::overwrite_existing);
           } catch (const std::exception& e) {
               std::cerr << "[C++] Failed to reload model: " << e.what() << std::endl;
           }
       } else {
-          std::cerr << "[C++] Warning: model.pt not found. Using previous weights." << std::endl;
+          std::cerr << "[C++] Warning: model.onnx not found. Using previous weights." << std::endl;
       }
   } 
 

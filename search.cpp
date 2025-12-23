@@ -6,11 +6,11 @@
 #include <map>
 #include <limits>
 #include <iostream> 
-#include <memory> // For std::shared_ptr, std::make_shared, std::move
+#include <memory> 
+#include <cmath>
 
 namespace chaturaji_cpp {
 
-// Helper function definition
 std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>& reward_map, double default_value) {
     std::array<double, 4> player_rewards;
     for (int i = 0; i < 4; ++i) {
@@ -24,7 +24,6 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
     }
     return player_rewards;
 }
-
 
 std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
@@ -48,7 +47,6 @@ std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logi
             float logit = policy_logits[index];
             legal_logits.push_back(logit);
             valid_moves.push_back(move);
-            // Track max logit for numerical stability during softmax
             if (logit > max_logit) {
                 max_logit = logit;
             }
@@ -69,7 +67,6 @@ std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logi
         if (sum_exp > 0.0f) {
             policy_probs[valid_moves[i]] = static_cast<double>(legal_logits[i] / sum_exp);
         } else {
-            // Fallback for extremely unlikely edge case (all logits -inf)
             policy_probs[valid_moves[i]] = 1.0 / valid_moves.size();
         }
     }
@@ -77,67 +74,47 @@ std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logi
     return policy_probs;
 }
 
-void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players) { // MODIFIED
-    // The leaf_values_for_players are the direct outcomes/predictions for each of the 4 players.
-    // This same vector of values is propagated up the tree.
-    // No sign flipping is needed because MCTSNode::update_stats now stores an array of 4 values,
-    // and UCT selection uses the component relevant to the decision-making player.
+void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players) {
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         MCTSNode* node = *it;
-        node->update_stats(leaf_values_for_players); // Pass the full 4-value array
-        // REMOVED: current_value_for_node_player *= -1.0;
+        node->update_stats(leaf_values_for_players);
     }
 }
 
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
-  ChaturajiNN& network,
-  torch::Device device)
+  Model* network)
 {
   if (pending_eval.empty()) return;
 
-  int64_t batch_size = pending_eval.size();
-  int64_t feature_size = 33 * 8 * 8;
+  // 1. Prepare Requests
+  std::vector<EvaluationRequest> requests;
+  requests.reserve(pending_eval.size());
 
-  torch::Tensor batch_tensor = torch::empty({batch_size, 33, 8, 8}, torch::kFloat);
-  float* batch_ptr = batch_tensor.data_ptr<float>();
-
-  for (int64_t i = 0; i < batch_size; ++i) {
-      std::vector<float> floats = board_to_floats(pending_eval[i].current_node->get_board());
-      std::memcpy(batch_ptr + (i * feature_size), floats.data(), feature_size * sizeof(float));
+  for (size_t i = 0; i < pending_eval.size(); ++i) {
+      EvaluationRequest req;
+      req.request_id = static_cast<RequestId>(i); // Use index as ID for sync correlation
+      req.state_floats = board_to_floats(pending_eval[i].current_node->get_board());
+      requests.push_back(std::move(req));
   }
 
-  torch::Tensor batch_tensor_device = batch_tensor.to(device); // Move to device
+  // 2. Run Inference (Synchronous)
+  std::vector<EvaluationResult> results = network->evaluate_batch(requests);
 
-  torch::Tensor policy_logits_batch, value_pred_batch;
-  {
-      torch::NoGradGuard no_grad;
-      network->eval();
-      // Forward still returns Tensors [Batch, 4096] and [Batch, 4]
-      std::tie(policy_logits_batch, value_pred_batch) = network->forward(batch_tensor_device);
-  }
+  // 3. Process Results
+  for (const auto& result : results) {
+      // Because we used index as request_id and it's synchronous, we can map back directly.
+      // However, robustness check is good.
+      size_t idx = static_cast<size_t>(result.request_id);
+      if (idx >= pending_eval.size()) continue;
 
-  policy_logits_batch = policy_logits_batch.to(torch::kCPU);
-  value_pred_batch = value_pred_batch.to(torch::kCPU);
-
-  // Get accessors for fast CPU reading
-  auto policy_accessor = policy_logits_batch.accessor<float, 2>();
-  auto value_accessor = value_pred_batch.accessor<float, 2>();
-
-  for (int i = 0; i < batch_size; ++i) {
-      const SimulationState& sim_state = pending_eval[i]; 
+      const SimulationState& sim_state = pending_eval[idx];
       MCTSNode* leaf_node = sim_state.current_node;
-      const std::vector<MCTSNode*>& path = sim_state.path; 
+      const std::vector<MCTSNode*>& path = sim_state.path;
 
       if (!leaf_node) continue;
 
-      std::array<float, 4096> logits_array;
-      for(int k=0; k<4096; ++k) {
-          logits_array[k] = policy_accessor[i][k];
-      }
-      
-      std::map<Move, double> policy_probs = process_policy(logits_array, leaf_node->get_board());
-      // ---------------------------
+      std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
 
       if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
            if (!policy_probs.empty()) {
@@ -147,7 +124,7 @@ void evaluate_and_expand_batch_sync(
       
       std::array<double, 4> player_values_from_nn;
       for(int p_idx = 0; p_idx < 4; ++p_idx) {
-          player_values_from_nn[p_idx] = static_cast<double>(value_accessor[i][p_idx]);
+          player_values_from_nn[p_idx] = static_cast<double>(result.value[p_idx]);
       }
       backpropagate_mcts_value(path, player_values_from_nn);
   }
@@ -156,9 +133,8 @@ void evaluate_and_expand_batch_sync(
 
 void run_mcts_simulations_sync( 
   MCTSNode& root,
-  ChaturajiNN& network,
+  Model* network,
   int simulations,
-  torch::Device device,
   double c_puct,
   int batch_size) 
 {
@@ -168,14 +144,12 @@ void run_mcts_simulations_sync(
       root_state.current_node = &root;
       root_state.path.push_back(&root);
       initial_eval.push_back(std::move(root_state));
-      // std::cout << "Info (Sync MCTS): simulations=0, evaluating root node directly for policy." << std::endl;
-      evaluate_and_expand_batch_sync(initial_eval, network, device);
+      evaluate_and_expand_batch_sync(initial_eval, network);
       return; 
   }
 
   std::vector<SimulationState> pending_evaluation;
   pending_evaluation.reserve(batch_size);
-  // Player root_player = root.get_board().get_current_player(); // Not strictly needed here anymore for value perspective
 
   for (int i = 0; i < simulations; ++i) {
       SimulationState current_sim;
@@ -185,15 +159,11 @@ void run_mcts_simulations_sync(
       while (!current_sim.current_node->is_leaf()) {
            MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 std::cerr << "Warning: MCTS sync select_child failed or didn't advance."
-                           << " Parent visits: " << current_sim.current_node->get_visit_count()
-                           << ", Children: " << current_sim.current_node->get_children().size()
-                           << ", IsGameOver: " << current_sim.current_node->get_board().is_game_over() << std::endl;
                  if (current_sim.current_node->get_board().is_game_over()){
                     MCTSNode* terminal_leaf = current_sim.current_node; 
                     std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
                     std::map<Player, double> reward_map = get_reward_map(final_scores_map);
-                    std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map); // Convert to array
+                    std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
                     backpropagate_mcts_value(current_sim.path, terminal_player_values);
                  } else {
                      std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
@@ -209,60 +179,55 @@ void run_mcts_simulations_sync(
           MCTSNode* terminal_leaf = current_sim.current_node;
           std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
           std::map<Player, double> reward_map = get_reward_map(final_scores_map);
-          std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map); // Convert to array
+          std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
           if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
-              evaluate_and_expand_batch_sync(pending_evaluation, network, device);
+              evaluate_and_expand_batch_sync(pending_evaluation, network);
           }
       }
       next_simulation_sync:; 
   } 
-  evaluate_and_expand_batch_sync(pending_evaluation, network, device);
+  evaluate_and_expand_batch_sync(pending_evaluation, network);
 }
 
 
 std::optional<Move> get_best_move_mcts_sync( 
     const Board& board,
-    ChaturajiNN& network,
+    Model* network,
     int simulations,
-    torch::Device device,
-    std::shared_ptr<MCTSNode>& current_mcts_root_shptr, // MODIFIED for tree reuse
+    std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
     int mcts_batch_size) 
 {
     if (board.is_game_over()) {
-      current_mcts_root_shptr = nullptr; // Clear tree if game is over
+      current_mcts_root_shptr = nullptr;
       return std::nullopt;
     }
 
-    // Tree Reuse Logic: Check if the passed-in root matches the current board state
     if (current_mcts_root_shptr && current_mcts_root_shptr->get_board().get_position_key() == board.get_position_key()) {
-        // std::cout << "Info (get_best_move): Reusing existing MCTS root node." << std::endl;
+        // Reuse
     } else {
-        // std::cout << "Info (get_best_move): Creating new MCTS root node for board key " << board.get_position_key() << std::endl;
         current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
     }
     
-    network->eval(); // Ensure network is in eval mode (might be redundant if always called before)
-    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, device, c_puct, mcts_batch_size); 
+    // ONNX models don't need explicit .eval() mode setting like Libtorch
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size); 
 
-    const auto& children_const_ref = current_mcts_root_shptr->get_children(); // Const reference for selection
+    const auto& children_const_ref = current_mcts_root_shptr->get_children();
     if (children_const_ref.empty()) {
         auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
         if (legal_moves.empty()) {
-            std::cerr << "Warning (get_best_move): Root has no children and no legal moves. Returning nullopt." << std::endl;
-            current_mcts_root_shptr = nullptr; // No future tree
+            current_mcts_root_shptr = nullptr;
             return std::nullopt; 
         } else {
-            std::cerr << "Warning (get_best_move): Root has no children despite legal moves existing (Sims=" << simulations << "). Returning first legal move as fallback." << std::endl;
-            current_mcts_root_shptr = nullptr; // No tree to reuse based on this fallback
+            std::cerr << "Warning (get_best_move): Root has no children. Returning first legal move." << std::endl;
+            current_mcts_root_shptr = nullptr;
             return legal_moves[0];
         }
     }
 
-    // Select best child by visit count
     auto best_child_by_visit_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
         [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
             return a->get_visit_count() < b->get_visit_count();
@@ -272,8 +237,7 @@ std::optional<Move> get_best_move_mcts_sync(
     if (best_child_by_visit_it != children_const_ref.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
         chosen_child_raw_ptr = (*best_child_by_visit_it).get();
     } else {
-        // Fallback: if all children have zero visits, pick by prior
-        std::cerr << "Warning (get_best_move): All child nodes have zero visits (Sims=" << simulations << "). Using prior probabilities from policy." << std::endl;
+        std::cerr << "Warning (get_best_move): All child nodes have zero visits. Using prior." << std::endl;
         auto best_child_by_prior_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
             [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
                 return a->get_prior() < b->get_prior(); 
@@ -286,31 +250,27 @@ std::optional<Move> get_best_move_mcts_sync(
     if (chosen_child_raw_ptr && chosen_child_raw_ptr->get_move()) {
         std::optional<Move> chosen_move = chosen_child_raw_ptr->get_move();
         
-        // Transfer ownership of the chosen child to become the new root
-        auto& old_root_children_vec_for_reuse = current_mcts_root_shptr->get_children_for_reuse(); // Non-const access
+        auto& old_root_children_vec_for_reuse = current_mcts_root_shptr->get_children_for_reuse();
         std::unique_ptr<MCTSNode> new_root_candidate_uptr;
 
         for (auto it = old_root_children_vec_for_reuse.begin(); it != old_root_children_vec_for_reuse.end(); ++it) {
             if (it->get() == chosen_child_raw_ptr) {
-                new_root_candidate_uptr = std::move(*it); // Steal the unique_ptr
-                old_root_children_vec_for_reuse.erase(it); // Remove the now-empty slot
+                new_root_candidate_uptr = std::move(*it);
+                old_root_children_vec_for_reuse.erase(it);
                 break;
             }
         }
 
         if (new_root_candidate_uptr) {
-            new_root_candidate_uptr->set_parent(nullptr); // Detach from old parent
-            current_mcts_root_shptr = std::move(new_root_candidate_uptr); // Update the shared_ptr to point to the new root
+            new_root_candidate_uptr->set_parent(nullptr);
+            current_mcts_root_shptr = std::move(new_root_candidate_uptr);
         } else {
-            std::cerr << "Error (get_best_move): Failed to extract chosen child unique_ptr for tree reuse. Resetting tree." << std::endl;
-            current_mcts_root_shptr = nullptr; // Fallback: reset tree
+            current_mcts_root_shptr = nullptr;
         }
         return chosen_move;
 
     } else {
-        std::cerr << "Error (get_best_move): Could not determine a valid best child. Resetting tree." << std::endl;
-        current_mcts_root_shptr = nullptr; // Cannot reuse, reset for next turn.
-        // Fallback to first legal move if any children existed, or nullopt
+        current_mcts_root_shptr = nullptr;
         if (!children_const_ref.empty() && children_const_ref[0]->get_move()) {
             return children_const_ref[0]->get_move();
         }
@@ -333,30 +293,24 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
               });
 
     std::map<Player, double> reward_map;
-    // Standard rank-based rewards
     double rewards[] = {+1.0, +0.25, -0.25, -1.0}; // Rank 1, 2, 3, 4
 
-    // Handle ties by averaging rewards for tied ranks
     size_t i = 0;
     while (i < sorted_scores.size()) {
         size_t j = i;
-        // Find all players tied at current rank
         while (j < sorted_scores.size() && sorted_scores[j].second == sorted_scores[i].second) {
             j++;
         }
-        // Players from index i to j-1 are tied.
-        // Calculate average reward for these ranks.
         double sum_rewards_for_tied_ranks = 0.0;
         for (size_t k = i; k < j; ++k) {
-            sum_rewards_for_tied_ranks += rewards[k]; // Use rank index k for reward array
+            sum_rewards_for_tied_ranks += rewards[k];
         }
         double avg_reward = sum_rewards_for_tied_ranks / (j - i);
 
-        // Assign this average reward to all tied players
         for (size_t k = i; k < j; ++k) {
             reward_map[sorted_scores[k].first] = avg_reward;
         }
-        i = j; // Move to the next distinct rank
+        i = j;
     }
     return reward_map;
 }
