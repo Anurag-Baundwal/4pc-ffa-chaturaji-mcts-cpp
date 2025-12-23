@@ -12,8 +12,8 @@
 #include <fstream> 
 #include <cstdlib> 
 #include <memory>
-#include <sstream> // <--- ADDED THIS (Fixes C2079)
-#include <ctime>   // <--- ADDED THIS (For std::localtime)
+#include <sstream> 
+#include <ctime>   
 
 namespace fs = std::filesystem;
 
@@ -41,6 +41,10 @@ void train(
   fs::path model_dir = fs::path(model_save_dir_base) / ("run_" + timestamp);
   fs::path training_data_dir = "training_data";
 
+  // --- CONFIGURATION ---
+  // This controls the sliding window size for the Python training script.
+  const int REPLAY_BUFFER_SIZE = 200000; 
+
   try { 
       fs::create_directories(model_dir); 
       fs::create_directories(training_data_dir);
@@ -62,7 +66,6 @@ void train(
       }
   } else { 
       std::cout << "No initial model provided. Triggering Python script to generate random initialization..." << std::endl;
-      // Note: Make sure model.py is updated with export_random before running this
       int ret = std::system("python model.py export_random initial_random.onnx"); 
       if (ret == 0 && fs::exists("initial_random.onnx")) {
            network = std::make_unique<Model>("initial_random.onnx");
@@ -82,7 +85,7 @@ void train(
             network.get(), 
             num_workers, 
             simulations_per_move, 
-            1250000, 
+            REPLAY_BUFFER_SIZE, // Passed here for C++ internal sizing (though mostly unused due to disk flush)
             nn_batch_size, 
             worker_batch_size, 
             2.5, 
@@ -95,20 +98,33 @@ void train(
         std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
         auto start_gen = std::chrono::high_resolution_clock::now();
         
-        size_t points = self_play_generator.generate_data(num_games_per_iteration);
+        // Generate data and capture exact number of samples created
+        size_t points_generated = self_play_generator.generate_data(num_games_per_iteration);
         
         auto end_gen = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration_gen = end_gen - start_gen;
-        std::cout << "[C++] Generated " << points << " positions in " << duration_gen.count() << "s." << std::endl;
-      } // self_play_generator destroyed here
+        std::cout << "[C++] Generated " << points_generated << " positions in " << duration_gen.count() << "s." << std::endl;
 
-      // 2. MODEL TRAINING (PYTHON)
-      std::cout << "[Python] Starting training process..." << std::endl;
-      int ret = std::system("python train.py"); 
-      
-      if (ret != 0) {
-          std::cerr << "!!! Python training script failed with exit code " << ret << " !!!" << std::endl;
-      }
+        // 2. MODEL TRAINING (PYTHON)
+        std::cout << "[Python] Starting training process..." << std::endl;
+        
+        // Construct the command to call the updated train.py with specific arguments
+        std::string cmd = "python train.py";
+        cmd += " --new-samples " + std::to_string(points_generated);
+        cmd += " --sampling-rate " + std::to_string(target_sampling_rate_param);
+        cmd += " --batch-size " + std::to_string(training_batch_size);
+        cmd += " --lr " + std::to_string(learning_rate);
+        cmd += " --wd " + std::to_string(weight_decay);
+        cmd += " --max-buffer-size " + std::to_string(REPLAY_BUFFER_SIZE); // Enforce 200k limit
+        cmd += " --data-dir training_data";
+
+        int ret = std::system(cmd.c_str()); 
+        
+        if (ret != 0) {
+            std::cerr << "!!! Python training script failed with exit code " << ret << " !!!" << std::endl;
+        }
+
+      } // self_play_generator destroyed here
 
       // 3. RELOAD MODEL (C++)
       if (fs::exists("model.onnx")) {
@@ -117,6 +133,7 @@ void train(
               network = std::make_unique<Model>("model.onnx");
               std::cout << "[C++] Reloaded updated model (model.onnx)." << std::endl;
               
+              // Archive the model checkpoint
               fs::path iter_model_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".onnx");
               fs::copy("model.onnx", iter_model_path, fs::copy_options::overwrite_existing);
           } catch (const std::exception& e) {
