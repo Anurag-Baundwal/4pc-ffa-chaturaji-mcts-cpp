@@ -89,7 +89,7 @@ void train(
             nn_batch_size, 
             worker_batch_size, 
             2.5, 
-            8,   
+            4,   
             0.45, 
             0.25  
         );
