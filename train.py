@@ -125,6 +125,7 @@ def train_loop(args):
     # Paths
     DATA_DIR = args.data_dir
     MODEL_SAVE_PATH = "model.pth"
+    OPTIMIZER_SAVE_PATH = "optimizer.pth"
     
     if not os.path.exists(DATA_DIR):
         print(f"Data directory {DATA_DIR} does not exist.")
@@ -160,14 +161,24 @@ def train_loop(args):
 
     # 3. Model Setup
     model = ChaturajiNN().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+
     if os.path.exists(MODEL_SAVE_PATH):
         try:
             model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location=device))
+            print("Loaded model weights.")
+            
+            # Load optimizer state if it exists
+            if os.path.exists(OPTIMIZER_SAVE_PATH):
+                optimizer.load_state_dict(torch.load(OPTIMIZER_SAVE_PATH, map_location=device))
+                # Ensure LR is updated to the current command line arg
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.lr
+                print("Loaded optimizer state.")
         except:
-            print("Failed to load weights, starting fresh.")
+            print("Failed to load state, starting fresh.")
     
     model.train()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
     # 4. Training Loop (Step-based, not Epoch-based)
     total_loss = 0
@@ -200,6 +211,7 @@ def train_loop(args):
 
     # 5. Export
     torch.save(model.state_dict(), MODEL_SAVE_PATH)
+    torch.save(optimizer.state_dict(), OPTIMIZER_SAVE_PATH)
     export_to_onnx(MODEL_SAVE_PATH, "model.onnx")
     print("Training complete & model exported.")
 
