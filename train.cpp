@@ -30,6 +30,7 @@ void train(
   double learning_rate,
   double weight_decay,
   int simulations_per_move,
+  int max_buffer_size,
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
@@ -40,10 +41,6 @@ void train(
   std::string timestamp = ss_ts.str();
   fs::path model_dir = fs::path(model_save_dir_base) / ("run_" + timestamp);
   fs::path training_data_dir = "training_data";
-
-  // --- CONFIGURATION ---
-  // This controls the sliding window size for the Python training script.
-  const int REPLAY_BUFFER_SIZE = 200000; 
 
   try { 
       fs::create_directories(model_dir); 
@@ -85,7 +82,7 @@ void train(
             network.get(), 
             num_workers, 
             simulations_per_move, 
-            REPLAY_BUFFER_SIZE, // Passed here for C++ internal sizing (though mostly unused due to disk flush)
+            max_buffer_size,
             nn_batch_size, 
             worker_batch_size, 
             2.5, 
@@ -115,7 +112,7 @@ void train(
         cmd += " --batch-size " + std::to_string(training_batch_size);
         cmd += " --lr " + std::to_string(learning_rate);
         cmd += " --wd " + std::to_string(weight_decay);
-        cmd += " --max-buffer-size " + std::to_string(REPLAY_BUFFER_SIZE); // Enforce 200k limit
+        cmd += " --max-buffer-size " + std::to_string(max_buffer_size);
         cmd += " --data-dir training_data";
 
         int ret = std::system(cmd.c_str()); 

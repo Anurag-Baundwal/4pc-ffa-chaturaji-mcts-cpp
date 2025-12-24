@@ -46,6 +46,7 @@ int main(int argc, char* argv[]) {
         int num_workers = 12;   
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
+        int max_buffer_size = 200000;
         std::string save_dir = "models"; // Changed default to local relative path
         std::string load_path = "";
 
@@ -66,6 +67,8 @@ int main(int argc, char* argv[]) {
         if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--worker-batch");
         if (!temp_str.empty()) worker_batch_size = std::stoi(temp_str);
+        temp_str = get_cmd_option(argv, argv + argc, "--max-buffer-size");
+        if (!temp_str.empty()) max_buffer_size = std::stoi(temp_str);
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
         temp_str = get_cmd_option(argv, argv+argc, "--load-model");
@@ -73,10 +76,19 @@ int main(int argc, char* argv[]) {
 
         try {
             chaturaji_cpp::train(
-                iterations, games_per_iter, target_sampling_rate,
-                training_batch_size, num_workers, nn_batch_size,       
-                worker_batch_size, 0.001, 1e-4, sims_per_move,
-                save_dir, load_path
+                iterations,
+                games_per_iter,
+                target_sampling_rate,
+                training_batch_size,
+                num_workers,
+                nn_batch_size,
+                worker_batch_size,
+                0.001,
+                1e-4,
+                sims_per_move,
+                max_buffer_size,
+                save_dir,
+                load_path
             );
         } catch (const std::exception& e) {
             std::cerr << "Training failed with exception: " << e.what() << std::endl;
