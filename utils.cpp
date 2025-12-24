@@ -18,15 +18,18 @@ namespace {
 }
 
 std::vector<float> board_to_floats(const Board& board) {
-    constexpr int BOARD_AREA = magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE; // 64
+    // Dimensions
     constexpr int NUM_ACTUAL_PIECE_TYPES = 5; // P, N, B, R, K
     constexpr int NUM_PIECE_CHANNELS_ONLY = 4 * NUM_ACTUAL_PIECE_TYPES; // 20
     
-    // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) 1 (incoming attacks) = 34 channels
-    constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1 + 1; // 34 
+    // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) + 1 (incoming attacks) = 34 channels
+    constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1 + 1; // 34
+    
+    // Ensure our calculation matches the global constant
+    static_assert(NUM_CHANNELS_TOTAL == NN_INPUT_CHANNELS, "Calculated channel count in board_to_floats must match NN_INPUT_CHANNELS");
 
-    // Initialize flat vector with zeros. Size: 34 * 64 = 2176 floats.
-    std::vector<float> tensor_data(NUM_CHANNELS_TOTAL * BOARD_AREA, 0.0f);
+    // Initialize flat vector with zeros. Size: NN_INPUT_SIZE (2176 floats)
+    std::vector<float> tensor_data(NN_INPUT_SIZE, 0.0f);
 
     auto fill_plane = [&](int channel_idx, float value) {
         if (value == 0.0f) return; 
@@ -123,26 +126,26 @@ int move_to_policy_index(const Move& move) {
     int to_row = move.to_loc.row;
     int to_col = move.to_loc.col;
 
-    if (fr_row < 0 || fr_row >= magic_utils::BOARD_SIZE || fr_col < 0 || fr_col >= magic_utils::BOARD_SIZE ||
-        to_row < 0 || to_row >= magic_utils::BOARD_SIZE || to_col < 0 || to_col >= magic_utils::BOARD_SIZE) {
+    if (fr_row < 0 || fr_row >= BOARD_DIM || fr_col < 0 || fr_col >= BOARD_DIM ||
+        to_row < 0 || to_row >= BOARD_DIM || to_col < 0 || to_col >= BOARD_DIM) {
         throw std::out_of_range("Move coordinates are out of board bounds for policy index.");
     }
-    int from_index = fr_row * magic_utils::BOARD_SIZE + fr_col;
-    int to_index = to_row * magic_utils::BOARD_SIZE + to_col;
-    return from_index * (magic_utils::BOARD_SIZE * magic_utils::BOARD_SIZE) + to_index;
+    int from_index = fr_row * BOARD_DIM + fr_col;
+    int to_index = to_row * BOARD_DIM + to_col;
+    return from_index * BOARD_AREA + to_index;
 }
 
 Move policy_index_to_move(int index) {
-    if (index < 0 || index >= 4096) {
-         throw std::out_of_range("Policy index " + std::to_string(index) + " is out of bounds (0-4095).");
+    if (index < 0 || index >= NN_POLICY_SIZE) {
+         throw std::out_of_range("Policy index " + std::to_string(index) + " is out of bounds (0-" + std::to_string(NN_POLICY_SIZE - 1) + ").");
     }
-    int to_index = index % 64;
-    int from_index = index / 64;
+    int to_index = index % BOARD_AREA;
+    int from_index = index / BOARD_AREA;
 
-    int to_row = to_index / 8;
-    int to_col = to_index % 8;
-    int from_row = from_index / 8;
-    int from_col = from_index % 8;
+    int to_row = to_index / BOARD_DIM;
+    int to_col = to_index % BOARD_DIM;
+    int from_row = from_index / BOARD_DIM;
+    int from_col = from_index % BOARD_DIM;
 
     return Move(BoardLocation(from_row, from_col), BoardLocation(to_row, to_col), std::nullopt);
 }

@@ -32,7 +32,7 @@ public:
         int num_workers = 4,
         int simulations_per_move = 100,
         size_t max_buffer_size = 1250000,
-        int nn_batch_size = 4096,
+        int nn_batch_size = NN_POLICY_SIZE, // (4096)
         int worker_batch_size = 16,
         double c_puct = 2.5,
         int temperature_decay_move = 4,

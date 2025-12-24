@@ -5,7 +5,19 @@
 #include <optional>
 
 namespace chaturaji_cpp {
-  
+
+// --- Board Dimensions & NN Configuration ---
+constexpr int BOARD_DIM = 8;
+constexpr int BOARD_AREA = 64; // 8 * 8
+
+// Input: 34 channels (Pieces, History, Meta) * 64 squares
+constexpr int NN_INPUT_CHANNELS = 34; 
+constexpr int NN_INPUT_SIZE = NN_INPUT_CHANNELS * BOARD_AREA; // 34 * 8 * 8 = 2176
+
+// Output: Policy (Move probabilities) and Value (Win probabilities)
+constexpr int NN_POLICY_SIZE = 4096; // 64 from_sq * 64 to_sq
+constexpr int NN_VALUE_SIZE = 4;     // One value per player
+
 using Bitboard = uint64_t;
 
 enum class Player {
@@ -41,9 +53,7 @@ struct BoardLocation {
     }
     // Less than operator (needed for using BoardLocation as key in std::map/std::set)
      bool operator<(const BoardLocation& other) const {
-        if (row != other.row) {
-            return row < other.row;
-        }
+        if (row != other.row) return row < other.row;
         return col < other.col;
     }
 };
@@ -89,7 +99,7 @@ using RequestId = uint64_t;
  */
 struct EvaluationRequest {
     RequestId request_id;
-    std::vector<float> state_floats; // Size: 34 * 8 * 8
+    std::vector<float> state_floats; // Size: NN_INPUT_SIZE (34 * 8 * 8 = 2176)
 };
 
 /**
@@ -97,14 +107,13 @@ struct EvaluationRequest {
  */
 struct EvaluationResult {
     RequestId request_id;
-    std::array<float, 4096> policy_logits; 
-    std::array<float, 4> value;
+    std::array<float, NN_POLICY_SIZE> policy_logits; // Size: 4096
+    std::array<float, NN_VALUE_SIZE> value;          // Size: 4
 };
-
 
 } // namespace chaturaji_cpp
 
-// --- Existing Hash Specializations ---
+// --- Hash Specializations ---
 namespace std {
     template <>
     struct hash<chaturaji_cpp::BoardLocation> {
@@ -112,7 +121,7 @@ namespace std {
             // Simple hash combination
             size_t h1 = std::hash<int>{}(loc.row);
             size_t h2 = std::hash<int>{}(loc.col);
-            // Combine hashes (improved version to reduce collisions)
+            // Combine hashes
             return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         }
     };

@@ -2,7 +2,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Configuration matches model.cpp constants
+# --- Board Dimensions & NN Configuration ---
+BOARD_DIM = 8
+BOARD_AREA = 64
+
+# Input/Output Dimensions
+NUM_INPUT_CHANNELS = 34 # Pieces + Meta + Attacks
+POLICY_OUTPUT_SIZE = 4096 # 64 * 64
+VALUE_OUTPUT_SIZE = 4     # 4 Players
+
+# Network Architecture
 NUM_RES_BLOCKS = 4
 NUM_CHANNELS = 64
 POLICY_HEAD_CONV_CHANNELS = 8
@@ -29,8 +38,8 @@ class ResBlock(nn.Module):
 class ChaturajiNN(nn.Module):
     def __init__(self):
         super().__init__()
-        # Input: 34 channels (pieces + aux planes)
-        self.conv1 = nn.Conv2d(34, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
+        # Input: NUM_INPUT_CHANNELS (34)
+        self.conv1 = nn.Conv2d(NUM_INPUT_CHANNELS, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
         self.bn1 = nn.BatchNorm2d(NUM_CHANNELS)
 
         self.resblocks = nn.ModuleList([
@@ -41,13 +50,13 @@ class ChaturajiNN(nn.Module):
         self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
         self.policy_bn = nn.BatchNorm2d(POLICY_HEAD_CONV_CHANNELS)
         # 8*8 board size * policy channels
-        self.policy_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS * 8 * 8, 4096)
+        self.policy_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS * BOARD_AREA, POLICY_OUTPUT_SIZE)
 
         # Value Head
         self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
-        self.value_fc1 = nn.Linear(VALUE_HEAD_CONV_CHANNELS * 8 * 8, VALUE_FC_HIDDEN_CHANNELS)
-        self.value_fc2 = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, NUM_VALUE_OUTPUTS)
+        self.value_fc1 = nn.Linear(VALUE_HEAD_CONV_CHANNELS * BOARD_AREA, VALUE_FC_HIDDEN_CHANNELS)
+        self.value_fc2 = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_OUTPUT_SIZE)
 
     def forward(self, x):
         # Body
@@ -87,11 +96,11 @@ def export_for_cpp(model_path, output_path):
         print("Model file not found, exporting random initialization.")
         model.eval()
 
-    # Create dummy input for tracing (Batch=1, Channels=34, H=8, W=8)
-    example_input = torch.rand(1, 34, 8, 8)
+    # Create dummy input: (Batch=1, Channels=NUM_INPUT_CHANNELS, H=8, W=8)
+    dummy_input = torch.rand(1, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
     
     # Trace the model
-    traced_script_module = torch.jit.trace(model, example_input)
+    traced_script_module = torch.jit.trace(model, dummy_input)
     
     # Save
     traced_script_module.save(output_path)
@@ -112,8 +121,8 @@ def export_to_onnx(model_path, output_path):
     
     model.eval()
 
-    # Dummy input: [Batch=1, Channels=34, Height=8, Width=8]
-    dummy_input = torch.randn(1, 34, 8, 8)
+    # Dummy input: [Batch=1, Channels=NUM_INPUT_CHANNELS, Height=8, Width=8]
+    dummy_input = torch.randn(1, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
 
     # Export
     torch.onnx.export(
@@ -154,7 +163,7 @@ if __name__ == "__main__":
             # Initialize random model
             model = ChaturajiNN()
             model.eval()
-            dummy_input = torch.randn(1, 34, 8, 8)
+            dummy_input = torch.randn(1, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
             torch.onnx.export(
                 model, dummy_input, output_onnx,
                 export_params=True, opset_version=14, do_constant_folding=True,
@@ -165,8 +174,8 @@ if __name__ == "__main__":
     else:
         # Standard smoke test
         net = ChaturajiNN()
-        dummy = torch.randn(2, 34, 8, 8)
+        dummy = torch.randn(2, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
         p, v = net(dummy)
         print("--- Smoke Test ---")
-        print(f"Policy Shape: {p.shape}")
-        print(f"Value Shape:  {v.shape}")
+        print(f"Policy Shape: {p.shape}") # Should be [2, 4096]
+        print(f"Value Shape:  {v.shape}") # Should be [2, 4]

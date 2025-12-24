@@ -25,7 +25,7 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
     return player_rewards;
 }
 
-std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logits, const Board& board) {
+std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
     std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
 
@@ -43,7 +43,7 @@ std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logi
 
     for (const auto& move : legal_moves) {
         int index = move_to_policy_index(move);
-        if (index >= 0 && index < 4096) {
+        if (index >= 0 && index < NN_POLICY_SIZE) {
             float logit = policy_logits[index];
             legal_logits.push_back(logit);
             valid_moves.push_back(move);

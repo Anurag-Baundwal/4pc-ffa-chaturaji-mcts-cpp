@@ -34,7 +34,7 @@ struct SimulationState {
 void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players);
 
 
-std::map<Move, double> process_policy(const std::array<float, 4096>& policy_logits, const Board& board);
+std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& policy_logits, const Board& board);
 
 /**
  * @brief Runs MCTS to find the best move using the ONNX Model for inference.

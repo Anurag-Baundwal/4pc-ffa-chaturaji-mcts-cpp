@@ -13,9 +13,8 @@ namespace chaturaji_cpp {
 
 /**
  * @brief Converts the current board state into a flat vector of floats [C, H, W].
- * This decouples the core engine from any specific ML framework (Libtorch/ONNX).
  *
- * Channels (34 total):
+ * Channels (NN_INPUT_CHANNELS total):
  *   0-19:  Piece planes (5 types * 4 players)
  *   20-23: Active player status
  *   24-27: Current player turn
@@ -24,7 +23,7 @@ namespace chaturaji_cpp {
  *   33:    Incoming attacks
  *
  * @param board The board object to convert.
- * @return std::vector<float> Raw float data of size 34 * 8 * 8.
+ * @return std::vector<float> Raw float data of size NN_INPUT_SIZE (NN_INPUT_CHANNELS * 8 * 8).
  */
 std::vector<float> board_to_floats(const Board& board);
 
