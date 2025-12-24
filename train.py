@@ -163,20 +163,33 @@ def train_loop(args):
     model = ChaturajiNN().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
-    if os.path.exists(MODEL_SAVE_PATH):
+    # Priority 1: Check root folder for model.pth (Standard)
+    load_path = MODEL_SAVE_PATH 
+    opt_path = OPTIMIZER_SAVE_PATH
+
+    # Priority 2: If root is empty, check the command line argument
+    if not os.path.exists(load_path) and args.load_weights:
+        # If the user pointed to an .onnx file, try to find the .pth version next to it
+        if args.load_weights.endswith(".onnx"):
+            candidate = args.load_weights.replace(".onnx", ".pth")
+            if os.path.exists(candidate):
+                load_path = candidate
+                # Also try to find the optimizer file
+                opt_candidate = args.load_weights.replace(".onnx", ".optimizer.pth")
+                if os.path.exists(opt_candidate):
+                    opt_path = opt_candidate
+        elif os.path.exists(args.load_weights):
+            load_path = args.load_weights
+
+    if os.path.exists(load_path):
         try:
-            model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location=device))
-            print("Loaded model weights.")
-            
-            # Load optimizer state if it exists
-            if os.path.exists(OPTIMIZER_SAVE_PATH):
-                optimizer.load_state_dict(torch.load(OPTIMIZER_SAVE_PATH, map_location=device))
-                # Ensure LR is updated to the current command line arg
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = args.lr
-                print("Loaded optimizer state.")
-        except:
-            print("Failed to load state, starting fresh.")
+            model.load_state_dict(torch.load(load_path, map_location=device))
+            print(f"Loaded weights from {load_path}")
+            if os.path.exists(opt_path):
+                optimizer.load_state_dict(torch.load(opt_path, map_location=device))
+                print(f"Loaded optimizer state from {opt_path}")
+        except Exception as e:
+            print(f"Failed to load weights: {e}")
     
     model.train()
 
@@ -224,6 +237,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--wd", type=float, default=1e-4)
+    parser.add_argument("--load-weights", type=str, default="", help="Path to a .pth file to resume from")
+
     
     args = parser.parse_args()
     train_loop(args)

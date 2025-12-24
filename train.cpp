@@ -114,6 +114,9 @@ void train(
         cmd += " --wd " + std::to_string(weight_decay);
         cmd += " --max-buffer-size " + std::to_string(max_buffer_size);
         cmd += " --data-dir training_data";
+        if (!initial_model_path.empty()) {
+            cmd += " --load-weights " + initial_model_path;
+        }
 
         int ret = std::system(cmd.c_str()); 
         
@@ -126,13 +129,21 @@ void train(
       // 3. RELOAD MODEL (C++)
       if (fs::exists("model.onnx")) {
           try {
-              // Destroy old model and load new one
               network = std::make_unique<Model>("model.onnx");
-              std::cout << "[C++] Reloaded updated model (model.onnx)." << std::endl;
               
-              // Archive the model checkpoint
+              // 1. Archive the .onnx
               fs::path iter_model_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".onnx");
               fs::copy("model.onnx", iter_model_path, fs::copy_options::overwrite_existing);
+
+              // 2. Archive the .pth and optimizer.pth so we can resume perfectly later
+              if (fs::exists("model.pth")) {
+                  fs::path iter_pth_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".pth");
+                  fs::copy("model.pth", iter_pth_path, fs::copy_options::overwrite_existing);
+              }
+              if (fs::exists("optimizer.pth")) {
+                  fs::path iter_opt_path = model_dir / ("iter_" + std::to_string(iteration + 1) + ".optimizer.pth");
+                  fs::copy("optimizer.pth", iter_opt_path, fs::copy_options::overwrite_existing);
+              }
           } catch (const std::exception& e) {
               std::cerr << "[C++] Failed to reload model: " << e.what() << std::endl;
           }
