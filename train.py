@@ -1,244 +1,153 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import struct
 import os
 import glob
 import argparse
-import random
+import sys
 import numpy as np
 
-# Import constants from model.py
 from model import (
-    ChaturajiNN, export_for_cpp, export_to_onnx,
+    ChaturajiNN, export_to_onnx,
     NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_AREA,
     POLICY_OUTPUT_SIZE, VALUE_OUTPUT_SIZE
 )
 
-# Data dimensions
-INPUT_CHANNELS = NUM_INPUT_CHANNELS
-INPUT_SIZE = INPUT_CHANNELS * BOARD_AREA # e.g. 34 * 64 = 2176
-POLICY_SIZE = POLICY_OUTPUT_SIZE         # 4096
-VALUE_SIZE = VALUE_OUTPUT_SIZE           # 4
-SAMPLE_SIZE_BYTES = (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE) * 4 # 4 bytes per float
+# Constants for binary data parsing
+INPUT_SIZE = NUM_INPUT_CHANNELS * BOARD_AREA
+POLICY_SIZE = POLICY_OUTPUT_SIZE
+VALUE_SIZE = VALUE_OUTPUT_SIZE
+SAMPLE_SIZE_BYTES = (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE) * 4
 
 class ReplayBuffer:
     def __init__(self, data_dir, max_size):
         self.data_dir = data_dir
         self.max_size = max_size
-        self.states = []
-        self.policies = []
-        self.values = []
-        
+        self.states = torch.empty(0)
+        self.policies = torch.empty(0)
+        self.values = torch.empty(0)
         self.load_buffer()
 
     def load_buffer(self):
-        # 1. Get all bin files
         files = glob.glob(os.path.join(self.data_dir, "gen_*.bin"))
-        
-        # 2. Sort by modification time, NEWEST FIRST
         files.sort(key=os.path.getmtime, reverse=True)
         
-        total_samples = 0
-        loaded_files = 0
-        
-        print(f"Checking {len(files)} available data files...")
-        
-        # 3. Load files until we hit max_size
-        # We process files from newest to oldest
-        temp_states = []
-        temp_policies = []
-        temp_values = []
-
-        for filepath in files:
-            if total_samples >= self.max_size:
-                break
-                
-            with open(filepath, "rb") as f:
+        t_s, t_p, t_v = [], [], []
+        total = 0
+        for fp in files:
+            if total >= self.max_size: break
+            with open(fp, "rb") as f:
                 content = f.read()
-                
-            num_samples_in_file = len(content) // SAMPLE_SIZE_BYTES
-            if num_samples_in_file == 0:
-                continue
-
-            # Unpack entire file at once into numpy arrays for speed
-            # then convert to tensor chunks
-            floats = struct.unpack(f'{num_samples_in_file * (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE)}f', content)
-            np_data = np.array(floats, dtype=np.float32)
-            np_data = np_data.reshape(num_samples_in_file, INPUT_SIZE + POLICY_SIZE + VALUE_SIZE)
-
-            # Split columns
-            # State: [N, 2176] (INPUT_SIZE)
-            s = torch.from_numpy(np_data[:, :INPUT_SIZE]).view(num_samples_in_file, INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
-            # Policy: [N, 4096]
-            p = torch.from_numpy(np_data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE])
-            # Value: [N, 4]
-            v = torch.from_numpy(np_data[:, INPUT_SIZE + POLICY_SIZE : ])
-
-            # Prepend because we are loading Newest -> Oldest, but lists usually append.
-            # Actually order in buffer doesn't matter for random sampling, 
-            # so appending is fine.
-            temp_states.append(s)
-            temp_policies.append(p)
-            temp_values.append(v)
+            n = len(content) // SAMPLE_SIZE_BYTES
+            if n == 0: continue
             
-            total_samples += num_samples_in_file
-            loaded_files += 1
+            floats = struct.unpack(f'{n * (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE)}f', content)
+            data = np.array(floats, dtype=np.float32).reshape(n, -1)
+            
+            t_s.append(torch.from_numpy(data[:, :INPUT_SIZE]).view(n, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM))
+            t_p.append(torch.from_numpy(data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE]))
+            t_v.append(torch.from_numpy(data[:, INPUT_SIZE + POLICY_SIZE :]))
+            total += n
 
-        if total_samples == 0:
-            print("No data found.")
-            return
-
-        # Concatenate all loaded chunks
-        self.states = torch.cat(temp_states, dim=0)
-        self.policies = torch.cat(temp_policies, dim=0)
-        self.values = torch.cat(temp_values, dim=0)
-
-        # 4. Trim if we exceeded max_size (since we loaded whole files)
-        # Since we loaded Newest first, we keep the beginning of the concatenated tensor
-        # Wait, if we iterated Newest -> Oldest and appended, index 0 is Newest.
-        if self.states.size(0) > self.max_size:
-            self.states = self.states[:self.max_size]
-            self.policies = self.policies[:self.max_size]
-            self.values = self.values[:self.max_size]
-
-        print(f"Replay Buffer Loaded: {self.states.size(0)} samples from {loaded_files} newest files.")
+        if total > 0:
+            self.states = torch.cat(t_s)[:self.max_size]
+            self.policies = torch.cat(t_p)[:self.max_size]
+            self.values = torch.cat(t_v)[:self.max_size]
+            print(f"[Python] Replay Buffer: {self.states.size(0)} samples loaded.")
 
     def sample_batch(self, batch_size):
-        # Random indices
-        indices = torch.randint(0, self.states.size(0), (batch_size,))
-        
-        return (
-            self.states[indices], 
-            self.policies[indices], 
-            self.values[indices]
-        )
-
-    def size(self):
-        return self.states.size(0)
+        idx = torch.randint(0, self.states.size(0), (batch_size,))
+        return self.states[idx], self.policies[idx], self.values[idx]
 
 def train_loop(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on {device}")
-
-    # Paths
-    DATA_DIR = args.data_dir
-    MODEL_SAVE_PATH = "model.pth"
-    OPTIMIZER_SAVE_PATH = "optimizer.pth"
     
-    if not os.path.exists(DATA_DIR):
-        print(f"Data directory {DATA_DIR} does not exist.")
-        return
+    # Define save paths directly in the target directory
+    model_pth = os.path.join(args.save_dir, "latest.pth")
+    opt_pth = os.path.join(args.save_dir, "latest.optimizer.pth")
+    onnx_path = os.path.join(args.save_dir, "latest.onnx")
 
-    # 1. Load Sliding Window Buffer
-    buffer = ReplayBuffer(DATA_DIR, args.max_buffer_size)
-    if buffer.size() < args.batch_size:
-        print("Not enough data to train. Waiting for more generation.")
-        return
-
-    # 2. Calculate Steps
-    # Total positions generated in this specific C++ iteration
-    new_samples = args.new_samples 
-    
-    # Formula: How many times do we want to see each new sample on average?
-    # Total samples to process = new_samples * sampling_rate
-    # Total batches = Total samples / batch_size
-    
-    total_samples_to_train = new_samples * args.sampling_rate
-    num_steps = int(total_samples_to_train / args.batch_size)
-    
-    # Ensure at least 1 step if we have data and new samples > 0
-    if num_steps == 0 and new_samples > 0:
-        num_steps = 1
-    
-    print(f"New Samples: {new_samples}, Rate: {args.sampling_rate}, Batch: {args.batch_size}")
-    print(f"Training for {num_steps} steps...")
-
-    if num_steps == 0:
-        print("Skipping training (0 steps calculated).")
-        return
-
-    # 3. Model Setup
+    # 1. Model & Optimizer Setup
     model = ChaturajiNN().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
-    # Priority 1: Check root folder for model.pth (Standard)
-    load_path = MODEL_SAVE_PATH 
-    opt_path = OPTIMIZER_SAVE_PATH
+    # 2. Loading Logic
+    if args.load_weights:
+        # Determine .pth path (if user pointed to .onnx, look for .pth)
+        target_pth = args.load_weights.replace(".onnx", ".pth") if args.load_weights.endswith(".onnx") else args.load_weights
+        target_opt = target_pth.replace(".pth", ".optimizer.pth")
 
-    # Priority 2: If root is empty, check the command line argument
-    if not os.path.exists(load_path) and args.load_weights:
-        # If the user pointed to an .onnx file, try to find the .pth version next to it
-        if args.load_weights.endswith(".onnx"):
-            candidate = args.load_weights.replace(".onnx", ".pth")
-            if os.path.exists(candidate):
-                load_path = candidate
-                # Also try to find the optimizer file
-                opt_candidate = args.load_weights.replace(".onnx", ".optimizer.pth")
-                if os.path.exists(opt_candidate):
-                    opt_path = opt_candidate
-        elif os.path.exists(args.load_weights):
-            load_path = args.load_weights
+        if not os.path.exists(target_pth):
+            print(f"[Python] FATAL ERROR: Weights file not found: {target_pth}")
+            print(f"[Python] Training cannot resume without the .pth weights file.")
+            print(f"[Python] To start fresh with random weights, remove the --load-model argument.")
+            sys.exit(1)
 
-    if os.path.exists(load_path):
-        try:
-            model.load_state_dict(torch.load(load_path, map_location=device))
-            print(f"Loaded weights from {load_path}")
-            if os.path.exists(opt_path):
-                optimizer.load_state_dict(torch.load(opt_path, map_location=device))
-                print(f"Loaded optimizer state from {opt_path}")
-        except Exception as e:
-            print(f"Failed to load weights: {e}")
+        # Load Weights
+        model.load_state_dict(torch.load(target_pth, map_location=device))
+        print(f"[Python] LOADED: Weights from {target_pth}")
+
+        # Load Optimizer
+        if os.path.exists(target_opt):
+            optimizer.load_state_dict(torch.load(target_opt, map_location=device))
+            print(f"[Python] LOADED: Optimizer state from {target_opt}")
+        else:
+            print(f"[Python] NOTICE: Optimizer file {target_opt} not found. Resetting Adam optimizer.")
+    else:
+        print("[Python] NOTICE: No load-model specified. Starting from SCRATCH (Random Init).")
+
+    # Data check
+    buffer = ReplayBuffer(args.data_dir, args.max_buffer_size)
     
+    if buffer.states.size(0) < args.batch_size or args.new_samples == 0:
+        print("[Python] Not enough data. Skipping training.")
+        return
+
+    num_steps = int((args.new_samples * args.sampling_rate) / args.batch_size)
+    if num_steps == 0:
+        print("[Python] New samples too low for a full batch. Skipping training.")
+        return
+
+    print(f"[Python] New Samples: {args.new_samples}, Sampling Rate: {args.sampling_rate}")
+    print(f"[Python] Training for {num_steps} steps...")
+
+    # Training
     model.train()
-
-    # 4. Training Loop (Step-based, not Epoch-based)
-    total_loss = 0
-    
     for step in range(num_steps):
-        state, target_policy, target_value = buffer.sample_batch(args.batch_size)
-        
-        state = state.to(device)
-        target_policy = target_policy.to(device)
-        target_value = target_value.to(device)
+        s, tp, tv = buffer.sample_batch(args.batch_size)
+        s, tp, tv = s.to(device), tp.to(device), tv.to(device)
         
         optimizer.zero_grad()
+        p, v = model(s)
         
-        pred_policy, pred_value = model(state)
-        
-        # Loss Calculation
-        log_probs = F.log_softmax(pred_policy, dim=1)
-        loss_policy = -torch.sum(target_policy * log_probs, dim=1).mean()
-        loss_value = F.mse_loss(pred_value, target_value)
-        
+        # Explicit loss components
+        loss_policy = -torch.sum(tp * F.log_softmax(p, dim=1), dim=1).mean()
+        loss_value = F.mse_loss(v, tv)
         loss = loss_policy + loss_value
+        
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item()
-        
-        if (step + 1) % 1 == 0:
-            print(f"Step {step+1}/{num_steps}, Loss: {loss.item():.4f} "
-                  f"(Policy: {loss_policy.item():.4f}, Value: {loss_value.item():.4f})")
+        # Individual component reporting for every step
+        print(f"  Step {step+1}/{num_steps}, Loss: {loss.item():.4f} "
+              f"(Policy: {loss_policy.item():.4f}, Value: {loss_value.item():.4f})")
 
-    # 5. Export
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    torch.save(optimizer.state_dict(), OPTIMIZER_SAVE_PATH)
-    export_to_onnx(MODEL_SAVE_PATH, "model.onnx")
-    print("Training complete & model exported.")
+    # Save Checkpoint
+    torch.save(model.state_dict(), model_pth)
+    torch.save(optimizer.state_dict(), opt_pth)
+    export_to_onnx(model_pth, onnx_path)
+    print(f"[Python] Training complete. Saved checkpoint to {args.save_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--save-dir", type=str, required=True)
     parser.add_argument("--data-dir", type=str, default="./training_data")
     parser.add_argument("--max-buffer-size", type=int, default=200000)
-    parser.add_argument("--new-samples", type=int, default=0, help="Number of samples generated in this iteration")
+    parser.add_argument("--new-samples", type=int, default=0)
     parser.add_argument("--sampling-rate", type=float, default=1.5)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--wd", type=float, default=1e-4)
-    parser.add_argument("--load-weights", type=str, default="", help="Path to a .pth file to resume from")
-
-    
-    args = parser.parse_args()
-    train_loop(args)
+    parser.add_argument("--load-weights", type=str, default="")
+    train_loop(args = parser.parse_args())
