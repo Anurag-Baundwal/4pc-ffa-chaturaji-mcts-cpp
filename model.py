@@ -7,7 +7,7 @@ BOARD_DIM = 8
 BOARD_AREA = 64
 
 # Input/Output Dimensions
-NUM_INPUT_CHANNELS = 34 # Pieces + Meta + Attacks
+NUM_INPUT_CHANNELS = 37 # Pieces + Meta + Attacks
 POLICY_OUTPUT_SIZE = 4096 # 64 * 64
 VALUE_OUTPUT_SIZE = 4     # 4 Players
 

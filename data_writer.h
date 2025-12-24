@@ -50,10 +50,15 @@ public:
             outfile_.write(reinterpret_cast<const char*>(policy_dense.data()), sizeof(float) * NN_POLICY_SIZE);
 
             // 3. Value (NN_VALUE_SIZE = 4)
-            const std::array<double, NN_VALUE_SIZE>& rewards = std::get<3>(step);
-            float rewards_float[NN_VALUE_SIZE];
-            for (int i = 0; i < NN_VALUE_SIZE; ++i) rewards_float[i] = static_cast<float>(rewards[i]);
-            outfile_.write(reinterpret_cast<const char*>(rewards_float), sizeof(float) * NN_VALUE_SIZE);
+            const std::array<double, 4>& abs_rewards = std::get<3>(step);
+            Player move_player = std::get<2>(step); // Player who made the move
+            int cp_idx = static_cast<int>(move_player);
+
+            float rel_rewards[4];
+            for (int rel_i = 0; rel_i < 4; ++rel_i) {
+                rel_rewards[rel_i] = static_cast<float>(abs_rewards[(cp_idx + rel_i) % 4]);
+            }
+            outfile_.write(reinterpret_cast<const char*>(rel_rewards), sizeof(float) * 4);
         }
         outfile_.flush();
     }

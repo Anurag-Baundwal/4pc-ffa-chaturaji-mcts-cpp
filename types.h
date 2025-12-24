@@ -10,9 +10,9 @@ namespace chaturaji_cpp {
 constexpr int BOARD_DIM = 8;
 constexpr int BOARD_AREA = 64; // 8 * 8
 
-// Input: 34 channels (Pieces, History, Meta) * 64 squares
-constexpr int NN_INPUT_CHANNELS = 34; 
-constexpr int NN_INPUT_SIZE = NN_INPUT_CHANNELS * BOARD_AREA; // 34 * 8 * 8 = 2176
+// Input: 37 channels total (20 (Pieces) + 4 (Active) + 4 (Points) + 1 (50-move) + 4 (Attacks) + 4 (Check)) * 64 squares
+constexpr int NN_INPUT_CHANNELS = 37; 
+constexpr int NN_INPUT_SIZE = NN_INPUT_CHANNELS * BOARD_AREA; 
 
 // Output: Policy (Move probabilities) and Value (Win probabilities)
 constexpr int NN_POLICY_SIZE = 4096; // 64 from_sq * 64 to_sq

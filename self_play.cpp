@@ -95,6 +95,8 @@ void SelfPlay::process_worker_batch(
       try {
           EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
+
+          // 1. Process Policy (Standard)
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
           bool is_root_node_eval = (leaf_node == path[0]); 
 
@@ -108,11 +110,22 @@ void SelfPlay::process_worker_batch(
               }
           }
           
-          std::array<double, 4> player_values_for_backprop;
-          for(int p_idx = 0; p_idx < 4; ++p_idx) {
-              player_values_for_backprop[p_idx] = static_cast<double>(result.value[p_idx]);
+          // 2. Process Value - CRITICAL FIX HERE
+          // The NN returns values relative to the current player of the *leaf node*.
+          // We must rotate them back to absolute player indices for the MCTS tree.
+          std::array<double, 4> player_values_absolute;
+          
+          
+          Player cp = leaf_node->get_board().get_current_player();
+          int cp_idx = static_cast<int>(cp);
+
+          for(int rel_i = 0; rel_i < 4; ++rel_i) {
+              // Map Relative Index (0=Current, 1=Next...) back to Absolute Index (Red/Blue...)
+              int abs_p_idx = (cp_idx + rel_i) % 4;
+              player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
           }
-          backpropagate_mcts_value(path, player_values_for_backprop); 
+
+          backpropagate_mcts_value(path, player_values_absolute); 
 
       } catch (const std::future_error& e) {
           std::cerr << "Future error processing worker batch item " << i << ": " << e.what() << std::endl;

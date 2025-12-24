@@ -122,11 +122,19 @@ void evaluate_and_expand_batch_sync(
            }
       } 
       
-      std::array<double, 4> player_values_from_nn;
-      for(int p_idx = 0; p_idx < 4; ++p_idx) {
-          player_values_from_nn[p_idx] = static_cast<double>(result.value[p_idx]);
+      // --- Un-rotate the values ---
+      // The NN returns values [Relative0, Relative1, Relative2, Relative3]
+      // where 0 is "Current Player". We need to map this back to [Red, Blue, Yellow, Green]
+      std::array<double, 4> player_values_absolute;
+      Player cp = leaf_node->get_board().get_current_player();
+      int cp_idx = static_cast<int>(cp);
+
+      for(int rel_i = 0; rel_i < 4; ++rel_i) {
+          int abs_p_idx = (cp_idx + rel_i) % 4;
+          player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
       }
-      backpropagate_mcts_value(path, player_values_from_nn);
+
+      backpropagate_mcts_value(path, player_values_absolute);
   }
   pending_eval.clear();
 }

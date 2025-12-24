@@ -12,23 +12,11 @@ namespace chaturaji_cpp {
 // Local helpers for piece ordering
 namespace {
     const std::vector<PieceType> UTIL_PIECE_TYPE_ORDER = {
-        PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK,
-        PieceType::KING
+        PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::KING
     };
 }
 
 std::vector<float> board_to_floats(const Board& board) {
-    // Dimensions
-    constexpr int NUM_ACTUAL_PIECE_TYPES = 5; // P, N, B, R, K
-    constexpr int NUM_PIECE_CHANNELS_ONLY = 4 * NUM_ACTUAL_PIECE_TYPES; // 20
-    
-    // Total channels: 20 (pieces) + 4 (active status) + 4 (player turn) + 4 (points) + 1 (50-move) + 1 (incoming attacks) = 34 channels
-    constexpr int NUM_CHANNELS_TOTAL = NUM_PIECE_CHANNELS_ONLY + 4 + 4 + 4 + 1 + 1; // 34
-    
-    // Ensure our calculation matches the global constant
-    static_assert(NUM_CHANNELS_TOTAL == NN_INPUT_CHANNELS, "Calculated channel count in board_to_floats must match NN_INPUT_CHANNELS");
-
-    // Initialize flat vector with zeros. Size: NN_INPUT_SIZE (2176 floats)
     std::vector<float> tensor_data(NN_INPUT_SIZE, 0.0f);
 
     auto fill_plane = [&](int channel_idx, float value) {
@@ -42,79 +30,59 @@ std::vector<float> board_to_floats(const Board& board) {
         tensor_data[index] = value;
     };
 
-    // Piece Placement Channels (0-19)
-    for (int p_idx = 0; p_idx < 4; ++p_idx) { 
-        Player player_enum = static_cast<Player>(p_idx);
-        for (int pt_idx = 0; pt_idx < NUM_ACTUAL_PIECE_TYPES; ++pt_idx) { 
-            PieceType piece_type_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; 
-            Bitboard bb = board.get_piece_bitboard(player_enum, piece_type_enum);
-            int channel = p_idx * NUM_ACTUAL_PIECE_TYPES + pt_idx;
+    Player current_p = board.get_current_player();
+    int cp_idx = static_cast<int>(current_p);
 
-            Bitboard temp_bb = bb;
-            while(temp_bb) {
-                int sq_idx = magic_utils::pop_lsb(temp_bb); 
-                if (channel >= 0 && channel < NUM_PIECE_CHANNELS_ONLY) {
-                    set_pixel(channel, sq_idx, 1.0f);
-                }
+    // --- Relative Feature Encoding ---
+    // Inputs are rotated so that index 0 always represents the current player.
+    // Mapping: Rel 0 = Current, Rel 1 = Next, Rel 2 = Opposite, Rel 3 = Previous.
+    // 1. Piece Placement (0-19) - RELATIVE
+    for (int rel_i = 0; rel_i < 4; ++rel_i) { 
+        int abs_p_idx = (cp_idx + rel_i) % 4;
+        Player p_enum = static_cast<Player>(abs_p_idx);
+        for (int pt_idx = 0; pt_idx < 5; ++pt_idx) { 
+            PieceType pt_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; 
+            Bitboard bb = board.get_piece_bitboard(p_enum, pt_enum);
+            int channel = (rel_i * 5) + pt_idx;
+            while(bb) {
+                int sq_idx = magic_utils::pop_lsb(bb); 
+                set_pixel(channel, sq_idx, 1.0f);
             }
         }
     }
 
-    // Active Player Status Channels (20-23)
-    const auto& active_players_set = board.get_active_players();
-    int active_status_channel_offset = NUM_PIECE_CHANNELS_ONLY; // 20
-    for (int i = 0; i < 4; ++i) {
-        Player p_iter = static_cast<Player>(i);
-        float val_to_fill = active_players_set.count(p_iter) ? 1.0f : 0.0f;
-        fill_plane(active_status_channel_offset + i, val_to_fill);
+    // 2. Active Status (20-23) - RELATIVE
+    const auto& active_set = board.get_active_players();
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        fill_plane(20 + rel_i, active_set.count(static_cast<Player>((cp_idx + rel_i) % 4)) ? 1.0f : 0.0f);
     }
 
-    // Current Player Channels (24-27)
-    Player current_player = board.get_current_player();
-    int current_player_channel_offset = active_status_channel_offset + 4; // 24
-    int current_player_idx_val = static_cast<int>(current_player);
-    if (current_player_idx_val >= 0 && current_player_idx_val < 4) {
-        fill_plane(current_player_channel_offset + current_player_idx_val, 1.0f);
-    }
-
-    // Player Points Channels (28-31)
+    // 3. Points (24-27) - RELATIVE
     const auto& points = board.get_player_points();
-    int points_channel_offset = current_player_channel_offset + 4; // 28
-    for (int i = 0; i < 4; ++i) {
-        Player p_iter = static_cast<Player>(i);
-        float player_points_val = 0.0f;
-        auto it = points.find(p_iter);
-        if(it != points.end()){
-            player_points_val = static_cast<float>(it->second);
-        }
-        fill_plane(points_channel_offset + i, player_points_val / 100.0f);
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        float pts = static_cast<float>(points.at(static_cast<Player>((cp_idx + rel_i) % 4)));
+        fill_plane(24 + rel_i, pts / 100.0f);
     }
 
-    // 50-Move Rule Counter Channel (32)
-    int counter_channel_idx = points_channel_offset + 4; 
+    // 4. 50-Move Clock (28)
     int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
-    float normalized_count = std::max(0.0f, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
-    fill_plane(counter_channel_idx, normalized_count);
+    fill_plane(28, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
 
-    // Incoming Attacks Channel (33)
-    int attack_channel_idx = 33;
-    
-    Player current_p = board.get_current_player();
-    const auto& active_players = board.get_active_players();
-    
-    Bitboard all_enemy_attacks = 0ULL;
-    
-    for (Player p : active_players) {
-        if (p != current_p) {
-            // OR together the attacks from all active opponents
-            all_enemy_attacks |= board.get_squares_attacked_by(p);
-        }
+    // 5. Attack Planes (29-32) - RELATIVE
+    std::array<Bitboard, 4> all_atks;
+    for(int i=0; i<4; ++i) all_atks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        Bitboard bb = all_atks[(cp_idx + rel_i) % 4];
+        while(bb) set_pixel(29 + rel_i, magic_utils::pop_lsb(bb), 1.0f);
     }
-    
-    // Fill the plane based on the bitboard
-    while (all_enemy_attacks) {
-        int sq_idx = magic_utils::pop_lsb(all_enemy_attacks);
-        set_pixel(attack_channel_idx, sq_idx, 1.0f);
+
+    // 6. In-Check Planes (33-36) - RELATIVE
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        int abs_idx = (cp_idx + rel_i) % 4;
+        Bitboard king = board.get_piece_bitboard(static_cast<Player>(abs_idx), PieceType::KING);
+        Bitboard stressors = 0;
+        for(int opp=0; opp<4; ++opp) if(opp != abs_idx) stressors |= all_atks[opp];
+        if (king & stressors) fill_plane(33 + rel_i, 1.0f);
     }
 
     return tensor_data;
