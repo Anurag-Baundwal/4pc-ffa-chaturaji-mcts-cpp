@@ -183,7 +183,7 @@ def train_loop(args):
         
         pred_policy, pred_value = model(state)
         
-        # Loss
+        # Loss Calculation
         log_probs = F.log_softmax(pred_policy, dim=1)
         loss_policy = -torch.sum(target_policy * log_probs, dim=1).mean()
         loss_value = F.mse_loss(pred_value, target_value)
@@ -195,7 +195,8 @@ def train_loop(args):
         total_loss += loss.item()
         
         if (step + 1) % 1 == 0:
-            print(f"Step {step+1}/{num_steps}, Loss: {loss.item():.4f}")
+            print(f"Step {step+1}/{num_steps}, Loss: {loss.item():.4f} "
+                  f"(Policy: {loss_policy.item():.4f}, Value: {loss_value.item():.4f})")
 
     # 5. Export
     torch.save(model.state_dict(), MODEL_SAVE_PATH)
