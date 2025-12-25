@@ -16,6 +16,7 @@
 #include <iomanip>   
 #include <map>       
 #include <memory>    
+#include <random> // Required for random opening
 
 namespace fs = std::filesystem;
 
@@ -40,16 +41,12 @@ void run_strength_test(
     int simulations_per_move,
     int mcts_batch_size
 ) {
-    std::cout << "--- Starting Strength Test Mode (ONNX) ---" << std::endl;
+    std::cout << "--- Starting Strength Test---" << std::endl;
     std::cout << "  New Model Path:    " << new_model_path << std::endl;
-    std::cout << "  Old Model Path:    " << old_model_path << std::endl;
 
+    // --- 1. Model Loading / Random Initialization Logic ---
     if (!fs::exists(new_model_path)) {
         std::cerr << "Error: New model file not found at " << new_model_path << std::endl;
-        return;
-    }
-    if (!old_model_path.empty() && !fs::exists(old_model_path)) {
-        std::cerr << "Error: Old model file not found at " << old_model_path << std::endl;
         return;
     }
 
@@ -58,33 +55,52 @@ void run_strength_test(
 
     try {
         new_network = std::make_unique<Model>(new_model_path);
-        std::cout << "New model loaded successfully." << std::endl;
         
         if (!old_model_path.empty()) {
+            if (!fs::exists(old_model_path)) {
+                std::cerr << "Error: Old model file not found at " << old_model_path << std::endl;
+                return;
+            }
             old_network = std::make_unique<Model>(old_model_path);
-            std::cout << "Old model loaded successfully." << std::endl;
+            std::cout << "  Old Model Path:    " << old_model_path << std::endl;
         } else {
-             // In inference-only setups, "random model" handling is trickier if Model class strictly requires a file.
-             // For now, we assume explicit paths are provided, or handle failure.
-             std::cerr << "Error: Old model path is empty. Random initialization for ONNX Model not supported in this test harness yet." << std::endl;
-             return;
+            // Restore "Random Model" initialization similar to train.cpp
+            std::cout << "  Old Model Path:    [NONE] - Initializing random weights..." << std::endl;
+            std::string random_onnx = "temp_strength_random.onnx";
+            std::string init_cmd = "python model.py export_random " + random_onnx;
+            if (std::system(init_cmd.c_str()) == 0) {
+                old_network = std::make_unique<Model>(random_onnx);
+            } else {
+                std::cerr << "Error: Failed to generate random baseline model via Python." << std::endl;
+                return;
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "Exception loading models: " << e.what() << std::endl;
         return;
     }
 
+    // --- 2. Test Execution ---
+    std::mt19937 rng(std::random_device{}());
     double total_game_time = 0.0;
-    std::map<int, int> new_model_rank_counts; 
-    for (int i = 1; i <= 4; ++i) {
-        new_model_rank_counts[i] = 0;
-    }
+    std::map<int, int> new_model_rank_counts = {{1,0}, {2,0}, {3,0}, {4,0}};
 
     for (int game_idx = 0; game_idx < num_games; ++game_idx) {
         auto game_start_time = std::chrono::high_resolution_clock::now();
         Board board; 
-        std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
+        // --- 4-PLY RANDOM OPENING (One move per player) ---
+        for (int p = 0; p < 4; ++p) {
+            if (board.is_game_over()) break;
+            std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
+            if (moves.empty()) break;
+            
+            std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
+            board.make_move(moves[dist(rng)]);
+        }
+
+        // New root for this randomized state
+        std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
         Player new_model_player = static_cast<Player>(game_idx % 4);
         
         while (!board.is_game_over()) {
@@ -112,50 +128,37 @@ void run_strength_test(
         } 
 
         auto game_end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> game_duration = game_end_time - game_start_time;
-        total_game_time += game_duration.count();
+        total_game_time += std::chrono::duration<double>(game_end_time - game_start_time).count();
 
+        // Calculate Ranks
         Board::PlayerPointMap final_scores = board.get_game_result();
-        std::vector<std::pair<Player, int>> sorted_scores_vec;
-        for (int p_idx = 0; p_idx < 4; ++p_idx) {
-            Player p = static_cast<Player>(p_idx);
-            int score = 0; 
-            auto it = final_scores.find(p);
-            if (it != final_scores.end()) {
-                score = it->second;
-            }
-            sorted_scores_vec.push_back({p, score});
+        std::vector<std::pair<Player, int>> results;
+        for (int i = 0; i < 4; ++i) {
+            Player p = static_cast<Player>(i);
+            results.push_back({p, final_scores[p]});
         }
+        std::sort(results.begin(), results.end(), [](auto& a, auto& b){ return a.second > b.second; });
 
-        std::sort(sorted_scores_vec.begin(), sorted_scores_vec.end(), [](const auto& a, const auto& b) {
-            return a.second > b.second; 
-        });
-
-        int current_new_model_rank = -1;
-        for (size_t rank_idx = 0; rank_idx < sorted_scores_vec.size(); ++rank_idx) {
-            if (sorted_scores_vec[rank_idx].first == new_model_player) {
-                current_new_model_rank = rank_idx + 1;
+        for (size_t rank = 0; rank < results.size(); ++rank) {
+            if (results[rank].first == new_model_player) {
+                new_model_rank_counts[rank + 1]++;
                 break;
             }
         }
-
-        if (current_new_model_rank != -1) {
-            new_model_rank_counts[current_new_model_rank]++;
-        }
         
         if ((game_idx + 1) % 1 == 0 || (game_idx + 1) == num_games) {
-            double avg_game_time = total_game_time / (game_idx + 1);
-             std::cout << "Progress: Game " << std::setw(3) << (game_idx + 1) << "/" << num_games << " completed."
-                       << " New Model (" << player_to_string(new_model_player) << ") got rank: " << current_new_model_rank << "."
-                       << " Last duration: " << std::fixed << std::setprecision(2) << game_duration.count() << "s."
-                       << " Avg time: " << std::fixed << std::setprecision(2) << avg_game_time << "s." << std::endl;
+             std::cout << "Game " << std::setw(3) << (game_idx + 1) << "/" << num_games 
+                       << " | NewModel (" << std::left << std::setw(6) << player_to_string(new_model_player) << ")"
+                       << " | Rank: " << (std::find_if(results.begin(), results.end(), [&](auto& pair){return pair.first == new_model_player;}) - results.begin() + 1)
+                       << " | Avg: " << std::fixed << std::setprecision(2) << (total_game_time / (game_idx + 1)) << "s" << std::endl;
         }
     } 
 
-    std::cout << "\n--- Strength Test Finished ---" << std::endl;
-    double first_place_percentage = (num_games > 0) ? (static_cast<double>(new_model_rank_counts[1]) / num_games * 100.0) : 0.0;
-    std::cout << "New Model First Places: " << new_model_rank_counts[1] << "/" << num_games
-              << " (" << std::fixed << std::setprecision(2) << first_place_percentage << "%)" << std::endl;
+    std::cout << "\n--- Strength Test Results (After " << num_games << " games) ---" << std::endl;
+    for (int i = 1; i <= 4; ++i) {
+        double pct = (static_cast<double>(new_model_rank_counts[i]) / num_games) * 100.0;
+        std::cout << "  Rank " << i << ": " << std::setw(3) << new_model_rank_counts[i] << " (" << pct << "%)" << std::endl;
+    }
 }
 
 } // namespace chaturaji_cpp
