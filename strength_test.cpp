@@ -99,13 +99,17 @@ void run_strength_test(
             board.make_move(moves[dist(rng)]);
         }
 
-        // New root for this randomized state
-        std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
         Player new_model_player = static_cast<Player>(game_idx % 4);
         
         while (!board.is_game_over()) {
             Player current_player = board.get_current_player();
             Model* current_network_ptr = (current_player == new_model_player) ? new_network.get() : old_network.get();
+
+            // --- TREE REUSE DISABLED FOR FAIR TESTING ---
+            // By declaring the root shared_ptr here inside the move loop, it is reset to 
+            // nullptr every turn. get_best_move_mcts_sync will detect the nullptr 
+            // and create a fresh root from the current board state.
+            std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
                 board, current_network_ptr, simulations_per_move, 
@@ -117,13 +121,9 @@ void run_strength_test(
             if (best_move_opt) {
                 board.make_move(*best_move_opt);
             } else {
-                mcts_root_node_strength_test = nullptr; 
                 if (!board.is_game_over() && board.get_active_players().count(current_player)) {
                     board.resign(); 
                 }
-            }
-            if (board.is_game_over()) {
-                mcts_root_node_strength_test = nullptr; 
             }
         } 
 
