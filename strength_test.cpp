@@ -147,10 +147,16 @@ void run_strength_test(
         }
         
         if ((game_idx + 1) % 1 == 0 || (game_idx + 1) == num_games) {
-             std::cout << "Game " << std::setw(3) << (game_idx + 1) << "/" << num_games 
-                       << " | NewModel (" << std::left << std::setw(6) << player_to_string(new_model_player) << ")"
-                       << " | Rank: " << (std::find_if(results.begin(), results.end(), [&](auto& pair){return pair.first == new_model_player;}) - results.begin() + 1)
-                       << " | Avg: " << std::fixed << std::setprecision(2) << (total_game_time / (game_idx + 1)) << "s" << std::endl;
+            // Calculate how many digits wide the game number needs to be
+            int width = std::to_string(num_games).length();
+
+            std::cout << "Game " 
+                      << std::right << std::setw(width) << (game_idx + 1) 
+                      << "/" 
+                      << std::left << std::setw(width) << num_games 
+                      << " | NewModel (" << std::left << std::setw(6) << player_to_string(new_model_player) << ")"
+                      << " | Rank: " << (std::find_if(results.begin(), results.end(), [&](auto& pair){return pair.first == new_model_player;}) - results.begin() + 1)
+                      << " | Avg: " << std::fixed << std::setprecision(2) << (total_game_time / (game_idx + 1)) << "s" << std::endl;
         }
     } 
 
