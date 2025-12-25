@@ -84,8 +84,10 @@ void train(
       std::cout << "\n========== ITERATION " << (iteration + 1) << " / " << num_iterations << " ==========" << std::endl;
 
       size_t points_generated = 0;
+      double duration_sec = 0.0;
+
+      // Phase 1: Self-Play (Scoped to ensure threads join before Python starts)
       {
-          // Restored explicit hyperparameters
           SelfPlay self_play_generator(
               network.get(), 
               num_workers, 
@@ -99,48 +101,50 @@ void train(
               0.25  // epsilon
           );
           
-          // Phase 1: Self-Play with Timing Info
+          // Phase 1: Self-Play
           std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
           auto start_gen = std::chrono::high_resolution_clock::now();
           
           points_generated = self_play_generator.generate_data(num_games_per_iteration);
 
           auto end_gen = std::chrono::high_resolution_clock::now();
-          std::chrono::duration<double> duration_gen = end_gen - start_gen;
-          
-          std::cout << "[C++] Generated " << points_generated << " positions in " 
-                    << std::fixed << std::setprecision(2) << duration_gen.count() << "s ";
-          if (duration_gen.count() > 0) {
-              std::cout << "(" << static_cast<int>(points_generated / duration_gen.count()) << " pos/s)";
-          }
-          std::cout << std::endl;
+          duration_sec = std::chrono::duration<double>(end_gen - start_gen).count();
+      } 
 
-          // Phase 2: Python Training
-          std::stringstream cmd;
-          cmd << "python train.py"
-              << " --save-dir \"" << model_dir.string() << "\""
-              << " --new-samples " << points_generated
-              << " --sampling-rate " << target_sampling_rate_param
-              << " --batch-size " << training_batch_size
-              << " --lr " << learning_rate
-              << " --wd " << weight_decay
-              << " --data-dir " << training_data_dir.string()
-              << " --max-buffer-size " << max_buffer_size; // Restored max-buffer-size
-          
-          if (!current_weights_path.empty()) {
-              cmd << " --load-weights \"" << current_weights_path << "\"";
-          }
+      // Logging number of positions generated and speed (sims/s)
+      std::cout << "[C++] Generated " << points_generated << " positions in " 
+                << std::fixed << std::setprecision(2) << duration_sec << "s ";
+      
+      if (duration_sec > 0) {
+          double total_sims = static_cast<double>(points_generated) * simulations_per_move;
+          double sims_per_sec = total_sims / duration_sec;
+          std::cout << "(" << std::fixed << std::setprecision(2) << sims_per_sec << " sims/s)";
+      }
+      std::cout << std::endl;
 
-          std::cout << "[Python] Starting training process..." << std::endl;
-          int ret = std::system(cmd.str().c_str()); 
-          if (ret != 0) {
-              std::cerr << "[C++] Python training crashed. Terminating C++ loop." << std::endl;
-              return;
-          }
+      // Phase 2: Python Training
+      std::stringstream cmd;
+      cmd << "python train.py"
+          << " --save-dir \"" << model_dir.string() << "\""
+          << " --new-samples " << points_generated
+          << " --sampling-rate " << target_sampling_rate_param
+          << " --batch-size " << training_batch_size
+          << " --lr " << learning_rate
+          << " --wd " << weight_decay
+          << " --data-dir " << training_data_dir.string()
+          << " --max-buffer-size " << max_buffer_size;
+      
+      if (!current_weights_path.empty()) {
+          cmd << " --load-weights \"" << current_weights_path << "\"";
       }
 
-      // Phase 3: Archive Iteration & Reload
-      // Python saved to 'latest.onnx'. We rename to 'iter_N.onnx' for history.
+      std::cout << "[Python] Starting training process..." << std::endl;
+      if (std::system(cmd.str().c_str()) != 0) {
+          std::cerr << "[C++] Python training crashed. Terminating." << std::endl;
+          return;
+      }
+
+      // Phase 3: Archive & Reload
       try {
           fs::path latest_onnx = model_dir / "latest.onnx";
           fs::path latest_pth  = model_dir / "latest.pth";
