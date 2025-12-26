@@ -35,22 +35,40 @@ class ReplayBuffer:
         
         t_s, t_p, t_v = [], [], []
         total = 0
+        
+        # Calculate floats per sample once
+        floats_per_sample = INPUT_SIZE + POLICY_SIZE + VALUE_SIZE
+        
         for fp in files:
             if total >= self.max_size: break
-            with open(fp, "rb") as f:
-                content = f.read()
-            n = len(content) // SAMPLE_SIZE_BYTES
+            
+            # Get file size to calculate n samples without reading content yet
+            file_size = os.path.getsize(fp)
+            n = file_size // SAMPLE_SIZE_BYTES
+            
             if n == 0: continue
             
-            floats = struct.unpack(f'{n * (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE)}f', content)
-            data = np.array(floats, dtype=np.float32).reshape(n, -1)
+            with open(fp, "rb") as f:
+                content = f.read()
             
-            t_s.append(torch.from_numpy(data[:, :INPUT_SIZE]).view(n, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM))
-            t_p.append(torch.from_numpy(data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE]))
-            t_v.append(torch.from_numpy(data[:, INPUT_SIZE + POLICY_SIZE :]))
+            # OPTIMIZATION: Use frombuffer instead of struct.unpack
+            # This reads directly from C memory, avoiding massive Python tuple creation
+            data = np.frombuffer(content, dtype=np.float32).reshape(n, -1)
+            
+            # Create tensors (using copy to ensure memory is contiguous and separate from the raw buffer)
+            # We use .clone().detach() or torch.tensor() to ensure we own the memory
+            t_s.append(torch.from_numpy(data[:, :INPUT_SIZE].copy()).view(n, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM))
+            t_p.append(torch.from_numpy(data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE].copy()))
+            t_v.append(torch.from_numpy(data[:, INPUT_SIZE + POLICY_SIZE :].copy()))
+            
             total += n
+            
+            # Explicitly delete raw content to free RAM immediately for the next iteration
+            del content
+            del data
 
         if total > 0:
+            # Slice strictly to max_size to avoid over-allocating VRAM later
             self.states = torch.cat(t_s)[:self.max_size]
             self.policies = torch.cat(t_p)[:self.max_size]
             self.values = torch.cat(t_v)[:self.max_size]
