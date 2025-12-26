@@ -38,6 +38,10 @@ int main(int argc, char* argv[]) {
         // --- Training Mode ---
         std::cout << "--- Starting Training Mode ---" << std::endl;
 
+        // --- Default Training Parameters ---
+        // These serve as the primary defaults when running via the command line.
+        // Because they are passed as explicit arguments to chaturaji_cpp::train(),
+        // they effectively take precedence over the default values defined in train.h.
         int iterations = 65536; 
         int games_per_iter = 128;
         double target_sampling_rate = 1.5; 
@@ -47,30 +51,53 @@ int main(int argc, char* argv[]) {
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
         int max_buffer_size = 200000;
-        std::string save_dir = "models"; // Changed default to local relative path
+        int temp_decay_move = 20;
+        double d_alpha = 0.4;
+        double d_epsilon = 0.25;
+        std::string save_dir = "models";
         std::string load_path = "";
 
         std::string temp_str;
+        
         temp_str = get_cmd_option(argv, argv+argc, "--iterations");
         if (!temp_str.empty()) iterations = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--games-per-iter");
         if (!temp_str.empty()) games_per_iter = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--target-sampling-rate");
         if (!temp_str.empty()) target_sampling_rate = std::stod(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--train-batch"); 
         if (!temp_str.empty()) training_batch_size = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--sims");
         if (!temp_str.empty()) sims_per_move = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--workers"); 
         if (!temp_str.empty()) num_workers = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--nn-batch");
         if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--worker-batch");
         if (!temp_str.empty()) worker_batch_size = std::stoi(temp_str);
+        
         temp_str = get_cmd_option(argv, argv + argc, "--max-buffer-size");
         if (!temp_str.empty()) max_buffer_size = std::stoi(temp_str);
+        
+        temp_str = get_cmd_option(argv, argv+argc, "--temp-decay-move");
+        if (!temp_str.empty()) temp_decay_move = std::stoi(temp_str);
+        
+        temp_str = get_cmd_option(argv, argv+argc, "--dirichlet-alpha");
+        if (!temp_str.empty()) d_alpha = std::stod(temp_str);
+        
+        temp_str = get_cmd_option(argv, argv+argc, "--dirichlet-epsilon");
+        if (!temp_str.empty()) d_epsilon = std::stod(temp_str);
+        
         temp_str = get_cmd_option(argv, argv+argc, "--save-dir");
         if (!temp_str.empty()) save_dir = temp_str;
+        
         temp_str = get_cmd_option(argv, argv+argc, "--load-model");
         if (!temp_str.empty()) load_path = temp_str;
 
@@ -87,6 +114,9 @@ int main(int argc, char* argv[]) {
                 1e-4,
                 sims_per_move,
                 max_buffer_size,
+                temp_decay_move,
+                d_alpha,
+                d_epsilon,
                 save_dir,
                 load_path
             );

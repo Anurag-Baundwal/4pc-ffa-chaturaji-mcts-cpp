@@ -28,6 +28,9 @@ void train(
   double weight_decay,
   int simulations_per_move,
   int max_buffer_size,
+  int temp_decay_move,
+  double dirichlet_alpha,
+  double dirichlet_epsilon,
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
@@ -96,9 +99,9 @@ void train(
               nn_batch_size, 
               worker_batch_size,
               2.5,  // c_puct
-              4,    // temp_decay
-              0.30, // alpha
-              0.25  // epsilon
+              temp_decay_move,
+              dirichlet_alpha,
+              dirichlet_epsilon
           );
           
           // Phase 1: Self-Play

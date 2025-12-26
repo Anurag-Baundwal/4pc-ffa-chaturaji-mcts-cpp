@@ -23,8 +23,11 @@ void train(
     double weight_decay = 1e-4,
     int simulations_per_move = 128,
     int max_buffer_size = 200000,  
+    int temp_decay_move = 20,
+    double dirichlet_alpha = 0.4,
+    double dirichlet_epsilon = 0.25,
     const std::string& model_save_dir = "/content/drive/MyDrive/models", 
-    const std::string& initial_model_path = "" 
+    const std::string& initial_model_path = ""
 );
 
 } // namespace chaturaji_cpp
