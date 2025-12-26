@@ -231,7 +231,16 @@ void SelfPlay::run_game_simulation(
 
           std::vector<SimulationState> pending_worker_batch;
           pending_worker_batch.reserve(worker_batch_size_);
+          
           bool root_noise_applicable = true; 
+
+          // If the tree is REUSED, the root is not a leaf, so process_worker_batch 
+          // will never trigger the noise logic. We must inject it manually here.
+          if (!current_root_ref.is_leaf()) {
+              current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, rng_);
+              root_noise_applicable = false; // Prevent double application
+          }
+
 
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;

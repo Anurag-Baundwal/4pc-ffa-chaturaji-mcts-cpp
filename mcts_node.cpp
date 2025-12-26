@@ -1,8 +1,8 @@
 #include "mcts_node.h"
 #include <stdexcept>
-#include <algorithm> // For std::max_element
-#include <iostream>  // For potential debug warnings
-
+#include <algorithm>
+#include <iostream>
+#include <random>
 namespace chaturaji_cpp {
 
 // Define and initialize the static MCTSNodePool member.
@@ -145,6 +145,34 @@ void MCTSNode::decrement_pending_visits() {
         pending_visits_--;
     } else {
          std::cerr << "Warning: Decrementing pending_visits below zero for node." << std::endl;
+    }
+}
+
+void MCTSNode::inject_noise(double alpha, double epsilon, std::mt19937& rng) {
+    if (children_.empty()) return;
+
+    std::gamma_distribution<double> gamma_dist(alpha, 1.0);
+    std::vector<double> noise_samples;
+    noise_samples.reserve(children_.size());
+    double noise_sum = 0.0;
+
+    // 1. Generate Gamma noise
+    for (size_t i = 0; i < children_.size(); ++i) {
+        double n = gamma_dist(rng);
+        noise_samples.push_back(n);
+        noise_sum += n;
+    }
+
+    // 2. Normalize noise
+    if (noise_sum < 1e-9) noise_sum = 1.0; // Prevent div by zero
+
+    // 3. Mix into existing priors
+    for (size_t i = 0; i < children_.size(); ++i) {
+        double normalized_noise = noise_samples[i] / noise_sum;
+        double original_prior = children_[i]->prior_;
+        
+        // P(a) = (1 - eps) * P(a) + eps * Noise
+        children_[i]->prior_ = (1.0 - epsilon) * original_prior + epsilon * normalized_noise;
     }
 }
 

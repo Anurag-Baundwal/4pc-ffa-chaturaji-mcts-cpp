@@ -7,6 +7,7 @@
 #include <cmath>    // For sqrt, log
 #include <limits> // For infinity
 #include <array>  // For std::array
+#include <random> // For std::mt19937
 
 #include "board.h" // Node contains a board state
 #include "types.h" // For Move, Player
@@ -72,6 +73,8 @@ public:
 
     void increment_pending_visits();
     void decrement_pending_visits();
+
+    void inject_noise(double alpha, double epsilon, std::mt19937& rng);
 
     // --- Accessors for Node Statistics ---
     int get_visit_count() const;
