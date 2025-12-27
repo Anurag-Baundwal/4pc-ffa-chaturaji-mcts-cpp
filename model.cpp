@@ -13,13 +13,17 @@ Model::Model(const std::string& model_path) :
     session_(nullptr) 
 {
     Ort::SessionOptions session_options;
+    
+    // Disable per-op threads to allow high throughput for simultaneous batches
     session_options.SetIntraOpNumThreads(1);
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
     // --- ATTEMPT TO LOAD OPENVINO ---
     try {
         std::unordered_map<std::string, std::string> ov_options;
-        ov_options["device_type"] = "GPU_FP32";
+        
+        // Just use "GPU". Do not set num_streams to "AUTO" as it causes crashes on some versions.
+        ov_options["device_type"] = "GPU"; 
         
         session_options.AppendExecutionProvider("OpenVINO", ov_options);
         
@@ -50,7 +54,7 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
     }
 
     // 2. Wrap buffer in ORT Tensor
-    // Shape: [Batch, NN_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM] -> [B, 34, 8, 8]
+    // Shape: [Batch, 37, 8, 8]
     std::array<int64_t, 4> input_shape = { (int64_t)batch_size, NN_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM };
     
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
@@ -74,10 +78,10 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
         EvaluationResult res;
         res.request_id = requests[i].request_id;
         
-        // Copy policy (NN_POLICY_SIZE = 4096)
+        // Copy policy (4096 floats)
         std::copy(policy_ptr + (i * NN_POLICY_SIZE), policy_ptr + ((i + 1) * NN_POLICY_SIZE), res.policy_logits.begin());
         
-        // Copy values (NN_VALUE_SIZE = 4)
+        // Copy values (4 floats)
         std::copy(value_ptr + (i * NN_VALUE_SIZE), value_ptr + ((i + 1) * NN_VALUE_SIZE), res.value.begin());
         
         results.push_back(res);
