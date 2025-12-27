@@ -111,11 +111,21 @@ def export_to_onnx(model_path, output_path):
     Loads weights from model_path and exports to ONNX format at output_path.
     """
     print(f"Exporting ONNX: Loading weights from {model_path}...")
-    model = ChaturajiNN()
     
-    # Load weights (map_location ensures it works even if trained on GPU)
+    # --- Device Selection ---
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        device = torch.device("xpu")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    # -------------------------------------------
+
+    model = ChaturajiNN().to(device) # Move model to device
+    
+    # Load weights
     try:
-        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        model.load_state_dict(torch.load(model_path, map_location=device))
     except FileNotFoundError:
         print("Warning: Model weights not found. Exporting with random initialization.")
     

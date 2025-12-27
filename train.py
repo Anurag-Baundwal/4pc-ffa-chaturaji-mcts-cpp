@@ -79,7 +79,15 @@ class ReplayBuffer:
         return self.states[idx], self.policies[idx], self.values[idx]
 
 def train_loop(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        device = torch.device("xpu")
+        print(f"[Python] Using Intel XPU: {torch.xpu.get_device_name(0)}")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("[Python] Using CUDA")
+    else:
+        device = torch.device("cpu")
+        print("[Python] Using CPU")
     
     # Define save paths directly in the target directory
     model_pth = os.path.join(args.save_dir, "latest.pth")
