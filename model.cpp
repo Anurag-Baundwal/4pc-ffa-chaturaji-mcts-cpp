@@ -1,15 +1,36 @@
 #include "model.h"
+#include "onnxruntime_cxx_api.h" 
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <unordered_map>
 
 namespace chaturaji_cpp {
 
 Model::Model(const std::string& model_path) :
     env_(ORT_LOGGING_LEVEL_WARNING, "ChaturajiInference"),
-    session_(env_, std::wstring(model_path.begin(), model_path.end()).c_str(), Ort::SessionOptions{nullptr}),
-    memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)) 
+    memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)),
+    session_(nullptr) 
 {
+    Ort::SessionOptions session_options;
+    session_options.SetIntraOpNumThreads(1);
+    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+    // --- ATTEMPT TO LOAD OPENVINO ---
+    try {
+        std::unordered_map<std::string, std::string> ov_options;
+        ov_options["device_type"] = "GPU_FP32";
+        
+        session_options.AppendExecutionProvider("OpenVINO", ov_options);
+        
+        std::cout << "[C++] Model: Enabled OpenVINO Execution Provider (GPU)." << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[C++] Model: Warning: OpenVINO setup failed: " << e.what() << std::endl;
+        std::cerr << "[C++] Model: Falling back to CPU." << std::endl;
+    }
+    // --------------------------------
+
+    session_ = Ort::Session(env_, std::wstring(model_path.begin(), model_path.end()).c_str(), session_options);
 }
 
 std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<EvaluationRequest>& requests) {
@@ -18,7 +39,6 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
     size_t batch_size = requests.size();
     
     // 1. Flatten all requests into one contiguous buffer
-    // Input size: NN_INPUT_SIZE (e.g., 2176 floats per sample)
     std::vector<float> input_tensor_values(batch_size * NN_INPUT_SIZE);
     
     for (size_t i = 0; i < batch_size; ++i) {

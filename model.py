@@ -140,7 +140,7 @@ def export_to_onnx(model_path, output_path):
         dummy_input,
         output_path,
         export_params=True,        # Store the trained parameter weights inside the model file
-        opset_version=14,          # Opset 14 is widely supported by recent ORT versions
+        opset_version=18,          # 
         do_constant_folding=True,  # Optimization
         input_names=['input'],     # The name the C++ code will use to feed data
         output_names=['policy', 'value'], # The names C++ will use to fetch results
@@ -176,7 +176,7 @@ if __name__ == "__main__":
             dummy_input = torch.randn(1, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
             torch.onnx.export(
                 model, dummy_input, output_onnx,
-                export_params=True, opset_version=14, do_constant_folding=True,
+                export_params=True, opset_version=18, do_constant_folding=True,
                 input_names=['input'], output_names=['policy', 'value'],
                 dynamic_axes={'input': {0: 'batch_size'}, 'policy': {0: 'batch_size'}, 'value': {0: 'batch_size'}}
             )
