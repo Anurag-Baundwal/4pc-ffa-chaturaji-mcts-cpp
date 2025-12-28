@@ -50,6 +50,7 @@ public:
 private:
     void run_game_simulation(
         int worker_id,
+        std::atomic<int>& games_started_counter,
         std::atomic<int>& games_completed_counter,
         int target_games,
         std::vector<GameDataStep>& local_buffer

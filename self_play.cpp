@@ -175,6 +175,7 @@ std::map<Move, double> SelfPlay::add_dirichlet_noise(
 
 size_t SelfPlay::generate_data(int num_games) {
     worker_threads_.clear(); 
+    std::atomic<int> games_started_counter(0);
     std::atomic<int> games_completed_counter(0);
     std::vector<std::vector<GameDataStep>> local_buffers(num_workers_);
 
@@ -184,7 +185,12 @@ size_t SelfPlay::generate_data(int num_games) {
     for (int i = 0; i < num_workers_; ++i) {
         worker_threads_.emplace_back(
             &SelfPlay::run_game_simulation, 
-            this, i, std::ref(games_completed_counter), num_games, std::ref(local_buffers[i])       
+            this, 
+            i, 
+            std::ref(games_started_counter),
+            std::ref(games_completed_counter), 
+            num_games, 
+            std::ref(local_buffers[i])       
         );
     }
 
@@ -204,13 +210,17 @@ size_t SelfPlay::generate_data(int num_games) {
 
 void SelfPlay::run_game_simulation(
   int worker_id,
+  std::atomic<int>& games_started_counter,
   std::atomic<int>& games_completed_counter,
   int target_games,
   std::vector<GameDataStep>& local_buffer
 ) {
   std::mt19937 thread_rng(std::random_device{}() + worker_id);
 
-  while (games_completed_counter < target_games) {
+  while (true) {
+      int game_idx = games_started_counter.fetch_add(1);
+      if (game_idx >= target_games) break;
+
       Board board; 
       std::unique_ptr<MCTSNode> mcts_root_uptr = nullptr;
 
@@ -218,8 +228,6 @@ void SelfPlay::run_game_simulation(
       int move_count = 0;
 
       while (!board.is_game_over()) {
-          if (games_completed_counter >= target_games) break;
-
           if (mcts_root_uptr && mcts_root_uptr->get_board().get_position_key() == board.get_position_key()) {
               // Reuse
           } else {
@@ -325,10 +333,8 @@ void SelfPlay::run_game_simulation(
       } 
 
       int completed_count = games_completed_counter.fetch_add(1) + 1;
-      if (completed_count <= target_games) {
-        std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games
-                    << " (" << move_count << " moves)." << std::endl;
-      }
+      
+      std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games << " (" << move_count << " moves)." << std::endl;
       
       process_game_result(game_history_for_rewards, board, local_buffer);
   } 
