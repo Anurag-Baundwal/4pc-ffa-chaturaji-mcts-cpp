@@ -75,7 +75,7 @@ Details:
   '--new-model' based on achieving the highest score.
 
 Example:
-.\bazel-bin\chaturaji_engine.exe --strength-test --new-model "./models/run_xxx/iter_10.onnx" --old-model "./model.onnx" --games 100 --sims 256 --mcts-batch 64
+.\bazel-bin\chaturaji_engine.exe --strength-test --new-model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20251228_123212\iter_16.onnx" --old-model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20251228_123212\iter_1.onnx" --games 100 --sims 256 --mcts-batch 8
 
 ---------------------------------------------------------------------
 
