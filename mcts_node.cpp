@@ -7,7 +7,7 @@ namespace chaturaji_cpp {
 
 // Define and initialize the static MCTSNodePool member.
 // The constructor MCTSNodePool(size_t) will be called automatically once at program startup.
-MCTSNodePool MCTSNode::s_node_pool(sizeof(MCTSNode), 100000); // Initialized with 100,000 node capacity
+MCTSNodePool MCTSNode::s_node_pool(sizeof(MCTSNode), 1500000); // Initialized with 1,500,000 node capacity
 
 // Implementation of custom operator new
 void* MCTSNode::operator new(size_t size) {

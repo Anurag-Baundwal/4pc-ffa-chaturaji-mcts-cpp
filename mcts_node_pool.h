@@ -13,8 +13,8 @@ namespace chaturaji_cpp {
 class MCTSNodePool {
 public:
     // Initial capacity for the first block. The pool will grow if needed.
-    // Default capacity set to 100,000 nodes as a reasonable starting point for MCTS.
-    MCTSNodePool(size_t node_size, size_t initial_capacity = 100000);
+    // Default capacity set to 1,500,000 nodes as a reasonable starting point for MCTS.
+    MCTSNodePool(size_t node_size, size_t initial_capacity = 1500000);
     ~MCTSNodePool();
 
     // Disable copy/move operations as it manages resources
@@ -46,7 +46,7 @@ private:
     std::mutex mutex_; // Protects access to free_list_ and chunk_ management
 
     size_t node_size_; // The size of an MCTSNode object
-    const size_t GROW_CHUNK_SIZE = 10000; // Number of nodes to allocate in each new chunk
+    const size_t GROW_CHUNK_SIZE = 100000; // Number of nodes to allocate in each new chunk
 
     // Statistics for tuning and debugging
     size_t allocated_count_ = 0; // Total number of nodes allocated from the pool (ever)
