@@ -228,9 +228,9 @@ void SelfPlay::run_game_simulation(
       int move_count = 0;
 
       while (!board.is_game_over()) {
-          if (mcts_root_uptr && mcts_root_uptr->get_board().get_position_key() == board.get_position_key()) {
-              // Reuse
-          } else {
+          // Check if we can reuse the existing tree (if it exists and matches current state)
+          // Otherwise, create a fresh root.
+          if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
               mcts_root_uptr = std::make_unique<MCTSNode>(board);
           }
           MCTSNode& current_root_ref = *mcts_root_uptr; 
