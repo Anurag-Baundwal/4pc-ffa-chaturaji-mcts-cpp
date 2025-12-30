@@ -1014,6 +1014,61 @@ Player Board::get_last_active_player() const {
 bool Board::is_game_over() const {
   if (termination_reason_) return true;
 
+  // --- Autoclaim Logic (Only applicable when exactly 2 players are active) ---
+  if (active_players_.size() == 2) {
+    Player p_curr = current_player_;
+    
+    // Identify the opponent (the other active player)
+    Player p_opp;
+    for (Player p : active_players_) {
+      if (p != p_curr) {
+        p_opp = p;
+        break;
+      }
+    }
+
+    // Count Kings of inactive (eliminated) players that are still physically on the board
+    int dead_kings_on_board = 0;
+    for (int i = 0; i < 4; ++i) {
+      Player p_check = static_cast<Player>(i);
+      if (active_players_.find(p_check) == active_players_.end()) {
+        if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+          dead_kings_on_board++;
+        }
+      }
+    }
+
+    int score_curr = player_points_.at(p_curr);
+    int score_opp = player_points_.at(p_opp);
+
+    // Calculate the points transfer that would occur if the current player resigned:
+    // 3 points for the current player's King + 3 points for each dead King on the board.
+    int potential_points_transfer = 3 + (3 * dead_kings_on_board);
+
+    // Check if the current player maintains a strict lead even after surrendering these points.
+    // The current player is forced to "autoclaim" (effectively resign but win) if the 
+    // resulting score difference is insurmountable.
+    if (score_curr > (score_opp + potential_points_transfer)) {
+      
+      // Verify that the claiming player is the absolute leader of the game.
+      // Their current score must be strictly higher than any eliminated player's final score
+      // to guarantee a 1st place finish.
+      bool is_absolute_leader = true;
+      for (const auto& pair : player_points_) {
+        if (pair.first != p_curr && pair.second >= score_curr) {
+          is_absolute_leader = false;
+          break;
+        }
+      }
+
+      if (is_absolute_leader) {
+        termination_reason_ = "autoclaim";
+        return true;
+      }
+    }
+  }
+
+  // --- Standard Termination Checks ---
   if (active_players_.size() <= 1) { 
     termination_reason_ = "elimination"; 
     return true; 
@@ -1041,8 +1096,9 @@ bool Board::is_game_over() const {
 
 Board::PlayerPointMap Board::get_game_result() const {
   PlayerPointMap results = player_points_;
+  
+  // Calculate bonus points based on dead kings for standard draws (50-move/repetition)
   int num_kings_of_inactive_players = 0;
-
   for (int p_idx_loop = 0; p_idx_loop < NUM_PLAYERS_BB; ++p_idx_loop) {
       Player p_enum = static_cast<Player>(p_idx_loop);
       if (!active_players_.count(p_enum)) {
@@ -1056,7 +1112,39 @@ Board::PlayerPointMap Board::get_game_result() const {
 
   if (termination_reason_) { 
     const std::string &reason = *termination_reason_;
-    if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
+    
+    if (reason == "autoclaim") {
+      // Autoclaim is effectively a forced resignation by the current player (the winner)
+      // because they have an insurmountable lead.
+      // Mechanics: The winner "resigns", so their King's points (3) and the points for 
+      // any other dead Kings on the board (3 each) are awarded to the OTHER active player.
+      
+      // 1. Identify the opponent (the beneficiary of the points)
+      Player p_opp = Player::RED; // Default init
+      for (Player p : active_players_) {
+          if (p != current_player_) {
+              p_opp = p;
+              break;
+          }
+      }
+
+      // 2. Calculate points to transfer.
+      // Iterate over all players. If the player has a King on the board and is NOT the opponent,
+      // the opponent gets 3 points. This covers the Winner's King and all Dead Kings.
+      int points_to_add = 0;
+      for (int p_idx = 0; p_idx < NUM_PLAYERS_BB; ++p_idx) {
+          Player p_enum = static_cast<Player>(p_idx);
+          if (p_enum != p_opp) {
+               // Check if this player has a king on the board
+               if (piece_bitboards_[p_idx][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+                   points_to_add += 3;
+               }
+          }
+      }
+      
+      results[p_opp] += points_to_add;
+    } 
+    else if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
       if (num_active_players > 0) { 
         int dead_king_bonus_per_player = (num_kings_of_inactive_players > 0) ? 
             static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active_players)) : 0;
