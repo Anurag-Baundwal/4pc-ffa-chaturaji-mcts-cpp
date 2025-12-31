@@ -117,7 +117,26 @@ def train_loop(args):
         # Load Optimizer
         if os.path.exists(target_opt):
             optimizer.load_state_dict(torch.load(target_opt, map_location=device))
-            print(f"[Python] LOADED: Optimizer state from {target_opt}")
+            print(f"[Python] Loaded optimizer state from {target_opt}")
+
+            # Ensure that --lr and --wd command-line arguments take precedence over values stored in the saved optimizer state.
+            lr_updated = False
+            wd_updated = False
+
+            for param_group in optimizer.param_groups:
+                if param_group['lr'] != args.lr:
+                    param_group['lr'] = args.lr
+                    lr_updated = True
+                if param_group['weight_decay'] != args.wd:
+                    param_group['weight_decay'] = args.wd
+                    wd_updated = True
+
+            if lr_updated and wd_updated:
+                print(f"[Python] LR set to {args.lr}, WD set to {args.wd}.")
+            elif lr_updated:
+                print(f"[Python] LR set to {args.lr}.")
+            elif wd_updated:
+                print(f"[Python] WD set to {args.wd}.")
         else:
             print(f"[Python] NOTICE: Optimizer file {target_opt} not found. Resetting Adam optimizer.")
     else:
