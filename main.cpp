@@ -50,6 +50,8 @@ int main(int argc, char* argv[]) {
         int num_workers = 12;   
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
+        double learning_rate = 0.001;
+        double weight_decay = 1e-4;
         int max_buffer_size = 200000;
         int temp_decay_move = 20;
         double d_alpha = 0.4;
@@ -82,7 +84,13 @@ int main(int argc, char* argv[]) {
         
         temp_str = get_cmd_option(argv, argv+argc, "--worker-batch");
         if (!temp_str.empty()) worker_batch_size = std::stoi(temp_str);
-        
+
+        temp_str = get_cmd_option(argv, argv+argc, "--lr");
+        if (!temp_str.empty()) learning_rate = std::stod(temp_str);
+
+        temp_str = get_cmd_option(argv, argv+argc, "--wd");
+        if (!temp_str.empty()) weight_decay = std::stod(temp_str);
+
         temp_str = get_cmd_option(argv, argv + argc, "--max-buffer-size");
         if (!temp_str.empty()) max_buffer_size = std::stoi(temp_str);
         
@@ -110,8 +118,8 @@ int main(int argc, char* argv[]) {
                 num_workers,
                 nn_batch_size,
                 worker_batch_size,
-                0.001,
-                1e-4,
+                learning_rate,
+                weight_decay,
                 sims_per_move,
                 max_buffer_size,
                 temp_decay_move,
