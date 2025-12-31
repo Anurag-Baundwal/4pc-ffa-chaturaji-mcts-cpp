@@ -717,6 +717,29 @@ std::optional<Piece> Board::make_move(const Move &move) {
   undo_info.eliminated_player = std::nullopt;
   undo_info.was_history_cleared = false;
   undo_info.previous_hash = current_hash_;
+  undo_info.check_bonus_points = 0;
+
+  // --- STEP 1: PRE-MOVE CHECK DETECTION ---
+  struct EnemyKingState {
+      Player player;
+      int sq_idx;
+      Bitboard attackers_before;
+  };
+  std::vector<EnemyKingState> enemy_king_states;
+  enemy_king_states.reserve(3);
+
+  for (Player p : active_players_) {
+      if (p != current_player_) {
+          int p_idx = static_cast<int>(p);
+          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+          if (king_bb) {
+              int k_sq = magic_utils::get_lsb_index(king_bb);
+              // Store who attacks this king BEFORE the move
+              enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+          }
+      }
+  }
+  // ----------------------------------------
 
   const auto& zobrist_data = get_zobrist_data();
   int fr = move.from_loc.row, fc = move.from_loc.col;
@@ -774,6 +797,39 @@ std::optional<Piece> Board::make_move(const Move &move) {
         undo_info.eliminated_player = captured.player;
     }
   }
+
+  // --- STEP 2: POST-MOVE CHECK SCORING ---
+  int kings_checked_count = 0;
+
+  for (const auto& king_state : enemy_king_states) {
+      // Logic: If player is still active AND King still exists
+      if (active_players_.count(king_state.player)) {
+          int p_idx = static_cast<int>(king_state.player);
+          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+          
+          if (king_bb) {
+               int k_sq = magic_utils::get_lsb_index(king_bb);
+               Bitboard attackers_after = get_attackers_on_sq(k_sq);
+
+               // Logic: (after & ~before) reveals purely NEW attackers.
+               // This covers discovered checks (blocking piece moved) and direct checks.
+               if ((attackers_after & ~king_state.attackers_before) != 0ULL) {
+                   kings_checked_count++;
+               }
+          }
+      }
+  }
+
+  // Award Bonus and Store in UndoInfo
+  if (kings_checked_count == 2) {
+      player_points_[current_player_] += 1;
+      undo_info.check_bonus_points = 1;
+  } else if (kings_checked_count == 3) {
+      player_points_[current_player_] += 5;
+      undo_info.check_bonus_points = 5;
+  }
+  // ---------------------------------------
+
   Player player_who_moved = current_player_;
   Player last_active_player_in_sequence = get_last_active_player();
   bool was_last_player_turn = (player_who_moved == last_active_player_in_sequence);
@@ -797,6 +853,26 @@ std::optional<Piece> Board::make_move(const Move &move) {
 
 // --- Lightweight Move Execution for MCTS ---
 std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
+  // --- STEP 1: PRE-MOVE CHECK DETECTION ---
+  struct EnemyKingState {
+      Player player;
+      int sq_idx;
+      Bitboard attackers_before;
+  };
+  std::vector<EnemyKingState> enemy_king_states;
+  enemy_king_states.reserve(3);
+  for (Player p : active_players_) {
+      if (p != current_player_) {
+          int p_idx = static_cast<int>(p);
+          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+          if (king_bb) {
+              int k_sq = magic_utils::get_lsb_index(king_bb);
+              enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+          }
+      }
+  }
+  // ----------------------------------------
+
   const auto& zobrist_data = get_zobrist_data();
   int fr = move.from_loc.row, fc = move.from_loc.col;
   int tr = move.to_loc.row, tc = move.to_loc.col;
@@ -852,6 +928,29 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
     }
   }
 
+  // --- STEP 2: POST-MOVE CHECK SCORING (MCTS) ---
+  int kings_checked_count = 0;
+  for (const auto& king_state : enemy_king_states) {
+      if (active_players_.count(king_state.player)) {
+          int p_idx = static_cast<int>(king_state.player);
+          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+          if (king_bb) {
+               int k_sq = magic_utils::get_lsb_index(king_bb);
+               Bitboard attackers_after = get_attackers_on_sq(k_sq);
+               if ((attackers_after & ~king_state.attackers_before) != 0ULL) {
+                   kings_checked_count++;
+               }
+          }
+      }
+  }
+
+  if (kings_checked_count == 2) {
+      player_points_[moving_piece_obj.player] += 1;
+  } else if (kings_checked_count == 3) {
+      player_points_[moving_piece_obj.player] += 5;
+  }
+  // ----------------------------------------------
+
   Player player_who_moved = current_player_;
   Player last_active_player_in_sequence = get_last_active_player();
   bool was_last_player_turn = (player_who_moved == last_active_player_in_sequence);
@@ -901,6 +1000,13 @@ void Board::undo_move() {
     const Piece &captured = undo_info.captured_piece.value();
     player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
   }
+
+  // --- UNDO BONUS POINTS ---
+  if (undo_info.check_bonus_points > 0) {
+      player_points_[undo_info.original_player] -= undo_info.check_bonus_points;
+  }
+  // -------------------------
+
   termination_reason_ = std::nullopt;
 }
 
@@ -973,6 +1079,81 @@ Bitboard Board::get_squares_attacked_by(Player player) const {
     }
 
     return attacks;
+}
+
+Bitboard Board::get_attackers_on_sq(int sq_idx) const {
+    Bitboard attackers = 0ULL;
+    Bitboard occ = occupied_bitboard_;
+
+    // 1. Knights (symmetric attacks)
+    Bitboard all_knights = 0ULL;
+    for(int i=0; i<4; ++i) all_knights |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KNIGHT)];
+    attackers |= (knight_attacks_[sq_idx] & all_knights);
+
+    // 2. Kings (symmetric attacks)
+    Bitboard all_kings = 0ULL;
+    for(int i=0; i<4; ++i) all_kings |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)];
+    attackers |= (king_attacks_[sq_idx] & all_kings);
+
+    // 3. Rooks (symmetric sliding) - Reuse precomputed magic tables
+    Bitboard all_rooks = 0ULL;
+    for(int i=0; i<4; ++i) all_rooks |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::ROOK)];
+    
+    Bitboard r_blockers = occ & rook_masks_[sq_idx];
+    unsigned int r_magic_idx = (r_blockers * magic_utils::RookMagics[sq_idx]) >> rook_shift_bits_[sq_idx];
+    attackers |= (rook_attack_table_[rook_attack_offsets_[sq_idx] + r_magic_idx] & all_rooks);
+
+    // 4. Bishops (symmetric sliding) - Reuse precomputed magic tables
+    Bitboard all_bishops = 0ULL;
+    for(int i=0; i<4; ++i) all_bishops |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::BISHOP)];
+    
+    Bitboard b_blockers = occ & bishop_masks_[sq_idx];
+    unsigned int b_magic_idx = (b_blockers * magic_utils::BishopMagics[sq_idx]) >> bishop_shift_bits_[sq_idx];
+    attackers |= (bishop_attack_table_[bishop_attack_offsets_[sq_idx] + b_magic_idx] & all_bishops);
+
+    // 5. Pawns (Asymmetric - Look "backwards" from target to potential attacker)
+    BoardLocation loc = magic_utils::from_sq_idx(sq_idx);
+    int r = loc.row; 
+    int c = loc.col;
+
+    // Check against RED Pawns (Attack from Row + 1)
+    if (r < 7) {
+        Bitboard red_pawns = piece_bitboards_[static_cast<int>(Player::RED)][piece_type_to_bb_idx(PieceType::PAWN)];
+        // Check South-West and South-East
+        if (c > 0 && magic_utils::get_bit(red_pawns, magic_utils::to_sq_idx(r + 1, c - 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c - 1));
+        if (c < 7 && magic_utils::get_bit(red_pawns, magic_utils::to_sq_idx(r + 1, c + 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c + 1));
+    }
+
+    // Check against BLUE Pawns (Attack from Col - 1)
+    if (c > 0) {
+        Bitboard blue_pawns = piece_bitboards_[static_cast<int>(Player::BLUE)][piece_type_to_bb_idx(PieceType::PAWN)];
+        if (r > 0 && magic_utils::get_bit(blue_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
+        if (r < 7 && magic_utils::get_bit(blue_pawns, magic_utils::to_sq_idx(r + 1, c - 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c - 1));
+    }
+
+    // Check against YELLOW Pawns (Attack from Row - 1)
+    if (r > 0) {
+        Bitboard yellow_pawns = piece_bitboards_[static_cast<int>(Player::YELLOW)][piece_type_to_bb_idx(PieceType::PAWN)];
+        if (c > 0 && magic_utils::get_bit(yellow_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
+        if (c < 7 && magic_utils::get_bit(yellow_pawns, magic_utils::to_sq_idx(r - 1, c + 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c + 1));
+    }
+
+    // Check against GREEN Pawns (Attack from Col + 1)
+    if (c < 7) {
+        Bitboard green_pawns = piece_bitboards_[static_cast<int>(Player::GREEN)][piece_type_to_bb_idx(PieceType::PAWN)];
+        if (r > 0 && magic_utils::get_bit(green_pawns, magic_utils::to_sq_idx(r - 1, c + 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c + 1));
+        if (r < 7 && magic_utils::get_bit(green_pawns, magic_utils::to_sq_idx(r + 1, c + 1))) 
+            magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c + 1));
+    }
+
+    return attackers;
 }
 
 // Utility to print a bitboard for debugging

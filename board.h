@@ -35,6 +35,7 @@ struct UndoInfo {
     bool was_history_cleared;      // Did this move clear the position history?
     std::optional<Player> eliminated_player; // Player eliminated by this move (if any)
     ZobristKey previous_hash;      // Hash *before* the move was made
+    int check_bonus_points = 0; 
 
     // New fields for bitboard state, no original comments for these specific fields
     std::array<std::array<Bitboard, 5>, 4> original_piece_bitboards;
@@ -105,6 +106,7 @@ public:
     Bitboard get_piece_bitboard(Player p, PieceType pt) const; // Get bitboard for specific player and piece type
     
     Bitboard get_squares_attacked_by(Player player) const;
+    Bitboard get_attackers_on_sq(int sq_idx) const;
 
 
     // --- Game Status ---
