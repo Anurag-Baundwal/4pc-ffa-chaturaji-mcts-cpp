@@ -197,38 +197,34 @@ int MCTSNode::get_pending_visits() const {
 double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
     const double epsilon = 1e-8; 
 
-    // Effective N(s,a) incorporating pending visits
-    double child_visits_real = static_cast<double>(child->visit_count_);
-    double child_pending_visits_val = static_cast<double>(child->pending_visits_);
-    double effective_child_visits = child_visits_real + child_pending_visits_val;
+    // --- Dynamic CPUCT (AlphaZero / Lc0 Formula) ---
+    // User constants: base = 6144, init = c_puct (passed from search)
+    const double cpuct_base = 6144.0;
+    
+    // Effective parent and child visits
+    double parent_visits = static_cast<double>(this->visit_count_) + static_cast<double>(this->pending_visits_);
+    double child_visits = static_cast<double>(child->visit_count_) + static_cast<double>(child->pending_visits_);
 
-    // Determine the player whose perspective matters for Q-value (the parent node's current player)
+    // pb_c = log((parent_n + base + 1)/base) + init
+    double pb_c = std::log((parent_visits + cpuct_base + 1.0) / cpuct_base) + c_puct;
+
+    // --- Q-Value Calculation ---
     Player parent_player_enum = this->board_state_.get_current_player();
     int parent_player_idx = static_cast<int>(parent_player_enum);
 
-    // W'(s,a) for P_parent = W_C[P_parent] - P(s,a) * V_loss 
-    // (total value for parent_player from child, minus virtual loss for pending visits)
-    double child_total_value_for_parent_player = child->total_player_values_[parent_player_idx];
-    double effective_value_for_parent_player = child_total_value_for_parent_player - (child_pending_visits_val * VIRTUAL_LOSS_VALUE);
+    double child_total_value_for_parent = child->total_player_values_[parent_player_idx];
+    double effective_value = child_total_value_for_parent - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
 
-    // Q'(s,a) from the perspective of the parent player
-    double q_value_for_parent = 0.0;
-    if (effective_child_visits > epsilon) { 
-       q_value_for_parent = effective_value_for_parent_player / effective_child_visits;
+    double q_value = 0.0;
+    if (child_visits > epsilon) { 
+       q_value = effective_value / child_visits;
     }
-    // The NEGATION for opponent is REMOVED. Q-value is directly for the parent.
-    
-    // Parent Visits N(s) for the U-term denominator
-    double parent_visits_real = static_cast<double>(this->visit_count_);
-    double parent_visits_pending_val = static_cast<double>(this->pending_visits_);
-    double parent_total_effective_visits = parent_visits_real + parent_visits_pending_val;
 
-    // U(s,a) = c_puct * P(s,a) * sqrt(N(s)) / (1 + N'(s,a))
-    double u_value = c_puct * child->prior_ *
-                     std::sqrt(parent_total_effective_visits + epsilon) / 
-                     (1.0 + effective_child_visits);
+    // --- U-Value Calculation ---
+    // U(s,a) = pb_c * P(s,a) * sqrt(N_parent) / (1 + N_child)
+    double u_value = pb_c * child->prior_ * std::sqrt(parent_visits + epsilon) / (1.0 + child_visits);
 
-    return q_value_for_parent + u_value;
+    return q_value + u_value;
 }
 
 } // namespace chaturaji_cpp

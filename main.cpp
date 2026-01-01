@@ -231,7 +231,7 @@ int main(int argc, char* argv[]) {
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( 
                   board, network.get(), simulations,
                   mcts_root_node_main, 
-                  1.0, 
+                  2.5, 
                   mcts_sync_batch_size 
               );
 

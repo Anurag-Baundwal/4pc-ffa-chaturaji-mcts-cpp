@@ -114,7 +114,7 @@ void run_strength_test(
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
                 board, current_network_ptr, simulations_per_move, 
                 mcts_root_node_strength_test, 
-                1.0, 
+                2.5, 
                 mcts_batch_size
             );
 
