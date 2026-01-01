@@ -1090,27 +1090,40 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     Bitboard attackers = 0ULL;
     Bitboard occ = occupied_bitboard_;
 
+    // Helper lambda to check if a player is active
+    auto is_active = [&](int p_idx) {
+        return active_players_.count(static_cast<Player>(p_idx));
+    };
+
     // 1. Knights (symmetric attacks)
     Bitboard all_knights = 0ULL;
-    for(int i=0; i<4; ++i) all_knights |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KNIGHT)];
+    for(int i=0; i<4; ++i) {
+        if (is_active(i)) all_knights |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KNIGHT)];
+    }
     attackers |= (knight_attacks_[sq_idx] & all_knights);
 
     // 2. Kings (symmetric attacks)
     Bitboard all_kings = 0ULL;
-    for(int i=0; i<4; ++i) all_kings |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)];
+    for(int i=0; i<4; ++i) {
+        if (is_active(i)) all_kings |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)];
+    }
     attackers |= (king_attacks_[sq_idx] & all_kings);
 
-    // 3. Rooks (symmetric sliding) - Reuse precomputed magic tables
+    // 3. Rooks (symmetric sliding)
     Bitboard all_rooks = 0ULL;
-    for(int i=0; i<4; ++i) all_rooks |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::ROOK)];
+    for(int i=0; i<4; ++i) {
+        if (is_active(i)) all_rooks |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::ROOK)];
+    }
     
     Bitboard r_blockers = occ & rook_masks_[sq_idx];
     unsigned int r_magic_idx = (r_blockers * magic_utils::RookMagics[sq_idx]) >> rook_shift_bits_[sq_idx];
     attackers |= (rook_attack_table_[rook_attack_offsets_[sq_idx] + r_magic_idx] & all_rooks);
 
-    // 4. Bishops (symmetric sliding) - Reuse precomputed magic tables
+    // 4. Bishops (symmetric sliding)
     Bitboard all_bishops = 0ULL;
-    for(int i=0; i<4; ++i) all_bishops |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::BISHOP)];
+    for(int i=0; i<4; ++i) {
+        if (is_active(i)) all_bishops |= piece_bitboards_[i][piece_type_to_bb_idx(PieceType::BISHOP)];
+    }
     
     Bitboard b_blockers = occ & bishop_masks_[sq_idx];
     unsigned int b_magic_idx = (b_blockers * magic_utils::BishopMagics[sq_idx]) >> bishop_shift_bits_[sq_idx];
@@ -1122,9 +1135,8 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     int c = loc.col;
 
     // Check against RED Pawns (Attack from Row + 1)
-    if (r < 7) {
+    if (r < 7 && active_players_.count(Player::RED)) {
         Bitboard red_pawns = piece_bitboards_[static_cast<int>(Player::RED)][piece_type_to_bb_idx(PieceType::PAWN)];
-        // Check South-West and South-East
         if (c > 0 && magic_utils::get_bit(red_pawns, magic_utils::to_sq_idx(r + 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c - 1));
         if (c < 7 && magic_utils::get_bit(red_pawns, magic_utils::to_sq_idx(r + 1, c + 1))) 
@@ -1132,7 +1144,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against BLUE Pawns (Attack from Col - 1)
-    if (c > 0) {
+    if (c > 0 && active_players_.count(Player::BLUE)) {
         Bitboard blue_pawns = piece_bitboards_[static_cast<int>(Player::BLUE)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (r > 0 && magic_utils::get_bit(blue_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
@@ -1141,7 +1153,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against YELLOW Pawns (Attack from Row - 1)
-    if (r > 0) {
+    if (r > 0 && active_players_.count(Player::YELLOW)) {
         Bitboard yellow_pawns = piece_bitboards_[static_cast<int>(Player::YELLOW)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (c > 0 && magic_utils::get_bit(yellow_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
@@ -1150,7 +1162,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against GREEN Pawns (Attack from Col + 1)
-    if (c < 7) {
+    if (c < 7 && active_players_.count(Player::GREEN)) {
         Bitboard green_pawns = piece_bitboards_[static_cast<int>(Player::GREEN)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (r > 0 && magic_utils::get_bit(green_pawns, magic_utils::to_sq_idx(r - 1, c + 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c + 1));
