@@ -1028,6 +1028,11 @@ Bitboard Board::get_piece_bitboard(Player p, PieceType pt) const {
 }
 
 Bitboard Board::get_squares_attacked_by(Player player) const {
+    // Eliminated players do not attack squares.
+    if (!active_players_.count(player)) {
+        return 0ULL;
+    }
+
     Bitboard attacks = 0ULL;
     int p_idx = static_cast<int>(player);
     Bitboard occ = occupied_bitboard_;
