@@ -42,7 +42,7 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
     float max_logit = -std::numeric_limits<float>::infinity();
 
     for (const auto& move : legal_moves) {
-        int index = move_to_policy_index(move);
+        int index = move_to_policy_index(move, board.get_current_player());
         if (index >= 0 && index < NN_POLICY_SIZE) {
             float logit = policy_logits[index];
             legal_logits.push_back(logit);

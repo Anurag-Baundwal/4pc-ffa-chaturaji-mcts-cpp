@@ -14,10 +14,35 @@ namespace {
     const std::vector<PieceType> UTIL_PIECE_TYPE_ORDER = {
         PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::KING
     };
+
+    // Helper to rotate absolute coordinates to current player's perspective
+    // This makes the current player always appear at the "Bottom" (Row 7)
+    BoardLocation get_rel_loc(int r, int c, Player p) {
+        switch (p) {
+            case Player::RED:    return {r, c};              // No change
+            case Player::BLUE:   return {7 - c, r};     // Rotate 90 CW
+            case Player::YELLOW: return {7 - r, 7 - c}; // Rotate 180
+            case Player::GREEN:  return {c, 7 - r};     // Rotate 90 CCW
+            default: return {r, c};
+        }
+    }
+
+    // Helper to rotate relative coordinates back to absolute board space
+    BoardLocation get_abs_loc(int r, int c, Player p) {
+        switch (p) {
+            case Player::RED:    return {r, c};
+            case Player::BLUE:   return {c, 7 - r};
+            case Player::YELLOW: return {7 - r, 7 - c};
+            case Player::GREEN:  return {7 - c, r};
+            default: return {r, c};
+        }
+    }
 }
 
 std::vector<float> board_to_floats(const Board& board) {
     std::vector<float> tensor_data(NN_INPUT_SIZE, 0.0f);
+    Player current_p = board.get_current_player();
+    int cp_idx = static_cast<int>(current_p);
 
     auto fill_plane = [&](int channel_idx, float value) {
         if (value == 0.0f) return; 
@@ -25,18 +50,17 @@ std::vector<float> board_to_floats(const Board& board) {
         std::fill_n(tensor_data.begin() + offset, BOARD_AREA, value);
     };
 
-    auto set_pixel = [&](int channel_idx, int sq_idx, float value) {
-        int index = (channel_idx * BOARD_AREA) + sq_idx;
+    auto set_pixel = [&](int channel_idx, int r, int c, float value) {
+        // Apply perspective rotation
+        BoardLocation rel = get_rel_loc(r, c, current_p);
+        int index = (channel_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
         tensor_data[index] = value;
     };
-
-    Player current_p = board.get_current_player();
-    int cp_idx = static_cast<int>(current_p);
 
     // --- Relative Feature Encoding ---
     // Inputs are rotated so that index 0 always represents the current player.
     // Mapping: Rel 0 = Current, Rel 1 = Next, Rel 2 = Opposite, Rel 3 = Previous.
-    // 1. Piece Placement (0-19) - RELATIVE
+    // 1. Piece Placement (0-19)
     for (int rel_i = 0; rel_i < 4; ++rel_i) { 
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p_enum = static_cast<Player>(abs_p_idx);
@@ -45,19 +69,19 @@ std::vector<float> board_to_floats(const Board& board) {
             Bitboard bb = board.get_piece_bitboard(p_enum, pt_enum);
             int channel = (rel_i * 5) + pt_idx;
             while(bb) {
-                int sq_idx = magic_utils::pop_lsb(bb); 
-                set_pixel(channel, sq_idx, 1.0f);
+                int sq_idx = magic_utils::pop_lsb(bb);
+                BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
+                set_pixel(channel, abs_loc.row, abs_loc.col, 1.0f);
             }
         }
     }
 
-    // 2. Active Status (20-23) - RELATIVE
-    const auto& active_set = board.get_active_players();
+    // 2. Active Status (20-23)
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        fill_plane(20 + rel_i, active_set.count(static_cast<Player>((cp_idx + rel_i) % 4)) ? 1.0f : 0.0f);
+        fill_plane(20 + rel_i, board.get_active_players().count(static_cast<Player>((cp_idx + rel_i) % 4)) ? 1.0f : 0.0f);
     }
 
-    // 3. Points (24-27) - RELATIVE
+    // 3. Points (24-27)
     const auto& points = board.get_player_points();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         float pts = static_cast<float>(points.at(static_cast<Player>((cp_idx + rel_i) % 4)));
@@ -68,15 +92,19 @@ std::vector<float> board_to_floats(const Board& board) {
     int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
     fill_plane(28, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
 
-    // 5. Attack Planes (29-32) - RELATIVE
-    std::array<Bitboard, 4> all_atks;
-    for(int i=0; i<4; ++i) all_atks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+    // 5. Attack Planes (29-32)
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        Bitboard bb = all_atks[(cp_idx + rel_i) % 4];
-        while(bb) set_pixel(29 + rel_i, magic_utils::pop_lsb(bb), 1.0f);
+        Bitboard bb = board.get_squares_attacked_by(static_cast<Player>((cp_idx + rel_i) % 4));
+        while(bb) {
+            int sq_idx = magic_utils::pop_lsb(bb);
+            BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
+            set_pixel(29 + rel_i, abs_loc.row, abs_loc.col, 1.0f);
+        }
     }
 
-    // 6. In-Check Planes (33-36) - RELATIVE
+    // 6. In-Check Planes (33-36)
+    std::array<Bitboard, 4> all_atks;
+    for(int i=0; i<4; ++i) all_atks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
         Bitboard king = board.get_piece_bitboard(static_cast<Player>(abs_idx), PieceType::KING);
@@ -88,34 +116,26 @@ std::vector<float> board_to_floats(const Board& board) {
     return tensor_data;
 }
 
-int move_to_policy_index(const Move& move) {
-    int fr_row = move.from_loc.row;
-    int fr_col = move.from_loc.col;
-    int to_row = move.to_loc.row;
-    int to_col = move.to_loc.col;
+int move_to_policy_index(const Move& move, Player p) {
+    BoardLocation rel_from = get_rel_loc(move.from_loc.row, move.from_loc.col, p);
+    BoardLocation rel_to   = get_rel_loc(move.to_loc.row, move.to_loc.col, p);
 
-    if (fr_row < 0 || fr_row >= BOARD_DIM || fr_col < 0 || fr_col >= BOARD_DIM ||
-        to_row < 0 || to_row >= BOARD_DIM || to_col < 0 || to_col >= BOARD_DIM) {
-        throw std::out_of_range("Move coordinates are out of board bounds for policy index.");
-    }
-    int from_index = fr_row * BOARD_DIM + fr_col;
-    int to_index = to_row * BOARD_DIM + to_col;
-    return from_index * BOARD_AREA + to_index;
+    int from_index = rel_from.row * 8 + rel_from.col;
+    int to_index = rel_to.row * 8 + rel_to.col;
+    return from_index * 64 + to_index;
 }
 
-Move policy_index_to_move(int index) {
-    if (index < 0 || index >= NN_POLICY_SIZE) {
-         throw std::out_of_range("Policy index " + std::to_string(index) + " is out of bounds (0-" + std::to_string(NN_POLICY_SIZE - 1) + ").");
-    }
-    int to_index = index % BOARD_AREA;
-    int from_index = index / BOARD_AREA;
+Move policy_index_to_move(int index, Player p) {
+    int to_rel_idx = index % 64;
+    int from_rel_idx = index / 64;
 
-    int to_row = to_index / BOARD_DIM;
-    int to_col = to_index % BOARD_DIM;
-    int from_row = from_index / BOARD_DIM;
-    int from_col = from_index % BOARD_DIM;
+    BoardLocation from_rel(from_rel_idx / 8, from_rel_idx % 8);
+    BoardLocation to_rel(to_rel_idx / 8, to_rel_idx % 8);
 
-    return Move(BoardLocation(from_row, from_col), BoardLocation(to_row, to_col), std::nullopt);
+    BoardLocation abs_from = get_abs_loc(from_rel.row, from_rel.col, p);
+    BoardLocation abs_to   = get_abs_loc(to_rel.row, to_rel.col, p);
+
+    return Move(abs_from, abs_to, std::nullopt);
 }
 
 std::string get_san_string(const Move& move, const Board& board) {
