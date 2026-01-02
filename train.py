@@ -96,7 +96,7 @@ def train_loop(args):
 
     # 1. Model & Optimizer Setup
     model = ChaturajiNN().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
     # 2. Loading Logic
     if args.load_weights:
@@ -193,6 +193,6 @@ if __name__ == "__main__":
     parser.add_argument("--sampling-rate", type=float, default=1.5)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--wd", type=float, default=1e-4)
+    parser.add_argument("--wd", type=float, default=0.01)
     parser.add_argument("--load-weights", type=str, default="")
     train_loop(args = parser.parse_args())

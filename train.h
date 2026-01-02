@@ -20,7 +20,7 @@ void train(
     int nn_batch_size = 1024,       
     int worker_batch_size = 48,
     double learning_rate = 0.001,
-    double weight_decay = 1e-4,
+    double weight_decay = 0.01,
     int simulations_per_move = 128,
     int max_buffer_size = 200000,  
     int temp_decay_move = 20,
