@@ -10,11 +10,26 @@
 #include <iomanip>
 #include <filesystem>
 #include <memory>
-#include <sstream> 
+#include <sstream>
+#include <regex>
 
 namespace fs = std::filesystem;
 
 namespace chaturaji_cpp {
+
+// Helper to extract iteration number from filename "iter_1234.onnx"
+int extract_iteration_from_path(const std::string& path) {
+    std::regex re("iter_(\\d+)\\.onnx");
+    std::smatch match;
+    // Search in the filename part only
+    std::filesystem::path p(path);
+    std::string filename = p.filename().string();
+    
+    if (std::regex_search(filename, match, re)) {
+        return std::stoi(match[1]);
+    }
+    return 0; // Default to 0 if not found or if random init
+}
 
 void train(
   int num_iterations,
@@ -59,12 +74,20 @@ void train(
 
   // 3. INITIALIZE ENGINE MODEL
   std::unique_ptr<Model> network = nullptr;
-  std::string current_weights_path = ""; // Initialize as empty
+  std::string current_weights_path = ""; 
+  
+  // Variable to track global iteration count
+  int start_iteration = 0;
 
   if (!initial_model_path.empty()) {
       // User provided a model to resume
       current_weights_path = initial_model_path; 
       network = std::make_unique<Model>(initial_model_path);
+      
+      // Parse start iteration
+      start_iteration = extract_iteration_from_path(initial_model_path);
+      std::cout << "[C++] Resuming from iteration " << start_iteration << std::endl;
+      
   } else { 
       std::cout << "[C++] No model provided. Initializing random weights..." << std::endl;
       // Tell Python to save the random init inside our specific folder
@@ -84,7 +107,30 @@ void train(
 
   // 4. MAIN LOOP
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
-      std::cout << "\n========== ITERATION " << (iteration + 1) << " / " << num_iterations << " ==========" << std::endl;
+      int current_global_iter = start_iteration + iteration + 1; // +1 because we are working on the *next* model
+      
+      // === AUTOMATED LR SCHEDULER LOGIC ===
+      if (current_global_iter >= 1900) {
+          if (learning_rate > 0.00001) {
+              learning_rate = 0.00001;
+              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 1900+)" << std::endl;
+          }
+      } 
+      else if (current_global_iter >= 1400) {
+          if (learning_rate > 0.0001) {
+              learning_rate = 0.0001;
+              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 1400+)" << std::endl;
+          }
+      } 
+      else if (current_global_iter >= 800) {
+          if (learning_rate > 0.0003) {
+              learning_rate = 0.0003;
+              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 800+)" << std::endl;
+          }
+      }
+      // ====================================
+
+      std::cout << "\n========== ITERATION " << current_global_iter << " (Run Step " << (iteration + 1) << "/" << num_iterations << ") ==========" << std::endl;
 
       size_t points_generated = 0;
       double duration_sec = 0.0;
@@ -153,7 +199,7 @@ void train(
           fs::path latest_pth  = model_dir / "latest.pth";
           fs::path latest_opt  = model_dir / "latest.optimizer.pth";
 
-          std::string suffix = "iter_" + std::to_string(iteration + 1);
+          std::string suffix = "iter_" + std::to_string(current_global_iter);
           fs::path arch_onnx = model_dir / (suffix + ".onnx");
           fs::path arch_pth  = model_dir / (suffix + ".pth");
           fs::path arch_opt  = model_dir / (suffix + ".optimizer.pth");
