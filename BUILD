@@ -99,6 +99,7 @@ cc_library(
     deps = [
         ":chaturaji_model",
         ":chaturaji_types",
+        ":chaturaji_tt",
     ],
 )
 
@@ -125,7 +126,16 @@ cc_library(
         ":chaturaji_model",
         ":chaturaji_types",
         ":chaturaji_utils",
+        ":chaturaji_tt",
     ],
+)
+
+cc_library(
+    name = "chaturaji_tt",
+    srcs = ["transposition_table.cpp"],
+    hdrs = ["transposition_table.h"],
+    copts = ["/std:c++17"],
+    deps = [":chaturaji_types"],
 )
 
 # === Self-Play and Training ===

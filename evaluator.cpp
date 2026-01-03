@@ -6,8 +6,9 @@
 
 namespace chaturaji_cpp {
 
-Evaluator::Evaluator(Model* network, int max_batch_size) :
+Evaluator::Evaluator(Model* network, TranspositionTable* tt, int max_batch_size) :
     network_(network),
+    tt_(tt),
     max_batch_size_(max_batch_size),
     stop_requested_(false),
     next_request_id_(0)
@@ -15,7 +16,6 @@ Evaluator::Evaluator(Model* network, int max_batch_size) :
     if (!network_) {
         throw std::runtime_error("Evaluator received a null network pointer.");
     }
-    // ONNX Runtime models are ready to run upon loading; no need for .to(device) or .eval()
 }
 
 Evaluator::~Evaluator() {
@@ -42,10 +42,21 @@ void Evaluator::stop() {
 }
 
 std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest request) {
-    request.request_id = next_request_id_++;
     std::promise<EvaluationResult> result_promise;
     std::future<EvaluationResult> result_future = result_promise.get_future();
+    request.request_id = next_request_id_++;
 
+    // 1. Check Transposition Table
+    if (tt_) {
+        auto cached = tt_->probe(request.position_hash);
+        if (cached) {
+            cached->request_id = request.request_id;
+            result_promise.set_value(std::move(*cached));
+            return result_future;
+        }
+    }
+
+    // 2. Cache miss: Push to NN queue
     request_queue_.push({std::move(request), std::move(result_promise)});
     return result_future;
 }
@@ -92,6 +103,16 @@ void Evaluator::evaluation_loop() {
         try {
             // Call the ONNX model (Synchronous)
             batch_results = network_->evaluate_batch(requests_for_nn);
+
+            // Store new results in TT
+            if (tt_) {
+                for (size_t i = 0; i < batch_results.size(); ++i) {
+                    // Note: We need the hash here. Since the order is preserved:
+                    tt_->store(requests_for_nn[i].position_hash, 
+                              batch_results[i].policy_logits, 
+                              batch_results[i].value);
+                }
+            }
         } catch (const std::exception& e) {
             std::cerr << "!!! EXCEPTION during ONNX batch evaluation: " << e.what() << std::endl;
             for (auto& pair : batch_with_promises) {

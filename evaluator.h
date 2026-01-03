@@ -12,6 +12,7 @@
 #include "model.h" // Uses the new ONNX-based Model class
 #include "types.h" 
 #include "thread_safe_queue.h" 
+#include "transposition_table.h"
 
 namespace chaturaji_cpp {
 
@@ -21,7 +22,7 @@ public:
      * @param network Pointer to the loaded ONNX Model. The Evaluator does NOT own the model.
      * @param max_batch_size The maximum number of requests to batch together.
      */
-    Evaluator(Model* network, int max_batch_size = 4096);
+    Evaluator(Model* network, TranspositionTable* tt = nullptr, int max_batch_size = 4096);
     ~Evaluator();
 
     Evaluator(const Evaluator&) = delete;
@@ -38,6 +39,7 @@ private:
     void evaluation_loop();
 
     Model* network_; // Non-owning pointer
+    TranspositionTable* tt_; // Non-owning pointer
     int max_batch_size_;
 
     ThreadSafeQueue<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> request_queue_;

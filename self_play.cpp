@@ -16,6 +16,7 @@ std::mutex buffer_mutex_self_play;
 
 SelfPlay::SelfPlay(
     Model* network,
+    TranspositionTable* tt,
     int num_workers,
     int simulations_per_move,
     size_t max_buffer_size,
@@ -27,6 +28,7 @@ SelfPlay::SelfPlay(
     double dirichlet_epsilon
 ) :
     network_handle_(network), 
+    tt_handle_(tt),
     num_workers_(num_workers),
     simulations_per_move_(simulations_per_move),
     max_buffer_size_(max_buffer_size),
@@ -41,7 +43,7 @@ SelfPlay::SelfPlay(
     if (!network) { 
         throw std::runtime_error("SelfPlay received a null network pointer.");
     }
-    evaluator_ = std::make_unique<Evaluator>(network, nn_batch_size);
+    evaluator_ = std::make_unique<Evaluator>(network, tt, nn_batch_size);
     evaluator_->start();
 }
 
@@ -81,9 +83,9 @@ void SelfPlay::process_worker_batch(
            continue;
       }
       EvaluationRequest req;
-      req.state_floats = board_to_floats(leaf_node->get_board());
-      futures.push_back(evaluator_->submit_request(std::move(req)));
-      pending_batch[i].pending_request_id = req.request_id; 
+      req.position_hash = leaf_node->get_board().get_position_key();
+      req.state_floats = board_to_floats(leaf_node->get_board());    
+      futures.push_back(evaluator_->submit_request(std::move(req))); // Implicit mapping: futures[i] corresponds exactly to pending_batch[i]
   }
 
   for (size_t i = 0; i < batch_size; ++i) {
@@ -228,6 +230,7 @@ void SelfPlay::run_game_simulation(
       int move_count = 0;
 
       while (!board.is_game_over()) {
+          if (tt_handle_) tt_handle_->set_age(move_count);
           // Check if we can reuse the existing tree (if it exists and matches current state)
           // Otherwise, create a fresh root.
           if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {

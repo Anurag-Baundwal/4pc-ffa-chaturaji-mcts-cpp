@@ -99,6 +99,7 @@ using RequestId = uint64_t;
  */
 struct EvaluationRequest {
     RequestId request_id;
+    ZobristKey position_hash;
     std::vector<float> state_floats; // Size: NN_INPUT_SIZE (34 * 8 * 8 = 2176)
 };
 

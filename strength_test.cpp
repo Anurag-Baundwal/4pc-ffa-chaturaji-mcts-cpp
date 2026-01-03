@@ -85,6 +85,9 @@ void run_strength_test(
     double total_game_time = 0.0;
     std::map<int, int> new_model_rank_counts = {{1,0}, {2,0}, {3,0}, {4,0}};
 
+    // Initialize tt
+    auto tt = std::make_unique<TranspositionTable>(1024);
+
     for (int game_idx = 0; game_idx < num_games; ++game_idx) {
         auto game_start_time = std::chrono::high_resolution_clock::now();
         Board board; 
@@ -100,22 +103,25 @@ void run_strength_test(
         }
 
         Player new_model_player = static_cast<Player>(game_idx % 4);
+
+        int move_count = 0;
         
         while (!board.is_game_over()) {
             Player current_player = board.get_current_player();
             Model* current_network_ptr = (current_player == new_model_player) ? new_network.get() : old_network.get();
 
-            // --- TREE REUSE DISABLED FOR FAIR TESTING ---
-            // By declaring the root shared_ptr here inside the move loop, it is reset to 
-            // nullptr every turn. get_best_move_mcts_sync will detect the nullptr 
-            // and create a fresh root from the current board state.
+            // Note: Tree reuse is diasbled in strength tests for fair testing
+
+            // Update Age and set root
+            if (tt) tt->set_age(move_count++); 
             std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
                 board, current_network_ptr, simulations_per_move, 
                 mcts_root_node_strength_test, 
                 2.5, 
-                mcts_batch_size
+                mcts_batch_size,
+                tt.get()
             );
 
             if (best_move_opt) {
