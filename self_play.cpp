@@ -262,12 +262,17 @@ void SelfPlay::run_game_simulation(
               root_noise_applicable = false; // Prevent double application
           }
 
+          // Pack Game ID (High 16 bits) and Move Count (Low 16 bits) into a single age value.
+          // This ensures entries from the current game (game_idx) are treated as "newer" 
+          // than entries from previous games in the same batch (game_idx - 1), preventing stale TT entries 
+          // from blocking updates during the early moves of a new game.
+          uint32_t current_age = (static_cast<uint32_t>(game_idx) << 16) | (static_cast<uint32_t>(move_count) & 0xFFFF);
 
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;
               current_mcts_path.current_node = &current_root_ref;
               current_mcts_path.path.push_back(current_mcts_path.current_node);
-              current_mcts_path.move_count = static_cast<uint32_t>(move_count);
+              current_mcts_path.move_count = current_age;
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
