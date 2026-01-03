@@ -113,7 +113,7 @@ void run_strength_test(
             // Note: Tree reuse is diasbled in strength tests for fair testing
 
             // Update Age and set root
-            if (tt) tt->set_age(move_count++); 
+            uint32_t current_move_age = static_cast<uint32_t>(move_count++);
             std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
@@ -121,7 +121,8 @@ void run_strength_test(
                 mcts_root_node_strength_test, 
                 2.5, 
                 mcts_batch_size,
-                tt.get()
+                tt.get(),
+                static_cast<uint32_t>(move_count)
             );
 
             if (best_move_opt) {

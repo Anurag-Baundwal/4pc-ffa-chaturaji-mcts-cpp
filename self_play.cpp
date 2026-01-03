@@ -43,7 +43,7 @@ SelfPlay::SelfPlay(
     if (!network) { 
         throw std::runtime_error("SelfPlay received a null network pointer.");
     }
-    evaluator_ = std::make_unique<Evaluator>(network, tt, nn_batch_size);
+    evaluator_ = std::make_unique<Evaluator>(network, nn_batch_size);
     evaluator_->start();
 }
 
@@ -97,6 +97,17 @@ void SelfPlay::process_worker_batch(
       try {
           EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
+
+          // --- Store in Transposition Table ---
+          if (tt_handle_) {
+              tt_handle_->store(
+                  leaf_node->get_board().get_position_key(), // Key
+                  result.policy_logits,       // Data from NN
+                  result.value,                            // Data from NN
+                  pending_batch[i].move_count                // Age (from local SimulationState)
+              );
+          }
+          // ------------------------------------------------
 
           // 1. Process Policy (Standard)
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
@@ -230,7 +241,6 @@ void SelfPlay::run_game_simulation(
       int move_count = 0;
 
       while (!board.is_game_over()) {
-          if (tt_handle_) tt_handle_->set_age(move_count);
           // Check if we can reuse the existing tree (if it exists and matches current state)
           // Otherwise, create a fresh root.
           if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
@@ -257,6 +267,7 @@ void SelfPlay::run_game_simulation(
               SimulationState current_mcts_path;
               current_mcts_path.current_node = &current_root_ref;
               current_mcts_path.path.push_back(current_mcts_path.current_node);
+              current_mcts_path.move_count = static_cast<uint32_t>(move_count);
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
@@ -280,13 +291,31 @@ void SelfPlay::run_game_simulation(
                   std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map_terminal);
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
+                  // Probe TT before batching for NN
+                  if (tt_handle_) {
+                      auto cached = tt_handle_->probe(leaf_node->get_board().get_position_key());
+                      if (cached) {
+                          // Cache Hit: Expand and Backprop immediately
+                          std::map<Move, double> policy_probs = process_policy(cached->policy_logits, leaf_node->get_board());
+                          if (!policy_probs.empty()) leaf_node->expand(policy_probs);
+                          
+                          std::array<double, 4> player_values_absolute;
+                          int cp_idx = static_cast<int>(leaf_node->get_board().get_current_player());
+                          for(int rel_i = 0; rel_i < 4; ++rel_i) {
+                              player_values_absolute[(cp_idx + rel_i) % 4] = static_cast<double>(cached->value[rel_i]);
+                          }
+                          backpropagate_mcts_value(current_mcts_path.path, player_values_absolute);
+                          continue; // Simulation complete, skip NN queue
+                      }
+                  }
+
                   leaf_node->increment_pending_visits();
                   pending_worker_batch.push_back(std::move(current_mcts_path));
                   if (pending_worker_batch.size() >= static_cast<size_t>(worker_batch_size_)) {
                       process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
                   }
               }
-          } 
+          }
 
           if (!pending_worker_batch.empty()) {
               process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);

@@ -18,7 +18,8 @@ TranspositionTable::TranspositionTable(size_t size_in_mb) {
 
 void TranspositionTable::store(ZobristKey key, 
                                const std::array<float, NN_POLICY_SIZE>& full_policy_logits, 
-                               const std::array<float, NN_VALUE_SIZE>& value) {
+                               const std::array<float, NN_VALUE_SIZE>& value,
+                               uint32_t age) {
     
     size_t bucket_idx = key % num_buckets_;
     Bucket& bucket = table_[bucket_idx];
@@ -70,7 +71,7 @@ void TranspositionTable::store(ZobristKey key,
     // 5. Write Data
     best_slot->key = key;
     best_slot->value = value;
-    best_slot->age = age_; // Store current engine age
+    best_slot->age = age;
     best_slot->num_moves = static_cast<uint16_t>(count_to_store);
 
     for (int i = 0; i < count_to_store; ++i) {

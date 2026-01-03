@@ -228,19 +228,16 @@ int main(int argc, char* argv[]) {
                  mcts_root_node_main = nullptr; 
                  break;
             }
-             if (tt) tt->set_age(i);            
              std::cout << "Searching for best move (Sims: " << simulations << ")..." << std::endl;
              auto start_time = std::chrono::high_resolution_clock::now();
-
-             // set age
-             if (tt) tt->set_age(i); // Use 'i' (move count) as age
 
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( 
                   board, network.get(), simulations,
                   mcts_root_node_main, 
                   2.5, 
                   mcts_sync_batch_size,
-                  tt.get()
+                  tt.get(),
+                  static_cast<uint32_t>(i)
               );
 
              auto end_time = std::chrono::high_resolution_clock::now();

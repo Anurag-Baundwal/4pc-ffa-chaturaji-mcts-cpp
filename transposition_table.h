@@ -49,7 +49,8 @@ public:
      */
     void store(ZobristKey key, 
                const std::array<float, NN_POLICY_SIZE>& full_policy_logits, 
-               const std::array<float, NN_VALUE_SIZE>& value);
+               const std::array<float, NN_VALUE_SIZE>& value,
+               uint32_t age);
 
     /**
      * Probes for a position. Lock-protected per bucket.
@@ -57,7 +58,6 @@ public:
     std::optional<EvaluationResult> probe(ZobristKey key);
 
     void clear();
-    void set_age(uint32_t age) { age_ = age; }
 
 private:
     struct Bucket {
@@ -71,7 +71,6 @@ private:
 
     std::vector<Bucket> table_;
     size_t num_buckets_;
-    uint32_t age_ = 0;
 };
 
 } // namespace chaturaji_cpp

@@ -24,6 +24,7 @@ struct SimulationState {
   MCTSNode* current_node = nullptr; 
   std::vector<MCTSNode*> path;      
   std::optional<RequestId> pending_request_id = std::nullopt;
+  uint32_t move_count = 0;
 };
 
 /**
@@ -49,7 +50,8 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr, 
     double c_puct = 2.5,
     int mcts_batch_size = 16,
-    TranspositionTable* tt = nullptr
+    TranspositionTable* tt = nullptr,
+    uint32_t move_count = 0
 );
 
 std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores);

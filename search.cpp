@@ -84,7 +84,7 @@ void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::arr
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
   Model* network,
-  TranspositionTable* tt) // <--- Added TT argument
+  TranspositionTable* tt) 
 {
   if (pending_eval.empty()) return;
 
@@ -159,15 +159,19 @@ void evaluate_and_expand_batch_sync(
 
   // 4. Process NN Results
   for (size_t i = 0; i < results.size(); ++i) {
-      // Store in TT for future use
-      if (tt) {
-          tt->store(requests[i].position_hash, results[i].policy_logits, results[i].value);
-      }
-
-      // Find original simulation state
       size_t original_index = pending_indices[i];
       
-      // Process using lambda
+      // Get the move_count from the simulation state that generated this request
+      // This solves the race condition by using the specific age of this specific simulation.
+      uint32_t age_for_entry = pending_eval[original_index].move_count;
+
+      if (tt) {
+          tt->store(requests[i].position_hash, 
+                    results[i].policy_logits, 
+                    results[i].value, 
+                    age_for_entry);
+      }
+
       process_result_logic(pending_eval[original_index], results[i]);
   }
 
@@ -180,13 +184,15 @@ void run_mcts_simulations_sync(
   int simulations,
   double c_puct,
   int batch_size,
-  TranspositionTable* tt)
+  TranspositionTable* tt,
+  uint32_t age)
 {
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
       SimulationState root_state;
       root_state.current_node = &root;
       root_state.path.push_back(&root);
+      root_state.move_count = age; // Initialize age for root evaluation
       initial_eval.push_back(std::move(root_state));
       evaluate_and_expand_batch_sync(initial_eval, network, tt);
       return; 
@@ -199,6 +205,7 @@ void run_mcts_simulations_sync(
       SimulationState current_sim;
       current_sim.current_node = &root;
       current_sim.path.push_back(current_sim.current_node);
+      current_sim.move_count = age; // Initialize age for this simulation path
 
       while (!current_sim.current_node->is_leaf()) {
            MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
@@ -244,7 +251,8 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
     int mcts_batch_size,
-    TranspositionTable* tt)  
+    TranspositionTable* tt,
+    uint32_t move_count)
 {
     if (board.is_game_over()) {
       current_mcts_root_shptr = nullptr;
@@ -257,7 +265,8 @@ std::optional<Move> get_best_move_mcts_sync(
         current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
     }
     
-    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size, tt); 
+    // Pass move_count (age) down through the simulation layers
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size, tt, move_count); 
  
 
     const auto& children_const_ref = current_mcts_root_shptr->get_children();
