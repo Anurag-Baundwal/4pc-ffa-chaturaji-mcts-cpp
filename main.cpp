@@ -38,6 +38,9 @@ int main(int argc, char* argv[]) {
         // --- Training Mode ---
         std::cout << "--- Starting Training Mode ---" << std::endl;
 
+        // Create a 1GB Transposition Table
+        auto tt = std::make_unique<chaturaji_cpp::TranspositionTable>(1024);
+
         // --- Default Training Parameters ---
         // These serve as the primary defaults when running via the command line.
         // Because they are passed as explicit arguments to chaturaji_cpp::train(),
@@ -126,7 +129,8 @@ int main(int argc, char* argv[]) {
                 d_alpha,
                 d_epsilon,
                 save_dir,
-                load_path
+                load_path,
+                tt.get()
             );
         } catch (const std::exception& e) {
             std::cerr << "Training failed with exception: " << e.what() << std::endl;
@@ -204,6 +208,7 @@ int main(int argc, char* argv[]) {
         }
 
         chaturaji_cpp::Board board;
+        auto tt = std::make_unique<chaturaji_cpp::TranspositionTable>(1024); // Initialize TT for Inference
         double total_execution_time = 0.0;
         int num_searches = 0;
         std::shared_ptr<chaturaji_cpp::MCTSNode> mcts_root_node_main = nullptr; 
@@ -223,16 +228,16 @@ int main(int argc, char* argv[]) {
                  mcts_root_node_main = nullptr; 
                  break;
             }
-
              std::cout << "Searching for best move (Sims: " << simulations << ")..." << std::endl;
              auto start_time = std::chrono::high_resolution_clock::now();
 
-             // get_best_move_mcts_sync no longer takes torch::Device
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( 
                   board, network.get(), simulations,
                   mcts_root_node_main, 
                   2.5, 
-                  mcts_sync_batch_size 
+                  mcts_sync_batch_size,
+                  tt.get(),
+                  static_cast<uint32_t>(i)
               );
 
              auto end_time = std::chrono::high_resolution_clock::now();

@@ -27,7 +27,8 @@ void train(
     double dirichlet_alpha = 0.4,
     double dirichlet_epsilon = 0.25,
     const std::string& model_save_dir = "/content/drive/MyDrive/models", 
-    const std::string& initial_model_path = ""
+    const std::string& initial_model_path = "",
+    TranspositionTable* tt = nullptr
 );
 
 } // namespace chaturaji_cpp

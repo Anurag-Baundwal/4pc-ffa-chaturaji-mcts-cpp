@@ -16,6 +16,7 @@ std::mutex buffer_mutex_self_play;
 
 SelfPlay::SelfPlay(
     Model* network,
+    TranspositionTable* tt,
     int num_workers,
     int simulations_per_move,
     size_t max_buffer_size,
@@ -27,6 +28,7 @@ SelfPlay::SelfPlay(
     double dirichlet_epsilon
 ) :
     network_handle_(network), 
+    tt_handle_(tt),
     num_workers_(num_workers),
     simulations_per_move_(simulations_per_move),
     max_buffer_size_(max_buffer_size),
@@ -81,9 +83,9 @@ void SelfPlay::process_worker_batch(
            continue;
       }
       EvaluationRequest req;
-      req.state_floats = board_to_floats(leaf_node->get_board());
-      futures.push_back(evaluator_->submit_request(std::move(req)));
-      pending_batch[i].pending_request_id = req.request_id; 
+      req.position_hash = leaf_node->get_board().get_position_key();
+      req.state_floats = board_to_floats(leaf_node->get_board());    
+      futures.push_back(evaluator_->submit_request(std::move(req))); // Implicit mapping: futures[i] corresponds exactly to pending_batch[i]
   }
 
   for (size_t i = 0; i < batch_size; ++i) {
@@ -95,6 +97,17 @@ void SelfPlay::process_worker_batch(
       try {
           EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
+
+          // --- Store in Transposition Table ---
+          if (tt_handle_) {
+              tt_handle_->store(
+                  leaf_node->get_board().get_position_key(), // Key
+                  result.policy_logits,       // Data from NN
+                  result.value,                            // Data from NN
+                  pending_batch[i].move_count                // Age (from local SimulationState)
+              );
+          }
+          // ------------------------------------------------
 
           // 1. Process Policy (Standard)
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
@@ -249,11 +262,17 @@ void SelfPlay::run_game_simulation(
               root_noise_applicable = false; // Prevent double application
           }
 
+          // Pack Game ID (High 16 bits) and Move Count (Low 16 bits) into a single age value.
+          // This ensures entries from the current game (game_idx) are treated as "newer" 
+          // than entries from previous games in the same batch (game_idx - 1), preventing stale TT entries 
+          // from blocking updates during the early moves of a new game.
+          uint32_t current_age = (static_cast<uint32_t>(game_idx) << 16) | (static_cast<uint32_t>(move_count) & 0xFFFF);
 
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;
               current_mcts_path.current_node = &current_root_ref;
               current_mcts_path.path.push_back(current_mcts_path.current_node);
+              current_mcts_path.move_count = current_age;
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
@@ -277,13 +296,31 @@ void SelfPlay::run_game_simulation(
                   std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map_terminal);
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
+                  // Probe TT before batching for NN
+                  if (tt_handle_) {
+                      auto cached = tt_handle_->probe(leaf_node->get_board().get_position_key());
+                      if (cached) {
+                          // Cache Hit: Expand and Backprop immediately
+                          std::map<Move, double> policy_probs = process_policy(cached->policy_logits, leaf_node->get_board());
+                          if (!policy_probs.empty()) leaf_node->expand(policy_probs);
+                          
+                          std::array<double, 4> player_values_absolute;
+                          int cp_idx = static_cast<int>(leaf_node->get_board().get_current_player());
+                          for(int rel_i = 0; rel_i < 4; ++rel_i) {
+                              player_values_absolute[(cp_idx + rel_i) % 4] = static_cast<double>(cached->value[rel_i]);
+                          }
+                          backpropagate_mcts_value(current_mcts_path.path, player_values_absolute);
+                          continue; // Simulation complete, skip NN queue
+                      }
+                  }
+
                   leaf_node->increment_pending_visits();
                   pending_worker_batch.push_back(std::move(current_mcts_path));
                   if (pending_worker_batch.size() >= static_cast<size_t>(worker_batch_size_)) {
                       process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
                   }
               }
-          } 
+          }
 
           if (!pending_worker_batch.empty()) {
               process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);

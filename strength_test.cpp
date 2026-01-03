@@ -16,7 +16,7 @@
 #include <iomanip>   
 #include <map>       
 #include <memory>    
-#include <random> // Required for random opening
+#include <random> 
 
 namespace fs = std::filesystem;
 
@@ -85,7 +85,21 @@ void run_strength_test(
     double total_game_time = 0.0;
     std::map<int, int> new_model_rank_counts = {{1,0}, {2,0}, {3,0}, {4,0}};
 
+    // --- Initialize 4 separate Transposition Tables (256MB each) ---
+    std::cout << "  Initializing 4 separate Transposition Tables (256MB each)..." << std::endl;
+    std::map<Player, std::unique_ptr<TranspositionTable>> player_tts;
+    player_tts[Player::RED]    = std::make_unique<TranspositionTable>(256);
+    player_tts[Player::BLUE]   = std::make_unique<TranspositionTable>(256);
+    player_tts[Player::YELLOW] = std::make_unique<TranspositionTable>(256);
+    player_tts[Player::GREEN]  = std::make_unique<TranspositionTable>(256);
+
     for (int game_idx = 0; game_idx < num_games; ++game_idx) {
+        
+        // Clear all TTs before starting a new game
+        for(auto& pair : player_tts) {
+            pair.second->clear();
+        }
+
         auto game_start_time = std::chrono::high_resolution_clock::now();
         Board board; 
 
@@ -100,22 +114,30 @@ void run_strength_test(
         }
 
         Player new_model_player = static_cast<Player>(game_idx % 4);
+
+        int move_count = 0;
         
         while (!board.is_game_over()) {
             Player current_player = board.get_current_player();
+            
+            // Select the Network (Model) based on who is playing
             Model* current_network_ptr = (current_player == new_model_player) ? new_network.get() : old_network.get();
 
-            // --- TREE REUSE DISABLED FOR FAIR TESTING ---
-            // By declaring the root shared_ptr here inside the move loop, it is reset to 
-            // nullptr every turn. get_best_move_mcts_sync will detect the nullptr 
-            // and create a fresh root from the current board state.
+            // Select the Transposition Table based on the Seat (Player Color)
+            TranspositionTable* current_tt_ptr = player_tts[current_player].get();
+
+            // Note: Tree reuse is disabled in strength tests for fair testing (ptr reset to null every move)
             std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
-                board, current_network_ptr, simulations_per_move, 
+                board, 
+                current_network_ptr, 
+                simulations_per_move, 
                 mcts_root_node_strength_test, 
                 2.5, 
-                mcts_batch_size
+                mcts_batch_size,
+                current_tt_ptr, // Pass the specific TT for this player
+                static_cast<uint32_t>(move_count++)
             );
 
             if (best_move_opt) {

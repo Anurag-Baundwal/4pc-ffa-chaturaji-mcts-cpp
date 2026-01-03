@@ -15,7 +15,6 @@ Evaluator::Evaluator(Model* network, int max_batch_size) :
     if (!network_) {
         throw std::runtime_error("Evaluator received a null network pointer.");
     }
-    // ONNX Runtime models are ready to run upon loading; no need for .to(device) or .eval()
 }
 
 Evaluator::~Evaluator() {
@@ -42,9 +41,9 @@ void Evaluator::stop() {
 }
 
 std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest request) {
-    request.request_id = next_request_id_++;
     std::promise<EvaluationResult> result_promise;
     std::future<EvaluationResult> result_future = result_promise.get_future();
+    request.request_id = next_request_id_++;
 
     request_queue_.push({std::move(request), std::move(result_promise)});
     return result_future;
@@ -83,8 +82,8 @@ void Evaluator::evaluation_loop() {
         // 3. Prepare requests for ONNX Model
         std::vector<EvaluationRequest> requests_for_nn;
         requests_for_nn.reserve(batch_with_promises.size());
-        for (const auto& pair : batch_with_promises) {
-            requests_for_nn.push_back(pair.first); 
+        for (auto& pair : batch_with_promises) { 
+            requests_for_nn.push_back(std::move(pair.first)); 
         }
 
         // 4. Perform Batched Inference

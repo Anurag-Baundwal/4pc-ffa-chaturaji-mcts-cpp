@@ -29,6 +29,7 @@ class SelfPlay {
 public:
     SelfPlay(
         Model* network, 
+        TranspositionTable* tt = nullptr,
         int num_workers = 4,
         int simulations_per_move = 100,
         size_t max_buffer_size = 1250000,
@@ -78,6 +79,7 @@ private:
     );
 
     Model* network_handle_; // Non-owning pointer
+    TranspositionTable* tt_handle_;
     int num_workers_;
     int simulations_per_move_;
     size_t max_buffer_size_;

@@ -47,7 +47,8 @@ void train(
   double dirichlet_alpha,
   double dirichlet_epsilon,
   const std::string& model_save_dir_base,
-  const std::string& initial_model_path)
+  const std::string& initial_model_path,
+  TranspositionTable* tt) 
 {
   // 1. PRE-CHECK LOAD MODEL
   if (!initial_model_path.empty() && !fs::exists(initial_model_path)) {
@@ -107,8 +108,10 @@ void train(
 
   // 4. MAIN LOOP
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
-      int current_global_iter = start_iteration + iteration + 1; // +1 because we are working on the *next* model
+      if (tt) tt->clear(); // Ensure we don't use evaluations from the previous model version
       
+      int current_global_iter = start_iteration + iteration + 1; // +1 because we are working on the *next* model
+
       // === AUTOMATED LR SCHEDULER LOGIC ===
       if (current_global_iter >= 1900) {
           if (learning_rate > 0.00001) {
@@ -139,6 +142,7 @@ void train(
       {
           SelfPlay self_play_generator(
               network.get(), 
+              tt,
               num_workers, 
               simulations_per_move, 
               max_buffer_size, 

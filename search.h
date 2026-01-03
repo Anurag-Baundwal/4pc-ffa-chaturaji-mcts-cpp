@@ -9,6 +9,7 @@
 #include "board.h"     
 #include "mcts_node.h" 
 #include "model.h"     
+#include "transposition_table.h"
 #include "types.h"     
 #include "utils.h"     
 
@@ -23,6 +24,7 @@ struct SimulationState {
   MCTSNode* current_node = nullptr; 
   std::vector<MCTSNode*> path;      
   std::optional<RequestId> pending_request_id = std::nullopt;
+  uint32_t move_count = 0;
 };
 
 /**
@@ -47,7 +49,9 @@ std::optional<Move> get_best_move_mcts_sync(
     int simulations,
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr, 
     double c_puct = 2.5,
-    int mcts_batch_size = 16 
+    int mcts_batch_size = 16,
+    TranspositionTable* tt = nullptr,
+    uint32_t move_count = 0
 );
 
 std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores);

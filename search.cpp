@@ -83,37 +83,19 @@ void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::arr
 
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
-  Model* network)
+  Model* network,
+  TranspositionTable* tt) 
 {
   if (pending_eval.empty()) return;
 
-  // 1. Prepare Requests
-  std::vector<EvaluationRequest> requests;
-  requests.reserve(pending_eval.size());
+  // --- HELPER LAMBDA: Defines how to process a result (Used for both Cache Hits and NN Results) ---
+  auto process_result_logic = [](SimulationState& state, const EvaluationResult& result) {
+      MCTSNode* leaf_node = state.current_node;
+      const std::vector<MCTSNode*>& path = state.path;
 
-  for (size_t i = 0; i < pending_eval.size(); ++i) {
-      EvaluationRequest req;
-      req.request_id = static_cast<RequestId>(i); // Use index as ID for sync correlation
-      req.state_floats = board_to_floats(pending_eval[i].current_node->get_board());
-      requests.push_back(std::move(req));
-  }
+      if (!leaf_node) return;
 
-  // 2. Run Inference (Synchronous)
-  std::vector<EvaluationResult> results = network->evaluate_batch(requests);
-
-  // 3. Process Results
-  for (const auto& result : results) {
-      // Because we used index as request_id and it's synchronous, we can map back directly.
-      // However, robustness check is good.
-      size_t idx = static_cast<size_t>(result.request_id);
-      if (idx >= pending_eval.size()) continue;
-
-      const SimulationState& sim_state = pending_eval[idx];
-      MCTSNode* leaf_node = sim_state.current_node;
-      const std::vector<MCTSNode*>& path = sim_state.path;
-
-      if (!leaf_node) continue;
-
+      // 1. Policy Expansion
       std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
 
       if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
@@ -122,9 +104,7 @@ void evaluate_and_expand_batch_sync(
            }
       } 
       
-      // --- Un-rotate the values ---
-      // The NN returns values [Relative0, Relative1, Relative2, Relative3]
-      // where 0 is "Current Player". We need to map this back to [Red, Blue, Yellow, Green]
+      // 2. Value Backpropagation (Un-rotate values)
       std::array<double, 4> player_values_absolute;
       Player cp = leaf_node->get_board().get_current_player();
       int cp_idx = static_cast<int>(cp);
@@ -135,7 +115,66 @@ void evaluate_and_expand_batch_sync(
       }
 
       backpropagate_mcts_value(path, player_values_absolute);
+  };
+  // -----------------------------------------------------------------------------------------
+
+  std::vector<EvaluationRequest> requests;
+  requests.reserve(pending_eval.size()); // Keep this!
+  
+  // Maps index in 'requests' back to index in 'pending_eval'
+  std::vector<size_t> pending_indices; 
+  pending_indices.reserve(pending_eval.size());
+
+  for (size_t i = 0; i < pending_eval.size(); ++i) {
+      ZobristKey hash = pending_eval[i].current_node->get_board().get_position_key();
+
+      // 1. TRY CACHE PROBE
+      if (tt) {
+          auto cached = tt->probe(hash);
+          if (cached) {
+              // CACHE HIT: Process immediately using lambda
+              process_result_logic(pending_eval[i], *cached);
+              continue; // Skip NN for this node
+          }
+      }
+
+      // 2. CACHE MISS: Prepare NN Request
+      EvaluationRequest req;
+      req.request_id = static_cast<RequestId>(i); 
+      req.position_hash = hash; // Important: Store hash so we can save to TT later
+      req.state_floats = board_to_floats(pending_eval[i].current_node->get_board());
+      
+      requests.push_back(std::move(req));
+      pending_indices.push_back(i);
   }
+
+  // If everything was a cache hit, we are done
+  if (requests.empty()) {
+      pending_eval.clear();
+      return;
+  }
+
+  // 3. Run Inference (Synchronous) for the misses
+  std::vector<EvaluationResult> results = network->evaluate_batch(requests);
+
+  // 4. Process NN Results
+  for (size_t i = 0; i < results.size(); ++i) {
+      size_t original_index = pending_indices[i];
+      
+      // Get the move_count from the simulation state that generated this request
+      // This solves the race condition by using the specific age of this specific simulation.
+      uint32_t age_for_entry = pending_eval[original_index].move_count;
+
+      if (tt) {
+          tt->store(requests[i].position_hash, 
+                    results[i].policy_logits, 
+                    results[i].value, 
+                    age_for_entry);
+      }
+
+      process_result_logic(pending_eval[original_index], results[i]);
+  }
+
   pending_eval.clear();
 }
 
@@ -144,15 +183,18 @@ void run_mcts_simulations_sync(
   Model* network,
   int simulations,
   double c_puct,
-  int batch_size) 
+  int batch_size,
+  TranspositionTable* tt,
+  uint32_t age)
 {
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
       SimulationState root_state;
       root_state.current_node = &root;
       root_state.path.push_back(&root);
+      root_state.move_count = age; // Initialize age for root evaluation
       initial_eval.push_back(std::move(root_state));
-      evaluate_and_expand_batch_sync(initial_eval, network);
+      evaluate_and_expand_batch_sync(initial_eval, network, tt);
       return; 
   }
 
@@ -163,6 +205,7 @@ void run_mcts_simulations_sync(
       SimulationState current_sim;
       current_sim.current_node = &root;
       current_sim.path.push_back(current_sim.current_node);
+      current_sim.move_count = age; // Initialize age for this simulation path
 
       while (!current_sim.current_node->is_leaf()) {
            MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
@@ -192,12 +235,12 @@ void run_mcts_simulations_sync(
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
           if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
-              evaluate_and_expand_batch_sync(pending_evaluation, network);
+              evaluate_and_expand_batch_sync(pending_evaluation, network, tt);
           }
       }
       next_simulation_sync:; 
   } 
-  evaluate_and_expand_batch_sync(pending_evaluation, network);
+  evaluate_and_expand_batch_sync(pending_evaluation, network, tt);
 }
 
 
@@ -207,7 +250,9 @@ std::optional<Move> get_best_move_mcts_sync(
     int simulations,
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
-    int mcts_batch_size) 
+    int mcts_batch_size,
+    TranspositionTable* tt,
+    uint32_t move_count)
 {
     if (board.is_game_over()) {
       current_mcts_root_shptr = nullptr;
@@ -220,8 +265,9 @@ std::optional<Move> get_best_move_mcts_sync(
         current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
     }
     
-    // ONNX models don't need explicit .eval() mode setting like Libtorch
-    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size); 
+    // Pass move_count (age) down through the simulation layers
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size, tt, move_count); 
+ 
 
     const auto& children_const_ref = current_mcts_root_shptr->get_children();
     if (children_const_ref.empty()) {

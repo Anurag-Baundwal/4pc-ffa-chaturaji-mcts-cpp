@@ -12,6 +12,7 @@
 #include "model.h" // Uses the new ONNX-based Model class
 #include "types.h" 
 #include "thread_safe_queue.h" 
+#include "transposition_table.h"
 
 namespace chaturaji_cpp {
 
