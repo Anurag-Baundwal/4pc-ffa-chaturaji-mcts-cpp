@@ -10,6 +10,8 @@ TranspositionTable::TranspositionTable(size_t size_in_mb) {
     num_buckets_ = (size_in_mb * 1024 * 1024) / bytes_per_bucket;
     if (num_buckets_ < 2) num_buckets_ = 2;
     table_ = std::vector<Bucket>(num_buckets_);
+    hits_ = 0;
+    misses_ = 0;
     std::cout << "[TT] Optimized Probabilities Mode | Size: " << size_in_mb << " MB" << std::endl;
 }
 
@@ -68,9 +70,11 @@ std::optional<TTData> TranspositionTable::probe(ZobristKey key) {
 
     for (int i = 0; i < TT_CLUSTER_SIZE; ++i) {
         if (bucket.entries[i].key == key) {
+            hits_++;
             return TTData{ bucket.entries[i].value, bucket.entries[i].num_moves, bucket.entries[i].policy_sparse };
         }
     }
+    misses_++;
     return std::nullopt;
 }
 
@@ -80,6 +84,14 @@ void TranspositionTable::clear() {
         for (int i = 0; i < TT_CLUSTER_SIZE; ++i) bucket.entries[i].key = 0;
         bucket.release();
     }
+}
+
+double TranspositionTable::get_hit_rate() const {
+    uint64_t h = hits_.load();
+    uint64_t m = misses_.load();
+    uint64_t total = h + m;
+    if (total == 0) return 0.0;
+    return static_cast<double>(h) / static_cast<double>(total);
 }
 
 } // namespace chaturaji_cpp

@@ -246,6 +246,12 @@ int main(int argc, char* argv[]) {
              num_searches++;
 
              std::cout << "Search completed in " << execution_time.count() << " seconds." << std::endl;
+             
+             // Display Transposition Table Hit Rate
+             double hit_rate = tt->get_hit_rate();
+             std::cout << "TT Stats: " << std::fixed << std::setprecision(2) << (hit_rate * 100.0) << "% Hit Rate (" 
+                       << tt->get_hits() << " hits / " 
+                       << (tt->get_hits() + tt->get_misses()) << " probes)" << std::endl;
 
              if (best_move_opt) {
                  chaturaji_cpp::Move best_move = *best_move_opt;

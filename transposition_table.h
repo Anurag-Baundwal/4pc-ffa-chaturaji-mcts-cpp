@@ -53,6 +53,12 @@ public:
 
     void clear();
 
+    // --- Statistics ---
+    double get_hit_rate() const;
+    uint64_t get_hits() const { return hits_.load(); }
+    uint64_t get_misses() const { return misses_.load(); }
+    void reset_stats() { hits_ = 0; misses_ = 0; }
+
 private:
     struct Bucket {
         std::atomic_flag lock = ATOMIC_FLAG_INIT;
@@ -63,6 +69,9 @@ private:
 
     std::vector<Bucket> table_;
     size_t num_buckets_;
+
+    std::atomic<uint64_t> hits_{0};
+    std::atomic<uint64_t> misses_{0};
 };
 
 } // namespace chaturaji_cpp
