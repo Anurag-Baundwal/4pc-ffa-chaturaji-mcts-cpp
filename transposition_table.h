@@ -5,22 +5,22 @@
 #include <atomic>
 #include <optional>
 #include <cstdint>
+#include <map>
 #include "types.h"
 
 namespace chaturaji_cpp {
 
 // Configuration
-constexpr int TT_MAX_MOVES = 32;       // Top-32 moves cover almost all probability mass
-constexpr float TT_MIN_LOGIT = -20.0f; // Softmax(exp(-20)) is effectively zero
-constexpr int TT_CLUSTER_SIZE = 3;     // 3-way associativity (3 entries per bucket)
+constexpr int TT_MAX_MOVES = 32;       
+constexpr float TT_MIN_PROB = 0.0001f; 
+constexpr int TT_CLUSTER_SIZE = 4;     
 
 #pragma pack(push, 1)
 struct SparsePolicyEntry {
     uint16_t move_idx;
-    float logit;
+    float prob; 
 };
 
-// Align to 64 bytes for cache-aligned memory access (Entry spans ~4 cache lines)
 struct alignas(64) TTEntry {
     ZobristKey key = 0;
     std::array<float, NN_VALUE_SIZE> value;
@@ -28,34 +28,28 @@ struct alignas(64) TTEntry {
     uint16_t num_moves = 0;
     SparsePolicyEntry policy_sparse[TT_MAX_MOVES];
 
-    // Helper to check if entry is empty
     bool is_empty() const { return key == 0; }
 };
 #pragma pack(pop)
 
+// This struct is used to pass TT data back to search quickly
+struct TTData {
+    std::array<float, NN_VALUE_SIZE> value;
+    uint16_t num_moves;
+    const SparsePolicyEntry* policy_entries;
+};
+
 class TranspositionTable {
 public:
-    /**
-     * @param size_in_mb Total memory to allocate.
-     */
     TranspositionTable(size_t size_in_mb = 1024);
 
-    // Disable copying
-    TranspositionTable(const TranspositionTable&) = delete;
-    TranspositionTable& operator=(const TranspositionTable&) = delete;
-
-    /**
-     * Stores a position. Uses stack-based Top-K sorting.
-     */
     void store(ZobristKey key, 
-               const std::array<float, NN_POLICY_SIZE>& full_policy_logits, 
                const std::array<float, NN_VALUE_SIZE>& value,
+               const std::map<Move, double>& policy_probs,
+               Player p,
                uint32_t age);
 
-    /**
-     * Probes for a position. Lock-protected per bucket.
-     */
-    std::optional<EvaluationResult> probe(ZobristKey key);
+    std::optional<TTData> probe(ZobristKey key);
 
     void clear();
 
@@ -63,8 +57,6 @@ private:
     struct Bucket {
         std::atomic_flag lock = ATOMIC_FLAG_INIT;
         TTEntry entries[TT_CLUSTER_SIZE];
-
-        // Lightweight spinlock
         void acquire() { while (lock.test_and_set(std::memory_order_acquire)); }
         void release() { lock.clear(std::memory_order_release); }
     };

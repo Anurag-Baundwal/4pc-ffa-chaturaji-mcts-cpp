@@ -86,96 +86,118 @@ void evaluate_and_expand_batch_sync(
   Model* network,
   TranspositionTable* tt) 
 {
-  if (pending_eval.empty()) return;
+    if (pending_eval.empty()) return;
 
-  // --- HELPER LAMBDA: Defines how to process a result (Used for both Cache Hits and NN Results) ---
-  auto process_result_logic = [](SimulationState& state, const EvaluationResult& result) {
-      MCTSNode* leaf_node = state.current_node;
-      const std::vector<MCTSNode*>& path = state.path;
+    // Vectors to track items that actually need Neural Network evaluation
+    std::vector<EvaluationRequest> requests;
+    requests.reserve(pending_eval.size());
+    
+    // Maps the index in 'requests' back to the original index in 'pending_eval'
+    std::vector<size_t> pending_indices; 
+    pending_indices.reserve(pending_eval.size());
 
-      if (!leaf_node) return;
+    for (size_t i = 0; i < pending_eval.size(); ++i) {
+        MCTSNode* leaf_node = pending_eval[i].current_node;
+        ZobristKey hash = leaf_node->get_board().get_position_key();
+        Player cp = leaf_node->get_board().get_current_player();
 
-      // 1. Policy Expansion
-      std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+        // 1. --- TRANSPOSITION TABLE PROBE ---
+        if (tt) {
+            auto cached = tt->probe(hash); // Returns std::optional<TTData>
+            if (cached) {
+                // CACHE HIT: TT contains pre-calculated probabilities.
+                // We bypass process_policy() and the expensive softmax math.
+                std::map<Move, double> policy_probs;
+                
+                // cached->policy_entries is a pointer to the sparse top-N moves
+                for (int j = 0; j < cached->num_moves; ++j) {
+                    const auto& entry = cached->policy_entries[j];
+                    Move m = policy_index_to_move(entry.move_idx, cp);
+                    policy_probs[m] = static_cast<double>(entry.prob);
+                }
 
-      if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
-           if (!policy_probs.empty()) {
+                // Expand node if it's a leaf and game isn't over
+                if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
+                    if (!policy_probs.empty()) {
+                        leaf_node->expand(policy_probs);
+                    }
+                } 
+
+                // Value Backpropagation (Rotate relative values back to absolute player indices)
+                std::array<double, 4> player_values_absolute;
+                int cp_idx = static_cast<int>(cp);
+                for (int rel_i = 0; rel_i < 4; ++rel_i) {
+                    int abs_p_idx = (cp_idx + rel_i) % 4;
+                    player_values_absolute[abs_p_idx] = static_cast<double>(cached->value[rel_i]);
+                }
+
+                backpropagate_mcts_value(pending_eval[i].path, player_values_absolute);
+                
+                // This simulation is finished, don't add to NN requests
+                continue; 
+            }
+        }
+
+        // 2. --- CACHE MISS: PREPARE NN REQUEST ---
+        EvaluationRequest req;
+        req.request_id = static_cast<RequestId>(i); 
+        req.position_hash = hash;
+        req.state_floats = board_to_floats(leaf_node->get_board());
+        
+        requests.push_back(std::move(req));
+        pending_indices.push_back(i);
+    }
+
+    // If every simulation was a cache hit, we are done
+    if (requests.empty()) {
+        pending_eval.clear();
+        return;
+    }
+
+    // 3. --- RUN BATCHED INFERENCE (Synchronous) ---
+    std::vector<EvaluationResult> results = network->evaluate_batch(requests);
+
+    // 4. --- PROCESS NEURAL NETWORK RESULTS ---
+    for (size_t i = 0; i < results.size(); ++i) {
+        size_t original_index = pending_indices[i];
+        SimulationState& sim_state = pending_eval[original_index];
+        MCTSNode* leaf_node = sim_state.current_node;
+        Player cp = leaf_node->get_board().get_current_player();
+
+        // Perform Softmax and filter legal moves (The expensive part)
+        std::map<Move, double> policy_probs = process_policy(results[i].policy_logits, leaf_node->get_board());
+
+        // STORE IN TT: We store the post-softmax probabilities and the rotated value array.
+        // This ensures the next time we see this position, we skip the logic above.
+        if (tt) {
+            tt->store(
+                requests[i].position_hash, 
+                results[i].value, 
+                policy_probs, 
+                cp, 
+                sim_state.move_count
+            );
+        }
+
+        // Expand node
+        if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
+            if (!policy_probs.empty()) {
                 leaf_node->expand(policy_probs);
-           }
-      } 
-      
-      // 2. Value Backpropagation (Un-rotate values)
-      std::array<double, 4> player_values_absolute;
-      Player cp = leaf_node->get_board().get_current_player();
-      int cp_idx = static_cast<int>(cp);
+            }
+        } 
+        
+        // Value Backpropagation (Un-rotate values)
+        std::array<double, 4> player_values_absolute;
+        int cp_idx = static_cast<int>(cp);
+        for (int rel_i = 0; rel_i < 4; ++rel_i) {
+            int abs_p_idx = (cp_idx + rel_i) % 4;
+            player_values_absolute[abs_p_idx] = static_cast<double>(results[i].value[rel_i]);
+        }
 
-      for(int rel_i = 0; rel_i < 4; ++rel_i) {
-          int abs_p_idx = (cp_idx + rel_i) % 4;
-          player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
-      }
+        backpropagate_mcts_value(sim_state.path, player_values_absolute);
+    }
 
-      backpropagate_mcts_value(path, player_values_absolute);
-  };
-  // -----------------------------------------------------------------------------------------
-
-  std::vector<EvaluationRequest> requests;
-  requests.reserve(pending_eval.size()); // Keep this!
-  
-  // Maps index in 'requests' back to index in 'pending_eval'
-  std::vector<size_t> pending_indices; 
-  pending_indices.reserve(pending_eval.size());
-
-  for (size_t i = 0; i < pending_eval.size(); ++i) {
-      ZobristKey hash = pending_eval[i].current_node->get_board().get_position_key();
-
-      // 1. TRY CACHE PROBE
-      if (tt) {
-          auto cached = tt->probe(hash);
-          if (cached) {
-              // CACHE HIT: Process immediately using lambda
-              process_result_logic(pending_eval[i], *cached);
-              continue; // Skip NN for this node
-          }
-      }
-
-      // 2. CACHE MISS: Prepare NN Request
-      EvaluationRequest req;
-      req.request_id = static_cast<RequestId>(i); 
-      req.position_hash = hash; // Important: Store hash so we can save to TT later
-      req.state_floats = board_to_floats(pending_eval[i].current_node->get_board());
-      
-      requests.push_back(std::move(req));
-      pending_indices.push_back(i);
-  }
-
-  // If everything was a cache hit, we are done
-  if (requests.empty()) {
-      pending_eval.clear();
-      return;
-  }
-
-  // 3. Run Inference (Synchronous) for the misses
-  std::vector<EvaluationResult> results = network->evaluate_batch(requests);
-
-  // 4. Process NN Results
-  for (size_t i = 0; i < results.size(); ++i) {
-      size_t original_index = pending_indices[i];
-      
-      // Get the move_count from the simulation state that generated this request
-      // This solves the race condition by using the specific age of this specific simulation.
-      uint32_t age_for_entry = pending_eval[original_index].move_count;
-
-      if (tt) {
-          tt->store(requests[i].position_hash, 
-                    results[i].policy_logits, 
-                    results[i].value, 
-                    age_for_entry);
-      }
-
-      process_result_logic(pending_eval[original_index], results[i]);
-  }
-
-  pending_eval.clear();
+    pending_eval.clear();
 }
 
 void run_mcts_simulations_sync( 

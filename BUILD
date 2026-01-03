@@ -135,7 +135,11 @@ cc_library(
     srcs = ["transposition_table.cpp"],
     hdrs = ["transposition_table.h"],
     copts = ["/std:c++17"],
-    deps = [":chaturaji_types"],
+    deps = [
+        ":chaturaji_types",
+        ":chaturaji_utils",
+        ":chaturaji_board",
+    ],
 )
 
 # === Self-Play and Training ===

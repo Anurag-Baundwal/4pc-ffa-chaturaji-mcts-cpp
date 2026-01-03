@@ -98,20 +98,21 @@ void SelfPlay::process_worker_batch(
           EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
 
-          // --- Store in Transposition Table ---
-          if (tt_handle_) {
-              tt_handle_->store(
-                  leaf_node->get_board().get_position_key(), // Key
-                  result.policy_logits,       // Data from NN
-                  result.value,                            // Data from NN
-                  pending_batch[i].move_count                // Age (from local SimulationState)
-              );
-          }
-          // ------------------------------------------------
-
-          // 1. Process Policy (Standard)
+          // 1. Process Policy (Convert NN Logits to a probability map)
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
           bool is_root_node_eval = (leaf_node == path[0]); 
+
+          // 2. --- STORE IN TRANSPOSITION TABLE ---
+          if (tt_handle_) {
+              // Updated call: requires the processed policy_probs map and the player
+              tt_handle_->store(
+                  leaf_node->get_board().get_position_key(), 
+                  result.value, 
+                  policy_probs, 
+                  leaf_node->get_board().get_current_player(),
+                  pending_batch[i].move_count
+              );
+          }
 
           if (!policy_probs.empty()) {
               if (is_root_node_eval && root_noise_applicable) {
@@ -119,28 +120,21 @@ void SelfPlay::process_worker_batch(
                   root_noise_applicable = false; 
               }
               if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
-                   leaf_node->expand(policy_probs);
+                  leaf_node->expand(policy_probs);
               }
           }
           
-          // 2. Process Value - CRITICAL FIX HERE
-          // The NN returns values relative to the current player of the *leaf node*.
-          // We must rotate them back to absolute player indices for the MCTS tree.
+          // 3. Process Value (Un-rotate values)
           std::array<double, 4> player_values_absolute;
-          
-          
           Player cp = leaf_node->get_board().get_current_player();
           int cp_idx = static_cast<int>(cp);
-
           for(int rel_i = 0; rel_i < 4; ++rel_i) {
-              // Map Relative Index (0=Current, 1=Next...) back to Absolute Index (Red/Blue...)
               int abs_p_idx = (cp_idx + rel_i) % 4;
               player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
           }
-
           backpropagate_mcts_value(path, player_values_absolute); 
 
-      } catch (const std::future_error& e) {
+      } catch  (const std::future_error& e) {
           std::cerr << "Future error processing worker batch item " << i << ": " << e.what() << std::endl;
           if (leaf_node) leaf_node->decrement_pending_visits();
       } catch (const std::exception& e) {
@@ -300,12 +294,22 @@ void SelfPlay::run_game_simulation(
                   if (tt_handle_) {
                       auto cached = tt_handle_->probe(leaf_node->get_board().get_position_key());
                       if (cached) {
-                          // Cache Hit: Expand and Backprop immediately
-                          std::map<Move, double> policy_probs = process_policy(cached->policy_logits, leaf_node->get_board());
-                          if (!policy_probs.empty()) leaf_node->expand(policy_probs);
+                          // CACHE HIT: TTData contains a sparse list of probabilities.
+                          // We reconstruct the map directly instead of calling process_policy.
+                          std::map<Move, double> policy_probs;
+                          Player p = leaf_node->get_board().get_current_player();
+                          
+                          for (int j = 0; j < cached->num_moves; ++j) {
+                              Move m = policy_index_to_move(cached->policy_entries[j].move_idx, p);
+                              policy_probs[m] = static_cast<double>(cached->policy_entries[j].prob);
+                          }
+
+                          if (!policy_probs.empty() && leaf_node->is_leaf()) {
+                              leaf_node->expand(policy_probs);
+                          }
                           
                           std::array<double, 4> player_values_absolute;
-                          int cp_idx = static_cast<int>(leaf_node->get_board().get_current_player());
+                          int cp_idx = static_cast<int>(p);
                           for(int rel_i = 0; rel_i < 4; ++rel_i) {
                               player_values_absolute[(cp_idx + rel_i) % 4] = static_cast<double>(cached->value[rel_i]);
                           }
