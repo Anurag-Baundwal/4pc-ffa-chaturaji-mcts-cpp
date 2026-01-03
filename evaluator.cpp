@@ -82,8 +82,8 @@ void Evaluator::evaluation_loop() {
         // 3. Prepare requests for ONNX Model
         std::vector<EvaluationRequest> requests_for_nn;
         requests_for_nn.reserve(batch_with_promises.size());
-        for (const auto& pair : batch_with_promises) {
-            requests_for_nn.push_back(pair.first); 
+        for (auto& pair : batch_with_promises) { 
+            requests_for_nn.push_back(std::move(pair.first)); 
         }
 
         // 4. Perform Batched Inference
