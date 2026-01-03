@@ -34,8 +34,8 @@ void TranspositionTable::store(ZobristKey key,
     for (float l : full_policy_logits) if (l > max_logit) max_logit = l;
 
     // 2. Thresholding: Only keep "significant" moves
-    // Logits more than 15.0 below max contribute effectively 0 to probability
-    float threshold = max_logit - 15.0f;
+    // Logits below this threshold contribute effectively 0 to probability
+    float threshold = max_logit + TT_MIN_LOGIT;
     int valid_count = 0;
     for (int i = 0; i < NN_POLICY_SIZE; ++i) {
         if (full_policy_logits[i] > threshold) {
@@ -103,7 +103,7 @@ std::optional<EvaluationResult> TranspositionTable::probe(ZobristKey key) {
     // Found match - Decompress
     EvaluationResult res;
     // Note: request_id should be set by the caller (Evaluator)
-    std::fill(res.policy_logits.begin(), res.policy_logits.end(), -100.0f); // Default to very low
+    std::fill(res.policy_logits.begin(), res.policy_logits.end(), TT_MIN_LOGIT); // Default to very low
 
     for (int i = 0; i < match->num_moves; ++i) {
         res.policy_logits[match->policy_sparse[i].move_idx] = match->policy_sparse[i].logit;

@@ -20,7 +20,7 @@ struct SparsePolicyEntry {
     float logit;
 };
 
-// Align to 64 bytes to match CPU cache lines
+// Align to 64 bytes for cache-aligned memory access (Entry spans ~4 cache lines)
 struct alignas(64) TTEntry {
     ZobristKey key = 0;
     std::array<float, NN_VALUE_SIZE> value;
