@@ -130,7 +130,7 @@ void train(
       }
       // ====================================
 
-      std::cout << "\n========== ITERATION " << current_global_iter << " (Run Step " << (iteration + 1) << "/" << num_iterations << ") ==========" << std::endl;
+      std::cout << "\n========== ITERATION " << current_global_iter << " (" << (iteration + 1) << "/" << num_iterations << ") ==========" << std::endl;
 
       size_t points_generated = 0;
       double duration_sec = 0.0;
