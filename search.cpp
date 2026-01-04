@@ -56,10 +56,11 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
 
     if (legal_logits.empty()) return policy_probs;
 
-    // 2. Compute Softmax manually
+    // 2. Compute Softmax manually with temperature scaling
     float sum_exp = 0.0f;
+    const float policy_temperature = 1.36f; 
     for (float& val : legal_logits) {
-        val = std::exp(val - max_logit); // Subtract max for stability
+        val = std::exp((val - max_logit) / policy_temperature); // Subtract max for stability and apply temperature
         sum_exp += val;
     }
 
