@@ -106,8 +106,7 @@ void train(
   }
 
   // 4. MAIN LOOP
-  for (int iteration = 0; iteration < num_iterations; ++iteration) {
-      int current_global_iter = start_iteration + iteration + 1; // +1 because we are working on the *next* model
+  for (int current_global_iter = start_iteration + 1; current_global_iter <= num_iterations; ++current_global_iter) {
       
       // === AUTOMATED LR SCHEDULER LOGIC ===
       if (current_global_iter >= 1900) {
@@ -130,7 +129,8 @@ void train(
       }
       // ====================================
 
-      std::cout << "\n========== ITERATION " << current_global_iter << " (" << (iteration + 1) << "/" << num_iterations << ") ==========" << std::endl;
+      std::cout << "\n========== ITERATION " << current_global_iter 
+                << " (" << current_global_iter << "/" << num_iterations << ") ==========" << std::endl;
 
       size_t points_generated = 0;
       double duration_sec = 0.0;
@@ -213,7 +213,7 @@ void train(
           current_weights_path = arch_onnx.string();
           network = std::make_unique<Model>(current_weights_path);
           
-          std::cout << "[C++] Finished iteration " << (iteration + 1) << ". Weights: " << arch_onnx.filename() << std::endl;
+          std::cout << "[C++] Finished iteration " << current_global_iter << ". Weights: " << arch_onnx.filename() << std::endl;
 
       } catch (const std::exception& e) {
           std::cerr << "[C++] Error during file archiving: " << e.what() << std::endl;
