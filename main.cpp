@@ -208,7 +208,7 @@ int main(int argc, char* argv[]) {
         int num_searches = 0;
         std::shared_ptr<chaturaji_cpp::MCTSNode> mcts_root_node_main = nullptr; 
 
-        int max_moves_to_play = 100;
+        int max_moves_to_play = 500;
         for (int i = 0; i < max_moves_to_play; ++i) {
             std::cout << "\nMove " << i + 1 << std::endl;
             std::cout << "Board state: " << std::endl;
