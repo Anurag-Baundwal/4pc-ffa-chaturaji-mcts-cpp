@@ -16,7 +16,7 @@
 #include <iomanip>   
 #include <map>       
 #include <memory>    
-#include <random> // Required for random opening
+#include <random> 
 
 namespace fs = std::filesystem;
 
@@ -64,7 +64,7 @@ void run_strength_test(
             old_network = std::make_unique<Model>(old_model_path);
             std::cout << "  Old Model Path:    " << old_model_path << std::endl;
         } else {
-            // Restore "Random Model" initialization similar to train.cpp
+            // Initialize a model with random weights
             std::cout << "  Old Model Path:    [NONE] - Initializing random weights..." << std::endl;
             std::string random_onnx = "temp_strength_random.onnx";
             std::string init_cmd = "python model.py export_random " + random_onnx;
@@ -106,16 +106,14 @@ void run_strength_test(
             Model* current_network_ptr = (current_player == new_model_player) ? new_network.get() : old_network.get();
 
             // --- TREE REUSE DISABLED FOR FAIR TESTING ---
-            // By declaring the root shared_ptr here inside the move loop, it is reset to 
-            // nullptr every turn. get_best_move_mcts_sync will detect the nullptr 
-            // and create a fresh root from the current board state.
             std::shared_ptr<MCTSNode> mcts_root_node_strength_test = nullptr; 
 
             std::optional<Move> best_move_opt = get_best_move_mcts_sync(
                 board, current_network_ptr, simulations_per_move, 
                 mcts_root_node_strength_test, 
                 2.5, 
-                mcts_batch_size
+                mcts_batch_size,
+                false // Disable verbose output for strength tests
             );
 
             if (best_move_opt) {
@@ -130,7 +128,6 @@ void run_strength_test(
         auto game_end_time = std::chrono::high_resolution_clock::now();
         total_game_time += std::chrono::duration<double>(game_end_time - game_start_time).count();
 
-        // Calculate Ranks
         Board::PlayerPointMap final_scores = board.get_game_result();
         std::vector<std::pair<Player, int>> results;
         for (int i = 0; i < 4; ++i) {
@@ -147,9 +144,7 @@ void run_strength_test(
         }
         
         if ((game_idx + 1) % 1 == 0 || (game_idx + 1) == num_games) {
-            // Calculate how many digits wide the game number needs to be
             int width = std::to_string(num_games).length();
-
             std::cout << "Game " 
                       << std::right << std::setw(width) << (game_idx + 1) 
                       << "/" 

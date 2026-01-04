@@ -227,12 +227,12 @@ int main(int argc, char* argv[]) {
              std::cout << "Searching for best move (Sims: " << simulations << ")..." << std::endl;
              auto start_time = std::chrono::high_resolution_clock::now();
 
-             // get_best_move_mcts_sync no longer takes torch::Device
              std::optional<chaturaji_cpp::Move> best_move_opt = chaturaji_cpp::get_best_move_mcts_sync( 
                   board, network.get(), simulations,
                   mcts_root_node_main, 
                   2.5, 
-                  mcts_sync_batch_size 
+                  mcts_sync_batch_size,
+                  true // Enable verbose output
               );
 
              auto end_time = std::chrono::high_resolution_clock::now();

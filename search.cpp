@@ -8,6 +8,7 @@
 #include <iostream> 
 #include <memory> 
 #include <cmath>
+#include <iomanip> // Added for std::setw, std::setprecision
 
 namespace chaturaji_cpp {
 
@@ -104,7 +105,6 @@ void evaluate_and_expand_batch_sync(
   // 3. Process Results
   for (const auto& result : results) {
       // Because we used index as request_id and it's synchronous, we can map back directly.
-      // However, robustness check is good.
       size_t idx = static_cast<size_t>(result.request_id);
       if (idx >= pending_eval.size()) continue;
 
@@ -207,7 +207,8 @@ std::optional<Move> get_best_move_mcts_sync(
     int simulations,
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
-    int mcts_batch_size) 
+    int mcts_batch_size,
+    bool verbose) 
 {
     if (board.is_game_over()) {
       current_mcts_root_shptr = nullptr;
@@ -215,13 +216,83 @@ std::optional<Move> get_best_move_mcts_sync(
     }
 
     if (current_mcts_root_shptr && current_mcts_root_shptr->get_board().get_position_key() == board.get_position_key()) {
-        // Reuse
+        // Reuse existing tree if hash matches
     } else {
         current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
     }
     
-    // ONNX models don't need explicit .eval() mode setting like Libtorch
+    // Run MCTS
     run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size); 
+
+    // --- VERBOSE OUTPUT START ---
+    if (verbose) {
+        std::cout << "--- Search Statistics ---" << std::endl;
+        int root_visits = current_mcts_root_shptr->get_visit_count();
+        auto root_values = current_mcts_root_shptr->get_total_player_values();
+
+        // Print expected rewards (Average Value)
+        std::cout << "Root Expected Rewards (+1.0 to -1.0):" << std::endl;
+        const char* player_colors[] = {"RED", "BLUE", "YELLOW", "GREEN"};
+        const char* color_codes[] = {"\033[31m", "\033[34m", "\033[33m", "\033[32m"}; // ANSI codes
+        const char* reset_code = "\033[0m";
+
+        for (int i = 0; i < 4; ++i) {
+            double avg_val = root_values[i] / std::max(1, root_visits);
+            std::cout << "  " << color_codes[i] << std::left << std::setw(7) << player_colors[i] 
+                      << reset_code << ": " << std::showpos << std::fixed << std::setprecision(4) 
+                      << avg_val << std::noshowpos;
+            if (i < 3) std::cout << "  ";
+        }
+        std::cout << std::endl << std::endl;
+
+        // Gather children for sorting
+        std::vector<MCTSNode*> children_ptrs;
+        const auto& children = current_mcts_root_shptr->get_children();
+        for(const auto& c : children) {
+            // Only consider visited children or those with high priors if few visits
+            if(c->get_visit_count() > 0) children_ptrs.push_back(c.get());
+        }
+
+        // Sort by visits (descending)
+        std::sort(children_ptrs.begin(), children_ptrs.end(), [](MCTSNode* a, MCTSNode* b){
+            return a->get_visit_count() > b->get_visit_count();
+        });
+
+        std::cout << "Top Candidate Moves:" << std::endl;
+        std::cout << "  # | Move     | Visits | Prior | CurPlayer Val | Full Values [R, B, Y, G]" << std::endl;
+        std::cout << "-------------------------------------------------------------------------------" << std::endl;
+
+        int count = 0;
+        Player cp = board.get_current_player();
+
+        for (auto* child : children_ptrs) {
+            if(count++ >= 8) break; // Show top 8 moves
+
+            if(!child->get_move()) continue;
+            Move m = *child->get_move();
+            
+            int visits = child->get_visit_count();
+            double prior = child->get_prior();
+            auto c_values = child->get_total_player_values();
+            double cp_val = c_values[static_cast<int>(cp)] / std::max(1, visits);
+
+            std::cout << std::right << std::setw(3) << count << " | "
+                      << std::left << std::setw(8) << get_uci_string(m) // or get_san_string(m, board)
+                      << " | " << std::right << std::setw(6) << visits
+                      << " | " << std::fixed << std::setprecision(3) << prior
+                      << " | " << std::showpos << std::setw(12) << cp_val << std::noshowpos
+                      << " | [";
+            
+            for(int i=0; i<4; ++i) {
+                double v = c_values[i] / std::max(1, visits);
+                std::cout << std::fixed << std::setprecision(3) << std::showpos << v << std::noshowpos;
+                if(i<3) std::cout << " ";
+            }
+            std::cout << "]" << std::endl;
+        }
+        std::cout << "-------------------------------------------------------------------------------" << std::endl;
+    }
+    // --- VERBOSE OUTPUT END ---
 
     const auto& children_const_ref = current_mcts_root_shptr->get_children();
     if (children_const_ref.empty()) {
@@ -230,12 +301,13 @@ std::optional<Move> get_best_move_mcts_sync(
             current_mcts_root_shptr = nullptr;
             return std::nullopt; 
         } else {
-            std::cerr << "Warning (get_best_move): Root has no children. Returning first legal move." << std::endl;
+            std::cerr << "Warning (get_best_move): Root has no children after search. Returning first legal move." << std::endl;
             current_mcts_root_shptr = nullptr;
             return legal_moves[0];
         }
     }
 
+    // Select Best Child (Robust: Visits > Prior)
     auto best_child_by_visit_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
         [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
             return a->get_visit_count() < b->get_visit_count();
@@ -245,7 +317,7 @@ std::optional<Move> get_best_move_mcts_sync(
     if (best_child_by_visit_it != children_const_ref.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
         chosen_child_raw_ptr = (*best_child_by_visit_it).get();
     } else {
-        std::cerr << "Warning (get_best_move): All child nodes have zero visits. Using prior." << std::endl;
+        if (verbose) std::cerr << "Warning: All child nodes have zero visits. Using prior." << std::endl;
         auto best_child_by_prior_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
             [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
                 return a->get_prior() < b->get_prior(); 
@@ -255,6 +327,7 @@ std::optional<Move> get_best_move_mcts_sync(
         }
     }
 
+    // Move the tree root
     if (chosen_child_raw_ptr && chosen_child_raw_ptr->get_move()) {
         std::optional<Move> chosen_move = chosen_child_raw_ptr->get_move();
         

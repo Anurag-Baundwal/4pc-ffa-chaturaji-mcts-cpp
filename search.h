@@ -39,7 +39,11 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
 /**
  * @brief Runs MCTS to find the best move using the ONNX Model for inference.
  * @param network Pointer to the ONNX Model instance.
- * @param device Removed (handled internally by ONNX Runtime options if needed).
+ * @param simulations Number of simulations to run.
+ * @param current_mcts_root_shptr Shared pointer to the root node (for tree reuse).
+ * @param c_puct Exploration constant.
+ * @param mcts_batch_size Batch size for NN inference.
+ * @param verbose If true, prints detailed statistics (evaluations, move candidates) to stdout.
  */
 std::optional<Move> get_best_move_mcts_sync( 
     const Board& board,
@@ -47,7 +51,8 @@ std::optional<Move> get_best_move_mcts_sync(
     int simulations,
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr, 
     double c_puct = 2.5,
-    int mcts_batch_size = 16 
+    int mcts_batch_size = 16,
+    bool verbose = false 
 );
 
 std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores);
