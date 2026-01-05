@@ -1,3 +1,4 @@
+import random
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -21,9 +22,10 @@ VALUE_SIZE = VALUE_OUTPUT_SIZE
 SAMPLE_SIZE_BYTES = (INPUT_SIZE + POLICY_SIZE + VALUE_SIZE) * 4
 
 class ReplayBuffer:
-    def __init__(self, data_dir, max_size):
+    def __init__(self, data_dir, max_size, window_size_files=50):
         self.data_dir = data_dir
         self.max_size = max_size
+        self.window_size_files = window_size_files # Number of recent files to look at
         self.states = torch.empty(0)
         self.policies = torch.empty(0)
         self.values = torch.empty(0)
@@ -31,18 +33,22 @@ class ReplayBuffer:
 
     def load_buffer(self):
         files = glob.glob(os.path.join(self.data_dir, "gen_*.bin"))
+        # 1. Sort by time (newest first)
         files.sort(key=os.path.getmtime, reverse=True)
+        
+        # 2. Define the "Disk Window": Keep only the N most recent files
+        if len(files) > self.window_size_files:
+            files = files[:self.window_size_files]
+            
+        # 3. Shuffle the "Window": This decouples RAM Buffer from strict recency
+        random.shuffle(files)
         
         t_s, t_p, t_v = [], [], []
         total = 0
         
-        # Calculate floats per sample once
-        floats_per_sample = INPUT_SIZE + POLICY_SIZE + VALUE_SIZE
-        
         for fp in files:
             if total >= self.max_size: break
             
-            # Get file size to calculate n samples without reading content yet
             file_size = os.path.getsize(fp)
             n = file_size // SAMPLE_SIZE_BYTES
             
@@ -51,12 +57,8 @@ class ReplayBuffer:
             with open(fp, "rb") as f:
                 content = f.read()
             
-            # OPTIMIZATION: Use frombuffer instead of struct.unpack
-            # This reads directly from C memory, avoiding massive Python tuple creation
             data = np.frombuffer(content, dtype=np.float32).reshape(n, -1)
             
-            # Create tensors (using copy to ensure memory is contiguous and separate from the raw buffer)
-            # We use .clone().detach() or torch.tensor() to ensure we own the memory
             t_s.append(torch.from_numpy(data[:, :INPUT_SIZE].copy()).view(n, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM))
             t_p.append(torch.from_numpy(data[:, INPUT_SIZE : INPUT_SIZE + POLICY_SIZE].copy()))
             t_v.append(torch.from_numpy(data[:, INPUT_SIZE + POLICY_SIZE :].copy()))
@@ -68,11 +70,10 @@ class ReplayBuffer:
             del data
 
         if total > 0:
-            # Slice strictly to max_size to avoid over-allocating VRAM later
             self.states = torch.cat(t_s)[:self.max_size]
             self.policies = torch.cat(t_p)[:self.max_size]
             self.values = torch.cat(t_v)[:self.max_size]
-            print(f"[Python] Replay Buffer: {self.states.size(0)} samples loaded.")
+            print(f"[Python] Replay Buffer: Loaded {self.states.size(0)} samples from a window of {len(files)} files.")
 
     def sample_batch(self, batch_size):
         idx = torch.randint(0, self.states.size(0), (batch_size,))
