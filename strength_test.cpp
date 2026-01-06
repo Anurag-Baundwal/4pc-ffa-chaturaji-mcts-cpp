@@ -89,15 +89,66 @@ void run_strength_test(
         auto game_start_time = std::chrono::high_resolution_clock::now();
         Board board; 
 
-        // --- 4-PLY RANDOM OPENING (One move per player) ---
-        for (int p = 0; p < 4; ++p) {
-            if (board.is_game_over()) break;
-            std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
-            if (moves.empty()) break;
-            
-            std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
-            board.make_move(moves[dist(rng)]);
+        // --- FAIR START INITIALIZATION ---
+        // We attempt to find a starting position where, after 4 random moves,
+        // the evaluation for all players is roughly equal (-0.05 to 0.05).
+        bool balanced_start_found = false;
+        int attempts = 0;
+        const int MAX_BALANCE_ATTEMPTS = 500; 
+
+        while (!balanced_start_found && attempts < MAX_BALANCE_ATTEMPTS) {
+            board = Board(); // Reset to standard start
+            attempts++;
+            bool game_ended_early = false;
+
+            // 4-PLY RANDOM OPENING (One move per player)
+            for (int p = 0; p < 4; ++p) {
+                if (board.is_game_over()) { game_ended_early = true; break; }
+                std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
+                if (moves.empty()) { game_ended_early = true; break; }
+                
+                std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
+                board.make_move(moves[dist(rng)]);
+            }
+
+            if (game_ended_early) continue; // Retry if game somehow ended
+
+            // CHECK BALANCE using a short MCTS search with the NEW model
+            std::shared_ptr<MCTSNode> analysis_root = nullptr;
+            int check_sims = 256;
+            int check_batch = 4;
+
+            // We use the new network as the "judge" of fairness
+            get_best_move_mcts_sync(
+                board, new_network.get(), check_sims, 
+                analysis_root, 2.5, check_batch, false
+            );
+
+            if (analysis_root && analysis_root->get_visit_count() > 0) {
+                auto total_vals = analysis_root->get_total_player_values();
+                double visits = static_cast<double>(analysis_root->get_visit_count());
+                
+                bool is_fair = true;
+                for (int i = 0; i < 4; ++i) {
+                    double avg_reward = total_vals[i] / visits;
+                    // Check range [-0.05, 0.05]
+                    if (avg_reward < -0.05 || avg_reward > 0.05) {
+                        is_fair = false;
+                        break;
+                    }
+                }
+                
+                if (is_fair) {
+                    balanced_start_found = true;
+                }
+            }
         }
+
+        if (!balanced_start_found) {
+            std::cout << "Warning: Could not find balanced start after " 
+                      << MAX_BALANCE_ATTEMPTS << " attempts. Proceeding with the last generated 4 ply opening." << std::endl;
+        }
+        // ---------------------------------
 
         Player new_model_player = static_cast<Player>(game_idx % 4);
         
