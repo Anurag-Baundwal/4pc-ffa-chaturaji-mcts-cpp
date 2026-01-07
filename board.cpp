@@ -32,10 +32,6 @@ const std::vector<std::pair<int, int>> ROOK_DIRS_EVAL = { {-1, 0}, {1, 0}, {0, -
 const std::vector<std::pair<int, int>> KING_DIRS_EVAL = { {-1, -1}, {-1, 0}, {-1, 1}, {0, -1}, {0, 1}, {1, -1}, {1, 0}, {1, 1}};
 const std::vector<std::pair<int, int>> KNIGHT_MOVES_EVAL = { {-2, -1}, {-2, 1}, {-1, -2}, {-1, 2}, {1, -2}, {1, 2}, {2, -1}, {2, 1}};
 
-// --- Magic Bitboard Constants (RookMagics, BishopMagics, RookShifts, BishopShifts) ---
-// --- MOVED to magic_utils.cpp and declared extern in magic_utils.h ---
-
-
 // Helper to map PieceType to bitboard array index (0-4)
 int piece_type_to_bb_idx_internal(PieceType pt) {
     // PieceType is PAWN=1 ... KING=5. Map to 0-4.
@@ -127,13 +123,6 @@ const int PROMOTION_ROW_RED_BB = 0;    // Red pawns promote on row 0
 const int PROMOTION_COL_BLUE_BB = 7;   // Blue pawns promote on col 7
 const int PROMOTION_ROW_YELLOW_BB = 7; // Yellow pawns promote on row 7
 const int PROMOTION_COL_GREEN_BB = 0;  // Green pawns promote on col 0
-
-// --- Helper function for Magic Bitboard Initialization: Generate Occupancy Subsets ---
-// --- MOVED to magic_utils.cpp (magic_utils::get_occupancy_subset) ---
-
-// --- Helper functions for Magic Bitboard Initialization: On-the-fly attack generation ---
-// --- MOVED to magic_utils.cpp (magic_utils::calculate_rook_attacks_on_the_fly, etc.) ---
-
 } // end anonymous namespace
 
 
@@ -553,6 +542,13 @@ std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
   if (!active_players_.count(player)) {
       return pseudo_legal_moves; 
   }
+
+  // --- Resignation is always a valid option ---
+  // Strategic reasons:
+  // 1. Claim Win: End game while ahead (in 2-player endgame).
+  // 2. Defensive: Prevent opponents from farming points from my pieces.
+  pseudo_legal_moves.push_back(Move::Resign());
+
   get_pawn_moves_bb(player, pseudo_legal_moves);
   get_knight_moves_bb(player, pseudo_legal_moves);
   get_bishop_moves_bb(player, pseudo_legal_moves);
@@ -706,6 +702,11 @@ void Board::get_bishop_moves_bb(Player player, std::vector<Move>& moves) const {
 
 // --- Move Execution ---
 std::optional<Piece> Board::make_move(const Move &move) {
+  if (move.is_resignation()) {
+      resign();
+      return std::nullopt;
+  }
+
   UndoInfo undo_info;
   undo_info.original_piece_bitboards = piece_bitboards_;
   undo_info.original_player_bitboards = player_bitboards_;
@@ -853,6 +854,11 @@ std::optional<Piece> Board::make_move(const Move &move) {
 
 // --- Lightweight Move Execution for MCTS ---
 std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
+  if (move.is_resignation()) {
+      resign();
+      return std::nullopt;
+  }
+
   // --- STEP 1: PRE-MOVE CHECK DETECTION ---
   struct EnemyKingState {
       Player player;
@@ -984,7 +990,7 @@ void Board::undo_move() {
   full_move_number_ = undo_info.original_full_move_number;
   move_number_of_last_reset_ = undo_info.original_move_number_of_last_reset;
 
-  bool is_resignation_undo = (undo_info.move.from_loc.row == -1);
+  bool is_resignation_undo = undo_info.move.is_resignation();
   if (!is_resignation_undo) {
     if (!position_history_.empty()) {
         position_history_.pop_back();
@@ -1173,6 +1179,9 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     return attackers;
 }
 
+// --- Square Conversion Utilities ---
+// to_sq_idx and from_sq_idx are now in magic_utils
+
 // Utility to print a bitboard for debugging
 void Board::print_bitboard(Bitboard bb, const std::string& label) {
     std::cout << "Bitboard: " << label << " (0x" << std::hex << bb << std::dec << ")" << std::endl;
@@ -1212,56 +1221,61 @@ Player Board::get_last_active_player() const {
 bool Board::is_game_over() const {
   if (termination_reason_) return true;
 
-  // --- Autoclaim Logic (Only applicable when exactly 2 players are active) ---
+  // --- Autoclaim Logic (Referee Enforcement) ---
+  // This logic detects if the game MUST end to protect the player who is in 2nd place.
+  // It only triggers if the active player (who is winning) could theoretically
+  // play on to help the loser overtake the 2nd place (inactive) player.
   if (active_players_.size() == 2) {
     Player p_curr = current_player_;
-    
-    // Identify the opponent (the other active player)
     Player p_opp;
     for (Player p : active_players_) {
-      if (p != p_curr) {
-        p_opp = p;
-        break;
-      }
+      if (p != p_curr) { p_opp = p; break; }
     }
 
-    // Count Kings of inactive (eliminated) players that are still physically on the board
+    // 1. Calculate points transfer if current player resigns/claims now
     int dead_kings_on_board = 0;
     for (int i = 0; i < 4; ++i) {
-      Player p_check = static_cast<Player>(i);
-      if (active_players_.find(p_check) == active_players_.end()) {
+      if (!active_players_.count(static_cast<Player>(i))) {
         if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
           dead_kings_on_board++;
         }
       }
     }
+    int potential_transfer = 3 + (3 * dead_kings_on_board);
 
+    // 2. Check scores
     int score_curr = player_points_.at(p_curr);
-    int score_opp = player_points_.at(p_opp);
+    int score_opp_after_transfer = player_points_.at(p_opp) + potential_transfer;
+    
+    // Check if Current Player is the Absolute Winner (cannot be overtaken)
+    bool is_absolute_winner = (score_curr > score_opp_after_transfer);
+    if (is_absolute_winner) {
+        for (const auto& pair : player_points_) {
+            if (pair.first != p_curr && pair.first != p_opp && pair.second >= score_curr) {
+                is_absolute_winner = false;
+                break;
+            }
+        }
+    }
 
-    // Calculate the points transfer that would occur if the current player resigned:
-    // 3 points for the current player's King + 3 points for each dead King on the board.
-    int potential_points_transfer = 3 + (3 * dead_kings_on_board);
-
-    // Check if the current player maintains a strict lead even after surrendering these points.
-    // The current player is forced to "autoclaim" (effectively resign but win) if the 
-    // resulting score difference is insurmountable.
-    if (score_curr > (score_opp + potential_points_transfer)) {
-      
-      // Verify that the claiming player is the absolute leader of the game.
-      // Their current score must be strictly higher than any eliminated player's final score
-      // to guarantee a 1st place finish.
-      bool is_absolute_leader = true;
+    if (is_absolute_winner) {
+      // Find the score of the inactive player currently in 2nd place
+      int best_inactive_score = -1;
       for (const auto& pair : player_points_) {
-        if (pair.first != p_curr && pair.second >= score_curr) {
-          is_absolute_leader = false;
-          break;
+        if (!active_players_.count(pair.first)) {
+          if (pair.second > best_inactive_score) best_inactive_score = pair.second;
         }
       }
 
-      if (is_absolute_leader) {
-        termination_reason_ = "autoclaim";
-        return true;
+      // 3. Autoclaim Trigger
+      // If the inactive player has more points than the active opponent (is currently 2nd),
+      // AND the active opponent cannot catch up even if we give them the resignation bonus,
+      // then we FORCE the claim to freeze the standings.
+      if (best_inactive_score > player_points_.at(p_opp)) {
+        if (score_opp_after_transfer <= best_inactive_score) {
+          termination_reason_ = "autoclaim";
+          return true;
+        }
       }
     }
   }
@@ -1312,34 +1326,26 @@ Board::PlayerPointMap Board::get_game_result() const {
     const std::string &reason = *termination_reason_;
     
     if (reason == "autoclaim") {
-      // Autoclaim is effectively a forced resignation by the current player (the winner)
-      // because they have an insurmountable lead.
-      // Mechanics: The winner "resigns", so their King's points (3) and the points for 
-      // any other dead Kings on the board (3 each) are awarded to the OTHER active player.
+      // Autoclaim: The referee stopped the game.
+      // We manually simulate the points transfer that would happen if p_curr resigned.
+      // (Winner keeps their points, Opponent gets the bonus).
       
-      // 1. Identify the opponent (the beneficiary of the points)
-      Player p_opp = Player::RED; // Default init
+      Player p_curr = current_player_;
+      Player p_opp = Player::RED;
       for (Player p : active_players_) {
-          if (p != current_player_) {
-              p_opp = p;
-              break;
-          }
+          if (p != p_curr) { p_opp = p; break; }
       }
 
-      // 2. Calculate points to transfer.
-      // Iterate over all players. If the player has a King on the board and is NOT the opponent,
-      // the opponent gets 3 points. This covers the Winner's King and all Dead Kings.
-      int points_to_add = 0;
-      for (int p_idx = 0; p_idx < NUM_PLAYERS_BB; ++p_idx) {
-          Player p_enum = static_cast<Player>(p_idx);
-          if (p_enum != p_opp) {
-               // Check if this player has a king on the board
-               if (piece_bitboards_[p_idx][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
-                   points_to_add += 3;
-               }
-          }
+      // Opponent gets: 3 (Winner's King) + 3 * (Dead Kings on Board)
+      // Note: We count dead kings manually here because p_curr is still "active" in the set logic
+      int points_to_add = 3; 
+      for (int i = 0; i < 4; ++i) {
+         if (!active_players_.count(static_cast<Player>(i))) {
+             if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+                 points_to_add += 3;
+             }
+         }
       }
-      
       results[p_opp] += points_to_add;
     } 
     else if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
@@ -1503,7 +1509,7 @@ void Board::resign() {
     resign_undo_info.previous_hash = current_hash_;
     resign_undo_info.eliminated_player = resigning_player;
     resign_undo_info.was_history_cleared = false;
-    resign_undo_info.move.from_loc = {-1,-1};
+    resign_undo_info.move = Move::Resign();
     resign_undo_info.captured_piece = std::nullopt; 
 
     eliminate_player(resigning_player);

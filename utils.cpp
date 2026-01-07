@@ -117,6 +117,10 @@ std::vector<float> board_to_floats(const Board& board) {
 }
 
 int move_to_policy_index(const Move& move, Player p) {
+    if (move.is_resignation()) {
+        return 0; // Index 0 represents Claiming the Win (Resignation)
+    }
+
     BoardLocation rel_from = get_rel_loc(move.from_loc.row, move.from_loc.col, p);
     BoardLocation rel_to   = get_rel_loc(move.to_loc.row, move.to_loc.col, p);
 
@@ -126,6 +130,10 @@ int move_to_policy_index(const Move& move, Player p) {
 }
 
 Move policy_index_to_move(int index, Player p) {
+    if (index == 0) {
+        return Move::Resign();
+    }
+
     int to_rel_idx = index % 64;
     int from_rel_idx = index / 64;
 
@@ -139,6 +147,8 @@ Move policy_index_to_move(int index, Player p) {
 }
 
 std::string get_san_string(const Move& move, const Board& board) {
+     if (move.is_resignation()) return "RESIGN";
+
      std::stringstream ss;
      std::optional<Piece> from_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.from_loc.row, move.from_loc.col));
      std::optional<Piece> to_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.to_loc.row, move.to_loc.col)); 
@@ -169,6 +179,8 @@ std::string get_san_string(const Move& move, const Board& board) {
 }
 
 std::string get_uci_string(const Move& move) {
+    if (move.is_resignation()) return "RESIGN";
+
     std::stringstream ss;
     ss << static_cast<char>('a' + move.from_loc.col);
     ss << (8 - move.from_loc.row);

@@ -87,6 +87,16 @@ struct Move {
         // std::optional comparison: nullopt is less than any value
         return promotion_piece_type < other.promotion_piece_type;
     }
+
+    // Static helper for Resignation Move
+    static Move Resign() {
+        return Move({-1, -1}, {-1, -1});
+    }
+
+    // Helper to check if this is a resignation move
+    bool is_resignation() const {
+        return from_loc.row == -1 && from_loc.col == -1;
+    }
 };
 
 // --- Structures for Asynchronous Evaluation ---
