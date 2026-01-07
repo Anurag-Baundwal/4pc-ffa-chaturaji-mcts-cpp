@@ -990,11 +990,8 @@ void Board::undo_move() {
   full_move_number_ = undo_info.original_full_move_number;
   move_number_of_last_reset_ = undo_info.original_move_number_of_last_reset;
 
-  bool is_resignation_undo = undo_info.move.is_resignation();
-  if (!is_resignation_undo) {
-    if (!position_history_.empty()) {
-        position_history_.pop_back();
-    }
+  if (!position_history_.empty()) {
+      position_history_.pop_back();
   }
   
   if (undo_info.eliminated_player) {
@@ -1002,7 +999,7 @@ void Board::undo_move() {
     active_players_.insert(player_to_revive); 
   }
 
-  if (!is_resignation_undo && undo_info.captured_piece) {
+  if (!undo_info.move.is_resignation() && undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
     player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
   }
@@ -1522,6 +1519,7 @@ void Board::resign() {
         advance_turn();
     }
     undo_stack_.push_back(resign_undo_info);
+    position_history_.push_back(current_hash_);
   }
 }
 
