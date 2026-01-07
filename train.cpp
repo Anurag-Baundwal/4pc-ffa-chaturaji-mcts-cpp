@@ -97,37 +97,11 @@ void train(
       if (std::system(init_cmd.c_str()) == 0) {
            // We load the random model into C++ so Self-Play can run
            network = std::make_unique<Model>(random_onnx_path);
-           
-           // NOTE: DO NOT set current_weights_path here.
-           // If we leave it empty, the first call to 'python train.py' will NOT 
-           // receive --load-weights, so Python will generate its own random .pth 
-           // and start fresh, which is exactly what we want.
       } else { return; }
   }
 
   // 4. MAIN LOOP
   for (int current_global_iter = start_iteration + 1; current_global_iter <= num_iterations; ++current_global_iter) {
-      
-      // === AUTOMATED LR SCHEDULER LOGIC ===
-      if (current_global_iter >= 1900) {
-          if (learning_rate > 0.00001) {
-              learning_rate = 0.00001;
-              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 1900+)" << std::endl;
-          }
-      } 
-      else if (current_global_iter >= 1400) {
-          if (learning_rate > 0.0001) {
-              learning_rate = 0.0001;
-              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 1400+)" << std::endl;
-          }
-      } 
-      else if (current_global_iter >= 800) {
-          if (learning_rate > 0.0003) {
-              learning_rate = 0.0003;
-              std::cout << "[C++] Scheduler: Setting Learning Rate to " << learning_rate << " (Tier: 800+)" << std::endl;
-          }
-      }
-      // ====================================
 
       std::cout << "\n========== ITERATION " << current_global_iter 
                 << " (" << current_global_iter << "/" << num_iterations << ") ==========" << std::endl;

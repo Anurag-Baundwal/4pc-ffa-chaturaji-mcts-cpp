@@ -97,7 +97,9 @@ def train_loop(args):
 
     # 1. Model & Optimizer Setup
     model = ChaturajiNN().to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    # Lc0 and AlphaZero use SGD with Momentum=0.9
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
+    print(f"[Python] Optimizer: SGD (lr={args.lr}, momentum=0.9, wd={args.wd})")
 
     # 2. Loading Logic
     if args.load_weights:
@@ -107,8 +109,6 @@ def train_loop(args):
 
         if not os.path.exists(target_pth):
             print(f"[Python] FATAL ERROR: Weights file not found: {target_pth}")
-            print(f"[Python] Training cannot resume without the .pth weights file.")
-            print(f"[Python] To start fresh with random weights, remove the --load-model argument.")
             sys.exit(1)
 
         # Load Weights
@@ -139,7 +139,7 @@ def train_loop(args):
             elif wd_updated:
                 print(f"[Python] WD set to {args.wd}.")
         else:
-            print(f"[Python] NOTICE: Optimizer file {target_opt} not found. Resetting Adam optimizer.")
+            print(f"[Python] NOTICE: Optimizer file {target_opt} not found. Starting with fresh optimizer.")
     else:
         print("[Python] NOTICE: No load-model specified. Starting from SCRATCH (Random Init).")
 
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--new-samples", type=int, default=0)
     parser.add_argument("--sampling-rate", type=float, default=1.5)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--wd", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--wd", type=float, default=0.0001)
     parser.add_argument("--load-weights", type=str, default="")
     train_loop(args = parser.parse_args())

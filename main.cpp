@@ -11,7 +11,7 @@
 #include "board.h"
 #include "types.h"
 #include "utils.h"
-#include "model.h" // Now includes the ONNX Model class
+#include "model.h"
 #include "search.h" 
 #include "train.h" 
 #include "strength_test.h" 
@@ -50,8 +50,8 @@ int main(int argc, char* argv[]) {
         int num_workers = 12;   
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
-        double learning_rate = 0.001;
-        double weight_decay = 0.01;
+        double learning_rate = 0.02;
+        double weight_decay = 0.0001;
         int max_buffer_size = 200000;
         int temp_decay_move = 20;
         double d_alpha = 0.4;
@@ -171,7 +171,7 @@ int main(int argc, char* argv[]) {
         // --- Inference/Analysis Mode ---
         std::cout << "--- Starting Inference Mode ---" << std::endl;
 
-        std::string model_path = "model.onnx"; // Default to ONNX
+        std::string model_path = "model.onnx"; 
         int simulations = 1000; 
         int mcts_sync_batch_size = 16; 
 
@@ -221,7 +221,7 @@ int main(int argc, char* argv[]) {
                      std::cout << "Reason: " << *board.get_termination_reason() << std::endl;
                  }
                   std::cout << "\nFinal Adjusted Scores (determining ranks):" << std::endl;
-                  auto final_results = board.get_game_result(); // This calculates the bonuses
+                  auto final_results = board.get_game_result();
                   for (const auto& pair : final_results) {
                       std::string p_name;
                       switch(pair.first) {
