@@ -37,4 +37,11 @@ Move policy_index_to_move(int index, Player p);
 std::string get_san_string(const Move& move, const Board& board);
 std::string get_uci_string(const Move& move);
 
+/**
+ * @brief Parses a move string (e.g., "e2e4", "e2-e4", "a7a8r", "a7-a8=R") 
+ * and returns the corresponding legal Move object.
+ * Throws std::invalid_argument if the move is invalid or illegal in the current position.
+ */
+Move parse_string_to_move(const Board& board, const std::string& move_str);
+
 } // namespace chaturaji_cpp

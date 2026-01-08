@@ -6,6 +6,7 @@
 #include <sstream>
 #include <algorithm> 
 #include <iostream>
+#include <regex> // Required for robust parsing
 
 namespace chaturaji_cpp {
 
@@ -114,6 +115,50 @@ std::vector<float> board_to_floats(const Board& board) {
     }
 
     return tensor_data;
+}
+
+Move parse_string_to_move(const Board& board, const std::string& move_str) {
+    // 1. Handle Resignations / Timeouts explicitly
+    if (move_str == "R" || move_str == "T" || move_str == "RESIGN") {
+        return Move::Resign();
+    }
+
+    // 2. Extract coordinates (e.g., 'c1', 'b2')
+    // Matches "a-h" followed by "1-8".
+    // Ignore surrounding chars (K, x, +, #, =R).
+    // Using simple regex to capture the first two valid squares found.
+    std::regex move_regex("([a-h][1-8]).*?([a-h][1-8])");
+    std::smatch match;
+
+    if (std::regex_search(move_str, match, move_regex)) {
+        std::string from_str = match[1].str();
+        std::string to_str = match[2].str();
+
+        BoardLocation from_loc = magic_utils::from_sq_idx(
+            magic_utils::to_sq_idx(8 - (from_str[1] - '0'), from_str[0] - 'a')
+        );
+        
+        BoardLocation to_loc = magic_utils::from_sq_idx(
+            magic_utils::to_sq_idx(8 - (to_str[1] - '0'), to_str[0] - 'a')
+        );
+
+        // 3. Match against legal moves
+        // We do NOT strictly compare strings. If from/to match, it's the move.
+        // This implicitly handles promotions because in Chaturaji, 
+        // a pawn moving to the last rank ONLY has one legal move (promotion to Rook).
+        std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+        
+        for (const auto& move : legal_moves) {
+            if (move.from_loc == from_loc && move.to_loc == to_loc) {
+                return move;
+            }
+        }
+        
+        // Debug info if not found (optional)
+        // std::cerr << "Coords found: " << from_str << "->" << to_str << " but not legal." << std::endl;
+    }
+
+    throw std::invalid_argument("Illegal or malformed move string: " + move_str);
 }
 
 int move_to_policy_index(const Move& move, Player p) {

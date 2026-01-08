@@ -7,6 +7,7 @@
 #include <algorithm> 
 #include <memory> 
 #include <iomanip>
+#include <sstream> 
 
 #include "board.h"
 #include "types.h"
@@ -34,7 +35,117 @@ bool cmd_option_exists(char** begin, char** end, const std::string& option) {
 
 int main(int argc, char* argv[]) {
     // --- Mode Selection ---
-    if (cmd_option_exists(argv, argv + argc, "--train")) {
+    if (cmd_option_exists(argv, argv + argc, "--interactive")) {
+        // --- Interactive / UCI-like Mode ---
+        std::cout << "--- Chaturaji Engine Interactive Mode ---" << std::endl;
+        
+        // 1. Load Model
+        std::string model_path = "model.onnx";
+        std::string temp_path = get_cmd_option(argv, argv + argc, "--model");
+        if (!temp_path.empty()) model_path = temp_path;
+
+        int mcts_batch_size = 64; // Default to 64
+        std::string batch_str = get_cmd_option(argv, argv + argc, "--mcts-batch");
+        if (!batch_str.empty()) {
+            mcts_batch_size = std::stoi(batch_str);
+        }
+
+        std::unique_ptr<chaturaji_cpp::Model> network;
+        try {
+            if (fs::exists(model_path)) {
+                network = std::make_unique<chaturaji_cpp::Model>(model_path);
+                std::cout << "info string Model loaded: " << model_path << std::endl;
+            } else {
+                std::cerr << "Error: Model not found at " << model_path << std::endl;
+                return 1;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading model: " << e.what() << std::endl;
+            return 1;
+        }
+
+        chaturaji_cpp::Board board;
+        std::shared_ptr<chaturaji_cpp::MCTSNode> mcts_root = nullptr;
+        
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (line.empty()) continue;
+
+            std::istringstream iss(line);
+            std::string command;
+            iss >> command;
+
+            if (command == "quit" || command == "exit") {
+                break;
+            } 
+            else if (command == "position") {
+                // Syntax: position moves <m1> <m2> ...
+                // Reset board to startpos
+                board = chaturaji_cpp::Board();
+                mcts_root = nullptr; // Clear tree on position reset
+                
+                std::string subcmd;
+                iss >> subcmd;
+                if (subcmd == "moves") {
+                    std::string move_str;
+                    while (iss >> move_str) {
+                        try {
+                            chaturaji_cpp::Move move = chaturaji_cpp::parse_string_to_move(board, move_str);
+                            board.make_move(move);
+                        } catch (const std::exception& e) {
+                            std::cerr << "info string Error parsing move '" << move_str << "': " << e.what() << std::endl;
+                            break; 
+                        }
+                    }
+                }
+                // Print board for debugging visibility in the controller log
+                std::cout << "info string Current Position:" << std::endl;
+                board.print_board();
+            } 
+            else if (command == "go") {
+                // Syntax: go sims <N>
+                int sims = 1000;
+                std::string token;
+                while (iss >> token) {
+                    if (token == "sims") {
+                        iss >> sims;
+                    }
+                }
+
+                if (board.is_game_over()) {
+                     std::cout << "bestmove (none)" << std::endl;
+                     continue;
+                }
+
+                // Run Search
+                // verbose=true prints the stats you requested
+                auto best_move_opt = chaturaji_cpp::get_best_move_mcts_sync(
+                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true 
+                );
+
+                if (best_move_opt) {
+                    std::cout << "bestmove " << chaturaji_cpp::get_uci_string(*best_move_opt) << std::endl;
+                } else {
+                    std::cout << "bestmove (none)" << std::endl;
+                }
+            }
+            else if (command == "isready") {
+                std::cout << "readyok" << std::endl;
+            }
+            else if (command == "turn") {
+                // Returns the current player color: r, b, y, or g
+                char c = '?';
+                switch(board.get_current_player()) {
+                    case chaturaji_cpp::Player::RED:    c = 'r'; break;
+                    case chaturaji_cpp::Player::BLUE:   c = 'b'; break;
+                    case chaturaji_cpp::Player::YELLOW: c = 'y'; break;
+                    case chaturaji_cpp::Player::GREEN:  c = 'g'; break;
+                }
+                std::cout << "turn " << c << std::endl;
+            }
+        }
+        return 0;
+    } else if (cmd_option_exists(argv, argv + argc, "--train")) {
         // --- Training Mode ---
         std::cout << "--- Starting Training Mode ---" << std::endl;
 

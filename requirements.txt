@@ -1,0 +1,9 @@
+opencv-python
+numpy
+pyautogui
+pygetwindow
+selenium
+webdriver-manager
+pywin32
+pytesseract
+Pillow
