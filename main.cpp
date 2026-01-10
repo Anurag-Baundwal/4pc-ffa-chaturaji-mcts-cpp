@@ -120,7 +120,7 @@ int main(int argc, char* argv[]) {
                 // Run Search
                 // verbose=true prints the stats you requested
                 auto best_move_opt = chaturaji_cpp::get_best_move_mcts_sync(
-                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true 
+                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true, 0.15
                 );
 
                 if (best_move_opt) {
