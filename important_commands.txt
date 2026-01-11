@@ -40,7 +40,9 @@ CPU:
 .\bazel-bin\chaturaji_engine.exe --train --iterations 32768 --games-per-iter 32 --target-sampling-rate 1.5 --train-batch 256 --workers 8 --nn-batch 64 --worker-batch 8 --save-dir ./models --sims 512 --max-buffer-size 100000 --lr 0.003 --wd 0.0001 --load-model "C:\Users\dell3\source\repos3\4pc-ffa-chaturaji-mcts-cpp\models\run_20251225_110842\iter_18.onnx"
 
 iGPU:
-.\bazel-bin\chaturaji_engine.exe --train --iterations 2000 --games-per-iter 48 --target-sampling-rate 1.5 --train-batch 256 --workers 24 --nn-batch 256 --worker-batch 12 --save-dir ./models --sims 768 --max-buffer-size 100000 --lr 0.003 --wd 0.0001  
+.\bazel-bin\chaturaji_engine.exe --train --iterations 2000 --games-per-iter 50 --target-sampling-rate 2 --train-batch 512 --workers 24 --nn-batch 160 --worker-batch 8 --save-dir ./models --sims 256 --max-buffer-size 100000 --lr 0.03 --wd 0.0001 --temp-decay-move 80
+
+Reduce learning rate as training progresses
 
 ---------------------------------------------------------------------
 
