@@ -19,12 +19,12 @@ venv/
 .env
 
 # === Project Data & Training ===
-training_data/
+training_data*/
 training_log*.txt
 
 # === Models and Neural Networks ===
 # Ignores the entire models folder
-models/
+models*/
 # Ignores local model files in the root
 *.onnx
 *.pth
