@@ -13,11 +13,11 @@ POLICY_OUTPUT_SIZE = 4096
 VALUE_OUTPUT_SIZE = 4     
 
 # Network Architecture
-NUM_RES_BLOCKS = 4
-NUM_CHANNELS = 64
+NUM_RES_BLOCKS = 10
+NUM_CHANNELS = 96
 POLICY_HEAD_CONV_CHANNELS = 8
-VALUE_HEAD_CONV_CHANNELS = 12
-VALUE_FC_HIDDEN_CHANNELS = 256
+VALUE_HEAD_CONV_CHANNELS = 24
+VALUE_FC_HIDDEN_CHANNELS = 384
 NUM_VALUE_OUTPUTS = 4
 
 class ResBlock(nn.Module):
@@ -55,7 +55,8 @@ class ChaturajiNN(nn.Module):
         self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
         self.value_fc1 = nn.Linear(VALUE_HEAD_CONV_CHANNELS * BOARD_AREA, VALUE_FC_HIDDEN_CHANNELS)
-        self.value_fc2 = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_OUTPUT_SIZE)
+        self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, 256)
+        self.value_fc2 = nn.Linear(256, VALUE_OUTPUT_SIZE)
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
@@ -74,9 +75,9 @@ class ChaturajiNN(nn.Module):
         v = self.value_conv(x)
         v = self.value_bn(v)
         v = F.relu(v)
-        # FIX: Use flatten(1)
         v = v.flatten(1)
         v = F.relu(self.value_fc1(v))
+        v = F.relu(self.value_fc_mid(v))
         v = self.value_fc2(v)
         v = torch.tanh(v)
 
