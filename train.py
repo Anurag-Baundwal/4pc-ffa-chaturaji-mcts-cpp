@@ -170,7 +170,7 @@ def train_loop(args):
         # Explicit loss components
         loss_policy = -torch.sum(tp * F.log_softmax(p, dim=1), dim=1).mean()
         loss_value = F.mse_loss(v, tv)
-        loss = loss_policy + loss_value
+        loss = loss_policy + 1.25 * loss_value
         
         loss.backward()
         optimizer.step()
