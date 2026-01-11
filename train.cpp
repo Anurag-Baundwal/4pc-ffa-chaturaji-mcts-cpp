@@ -134,6 +134,10 @@ void train(
           duration_sec = std::chrono::duration<double>(end_gen - start_gen).count();
       } 
 
+      // We must release the file handle to 'latest.onnx'
+      // otherwise Python cannot overwrite 'latest.onnx' on Windows.
+      network.reset();
+
       // Logging number of positions generated and speed (sims/s)
       std::cout << "[C++] Generated " << points_generated << " positions in " 
                 << std::fixed << std::setprecision(2) << duration_sec << "s ";
@@ -173,21 +177,28 @@ void train(
           fs::path latest_pth  = model_dir / "latest.pth";
           fs::path latest_opt  = model_dir / "latest.optimizer.pth";
 
-          std::string suffix = "iter_" + std::to_string(current_global_iter);
-          fs::path arch_onnx = model_dir / (suffix + ".onnx");
-          fs::path arch_pth  = model_dir / (suffix + ".pth");
-          fs::path arch_opt  = model_dir / (suffix + ".optimizer.pth");
+          // 1. Periodic Archiving       
+          const int archive_interval = 25; 
+          if (current_global_iter % archive_interval == 0) {
+              std::string suffix = "iter_" + std::to_string(current_global_iter);
+              fs::path arch_onnx = model_dir / (suffix + ".onnx");
+              fs::path arch_pth  = model_dir / (suffix + ".pth");
+              fs::path arch_opt  = model_dir / (suffix + ".optimizer.pth");
 
-          // Keep archived copies
-          fs::copy(latest_onnx, arch_onnx, fs::copy_options::overwrite_existing);
-          fs::copy(latest_pth,  arch_pth,  fs::copy_options::overwrite_existing);
-          if (fs::exists(latest_opt)) fs::copy(latest_opt, arch_opt, fs::copy_options::overwrite_existing);
+              fs::copy(latest_onnx, arch_onnx, fs::copy_options::overwrite_existing);
+              fs::copy(latest_pth,  arch_pth,  fs::copy_options::overwrite_existing);
+              if (fs::exists(latest_opt)) {
+                  fs::copy(latest_opt, arch_opt, fs::copy_options::overwrite_existing);
+              }
+              std::cout << "[C++] Archived checkpoint: " << suffix << std::endl;
+          }
 
-          // Update engine with the absolute path of the new iteration's ONNX
-          current_weights_path = arch_onnx.string();
+          // 2. Reload engine
+          // Re-initialize the C++ model with the new weights for the next Self-Play phase.
+          current_weights_path = latest_onnx.string();
           network = std::make_unique<Model>(current_weights_path);
           
-          std::cout << "[C++] Finished iteration " << current_global_iter << ". Weights: " << arch_onnx.filename() << std::endl;
+          std::cout << "[C++] Finished iteration " << current_global_iter << ". Weights: " << latest_onnx.filename() << std::endl;
 
       } catch (const std::exception& e) {
           std::cerr << "[C++] Error during file archiving: " << e.what() << std::endl;
