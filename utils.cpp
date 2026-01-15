@@ -7,8 +7,39 @@
 #include <algorithm> 
 #include <iostream>
 #include <regex> // Required for robust parsing
+#include <cstdio>
+#include <memory>
+#include <array>
 
 namespace chaturaji_cpp {
+
+// --- RunStats Implementation ---
+
+void RunStats::save(const std::string& filepath) const {
+    std::ofstream out(filepath);
+    if (out.is_open()) {
+        out << "global_iteration=" << global_iteration << "\n";
+        out << "total_samples_generated=" << total_samples_generated << "\n";
+        out.close();
+    }
+}
+
+RunStats RunStats::load(const std::string& filepath) {
+    RunStats stats;
+    std::ifstream in(filepath);
+    if (!in.is_open()) return stats; // Return default 0s
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("global_iteration=") == 0) {
+            try { stats.global_iteration = std::stoi(line.substr(17)); } catch(...) {}
+        }
+        else if (line.find("total_samples_generated=") == 0) {
+            try { stats.total_samples_generated = std::stoull(line.substr(24)); } catch(...) {}
+        }
+    }
+    return stats;
+}
 
 // Local helpers for piece ordering
 namespace {

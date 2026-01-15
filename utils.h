@@ -3,11 +3,27 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <fstream> // Added for RunStats
+#include <iostream> // Added for RunStats
 
 #include "board.h" 
 #include "types.h" 
 
 namespace chaturaji_cpp {
+
+// --- Stats For The Current Training Run ---
+
+struct RunStats {
+    int global_iteration = 0;
+    size_t total_samples_generated = 0;
+    
+    // Stats specific to the current active session (reset on program start)
+    int session_iterations = 0;
+    size_t session_samples = 0;
+
+    void save(const std::string& filepath) const;
+    static RunStats load(const std::string& filepath);
+};
 
 // --- Tensor Conversion (Decoupled) ---
 

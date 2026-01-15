@@ -12,6 +12,7 @@
 #include <memory>
 #include <sstream>
 #include <regex>
+#include <cstdlib> // For std::system
 
 namespace fs = std::filesystem;
 
@@ -21,14 +22,12 @@ namespace chaturaji_cpp {
 int extract_iteration_from_path(const std::string& path) {
     std::regex re("iter_(\\d+)\\.onnx");
     std::smatch match;
-    // Search in the filename part only
     std::filesystem::path p(path);
     std::string filename = p.filename().string();
-    
     if (std::regex_search(filename, match, re)) {
         return std::stoi(match[1]);
     }
-    return 0; // Default to 0 if not found or if random init
+    return 0; 
 }
 
 void train(
@@ -72,21 +71,30 @@ void train(
       std::cout << "[C++] Output folder: " << model_dir << std::endl; 
   } catch (...) { return; }
 
-  // 3. INITIALIZE ENGINE MODEL
+  // 3. INITIALIZE RUN STATS & ENGINE MODEL
   std::unique_ptr<Model> network = nullptr;
   std::string current_weights_path = ""; 
-  
-  // Variable to track global iteration count
-  int start_iteration = 0;
+  RunStats stats;
 
   if (!initial_model_path.empty()) {
       // User provided a model to resume
       current_weights_path = initial_model_path; 
       network = std::make_unique<Model>(initial_model_path);
       
-      // Parse start iteration
-      start_iteration = extract_iteration_from_path(initial_model_path);
-      std::cout << "[C++] Resuming from iteration " << start_iteration << std::endl;
+      // Attempt to load stats from the directory of the loaded model
+      fs::path loaded_path(initial_model_path);
+      fs::path parent_dir = loaded_path.parent_path();
+      
+      fs::path stats_file = parent_dir / "run_info.txt";
+      if (fs::exists(stats_file)) {
+          stats = RunStats::load(stats_file.string());
+          std::cout << "[C++] Loaded run statistics from: " << stats_file.string() << std::endl;
+          std::cout << "[C++] Resuming from Global Iteration: " << stats.global_iteration << std::endl;
+      } else {
+          // Fallback to filename guessing
+          stats.global_iteration = extract_iteration_from_path(initial_model_path);
+          std::cout << "[C++] Warning: run_info.txt not found. Guessed iteration " << stats.global_iteration << " from filename." << std::endl;
+      }
       
   } else { 
       std::cout << "[C++] No model provided. Initializing random weights..." << std::endl;
@@ -97,14 +105,30 @@ void train(
       if (std::system(init_cmd.c_str()) == 0) {
            // We load the random model into C++ so Self-Play can run
            network = std::make_unique<Model>(random_onnx_path);
-      } else { return; }
+           stats.global_iteration = 0;
+           stats.total_samples_generated = 0;
+      } else { 
+          std::cerr << "[C++] Error: Failed to generate random model." << std::endl;
+          return; 
+      }
   }
 
   // 4. MAIN LOOP
-  for (int current_global_iter = start_iteration + 1; current_global_iter <= num_iterations; ++current_global_iter) {
+  // 'num_iterations' is interpreted as the Target Global Iteration
+  if (stats.global_iteration >= num_iterations) {
+      std::cout << "[C++] Target global iteration " << num_iterations << 
+                 " already reached (Current: " << stats.global_iteration << "). Stopping." << std::endl;
+      return;
+  }
 
-      std::cout << "\n========== ITERATION " << current_global_iter 
-                << " (" << current_global_iter << "/" << num_iterations << ") ==========" << std::endl;
+  std::cout << "[C++] Starting training session. Target Global Iteration: " << num_iterations << std::endl;
+
+  while (stats.global_iteration < num_iterations) {
+      stats.global_iteration++;
+      stats.session_iterations++;
+
+      std::cout << "\n========== ITERATION " << stats.global_iteration 
+                << " (Target: " << num_iterations << ") ==========" << std::endl;
 
       size_t points_generated = 0;
       double duration_sec = 0.0;
@@ -134,6 +158,10 @@ void train(
           duration_sec = std::chrono::duration<double>(end_gen - start_gen).count();
       } 
 
+      // Update Stats
+      stats.total_samples_generated += points_generated;
+      stats.session_samples += points_generated;
+
       // We must release the file handle to 'latest.onnx'
       // otherwise Python cannot overwrite 'latest.onnx' on Windows.
       network.reset();
@@ -151,7 +179,8 @@ void train(
 
       // Phase 2: Python Training
       std::stringstream cmd;
-      cmd << "python train.py"
+      // Using python -u for unbuffered output to see progress
+      cmd << "python -u train.py"
           << " --save-dir \"" << model_dir.string() << "\""
           << " --new-samples " << points_generated
           << " --sampling-rate " << target_sampling_rate_param
@@ -177,10 +206,14 @@ void train(
           fs::path latest_pth  = model_dir / "latest.pth";
           fs::path latest_opt  = model_dir / "latest.optimizer.pth";
 
-          // 1. Periodic Archiving       
+          // 1. Save RunStats
+          fs::path info_file = model_dir / "run_info.txt";
+          stats.save(info_file.string());
+
+          // 2. Periodic Archiving       
           const int archive_interval = 25; 
-          if (current_global_iter % archive_interval == 0) {
-              std::string suffix = "iter_" + std::to_string(current_global_iter);
+          if (stats.global_iteration % archive_interval == 0) {
+              std::string suffix = "iter_" + std::to_string(stats.global_iteration);
               fs::path arch_onnx = model_dir / (suffix + ".onnx");
               fs::path arch_pth  = model_dir / (suffix + ".pth");
               fs::path arch_opt  = model_dir / (suffix + ".optimizer.pth");
@@ -193,12 +226,12 @@ void train(
               std::cout << "[C++] Archived checkpoint: " << suffix << std::endl;
           }
 
-          // 2. Reload engine
+          // 3. Reload engine
           // Re-initialize the C++ model with the new weights for the next Self-Play phase.
           current_weights_path = latest_onnx.string();
           network = std::make_unique<Model>(current_weights_path);
           
-          std::cout << "[C++] Finished iteration " << current_global_iter << ". Weights: " << latest_onnx.filename() << std::endl;
+          std::cout << "[C++] Finished iteration " << stats.global_iteration << ". Weights: " << latest_onnx.filename().string() << std::endl;
 
       } catch (const std::exception& e) {
           std::cerr << "[C++] Error during file archiving: " << e.what() << std::endl;
