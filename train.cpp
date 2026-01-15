@@ -18,7 +18,7 @@ namespace fs = std::filesystem;
 
 namespace chaturaji_cpp {
 
-// Helper to extract iteration number from filename "iter_1234.onnx"
+// Helper to extract iteration number from filename (fallback)
 int extract_iteration_from_path(const std::string& path) {
     std::regex re("iter_(\\d+)\\.onnx");
     std::smatch match;
@@ -50,10 +50,7 @@ void train(
 {
   // 1. PRE-CHECK LOAD MODEL
   if (!initial_model_path.empty() && !fs::exists(initial_model_path)) {
-      std::cerr << "\n[C++] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
-      std::cerr << "[C++] FATAL ERROR: Specified load-model path does not exist: " << initial_model_path << std::endl;
-      std::cerr << "[C++] If you want to start a new training run, do not use --load-model." << std::endl;
-      std::cerr << "[C++] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
+      std::cerr << "\n[C++] FATAL ERROR: Specified load-model path does not exist: " << initial_model_path << std::endl;
       return;
   }
 
@@ -77,7 +74,6 @@ void train(
   RunStats stats;
 
   if (!initial_model_path.empty()) {
-      // User provided a model to resume
       current_weights_path = initial_model_path; 
       network = std::make_unique<Model>(initial_model_path);
       
@@ -95,15 +91,12 @@ void train(
           stats.global_iteration = extract_iteration_from_path(initial_model_path);
           std::cout << "[C++] Warning: run_info.txt not found. Guessed iteration " << stats.global_iteration << " from filename." << std::endl;
       }
-      
   } else { 
       std::cout << "[C++] No model provided. Initializing random weights..." << std::endl;
-      // Tell Python to save the random init inside our specific folder
       std::string random_onnx_path = (model_dir / "iter_0.onnx").string();
       std::string init_cmd = "python model.py export_random " + random_onnx_path;
       
       if (std::system(init_cmd.c_str()) == 0) {
-           // We load the random model into C++ so Self-Play can run
            network = std::make_unique<Model>(random_onnx_path);
            stats.global_iteration = 0;
            stats.total_samples_generated = 0;
@@ -127,13 +120,13 @@ void train(
       stats.global_iteration++;
       stats.session_iterations++;
 
-      std::cout << "\n========== ITERATION " << stats.global_iteration 
-                << " (Target: " << num_iterations << ") ==========" << std::endl;
+      std::cout << "\n========== ITERATION " << stats.global_iteration << 
+                 " (Target: " << num_iterations << ") ==========" << std::endl;
 
       size_t points_generated = 0;
       double duration_sec = 0.0;
 
-      // Phase 1: Self-Play (Scoped to ensure threads join before Python starts)
+      // Phase 1: Self-Play
       {
           SelfPlay self_play_generator(
               network.get(), 
@@ -148,7 +141,6 @@ void train(
               dirichlet_epsilon
           );
           
-          // Phase 1: Self-Play
           std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
           auto start_gen = std::chrono::high_resolution_clock::now();
           
@@ -162,20 +154,19 @@ void train(
       stats.total_samples_generated += points_generated;
       stats.session_samples += points_generated;
 
-      // We must release the file handle to 'latest.onnx'
-      // otherwise Python cannot overwrite 'latest.onnx' on Windows.
+      // Release handle so Python can overwrite files if needed
       network.reset();
 
-      // Logging number of positions generated and speed (sims/s)
+      // Log Stats
       std::cout << "[C++] Generated " << points_generated << " positions in " 
                 << std::fixed << std::setprecision(2) << duration_sec << "s ";
-      
       if (duration_sec > 0) {
           double total_sims = static_cast<double>(points_generated) * simulations_per_move;
           double sims_per_sec = total_sims / duration_sec;
           std::cout << "(" << std::fixed << std::setprecision(2) << sims_per_sec << " sims/s)";
       }
       std::cout << std::endl;
+      // std::cout << "[C++] Total Global Samples: " << stats.total_samples_generated << std::endl;
 
       // Phase 2: Python Training
       std::stringstream cmd;
@@ -210,7 +201,7 @@ void train(
           fs::path info_file = model_dir / "run_info.txt";
           stats.save(info_file.string());
 
-          // 2. Periodic Archiving       
+          // 2. Periodic Archiving (every 25 global iterations)     
           const int archive_interval = 25; 
           if (stats.global_iteration % archive_interval == 0) {
               std::string suffix = "iter_" + std::to_string(stats.global_iteration);
@@ -226,15 +217,14 @@ void train(
               std::cout << "[C++] Archived checkpoint: " << suffix << std::endl;
           }
 
-          // 3. Reload engine
-          // Re-initialize the C++ model with the new weights for the next Self-Play phase.
+          // 3. Re-initialize the c++ model with the new weights for the next iteration
           current_weights_path = latest_onnx.string();
           network = std::make_unique<Model>(current_weights_path);
           
           std::cout << "[C++] Finished iteration " << stats.global_iteration << ". Weights: " << latest_onnx.filename().string() << std::endl;
 
       } catch (const std::exception& e) {
-          std::cerr << "[C++] Error during file archiving: " << e.what() << std::endl;
+          std::cerr << "[C++] Error during file archiving/reloading: " << e.what() << std::endl;
           return;
       }
   }

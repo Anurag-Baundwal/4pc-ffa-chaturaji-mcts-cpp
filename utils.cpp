@@ -6,7 +6,7 @@
 #include <sstream>
 #include <algorithm> 
 #include <iostream>
-#include <regex> // Required for robust parsing
+#include <regex>
 #include <cstdio>
 #include <memory>
 #include <array>
@@ -41,25 +41,21 @@ RunStats RunStats::load(const std::string& filepath) {
     return stats;
 }
 
-// Local helpers for piece ordering
 namespace {
     const std::vector<PieceType> UTIL_PIECE_TYPE_ORDER = {
         PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::KING
     };
 
-    // Helper to rotate absolute coordinates to current player's perspective
-    // This makes the current player always appear at the "Bottom" (Row 7)
     BoardLocation get_rel_loc(int r, int c, Player p) {
         switch (p) {
-            case Player::RED:    return {r, c};              // No change
-            case Player::BLUE:   return {7 - c, r};     // Rotate 90 CW
-            case Player::YELLOW: return {7 - r, 7 - c}; // Rotate 180
-            case Player::GREEN:  return {c, 7 - r};     // Rotate 90 CCW
+            case Player::RED:    return {r, c};
+            case Player::BLUE:   return {7 - c, r};
+            case Player::YELLOW: return {7 - r, 7 - c};
+            case Player::GREEN:  return {c, 7 - r};
             default: return {r, c};
         }
     }
 
-    // Helper to rotate relative coordinates back to absolute board space
     BoardLocation get_abs_loc(int r, int c, Player p) {
         switch (p) {
             case Player::RED:    return {r, c};
@@ -83,7 +79,6 @@ std::vector<float> board_to_floats(const Board& board) {
     };
 
     auto set_pixel = [&](int channel_idx, int r, int c, float value) {
-        // Apply perspective rotation
         BoardLocation rel = get_rel_loc(r, c, current_p);
         int index = (channel_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
         tensor_data[index] = value;
@@ -149,15 +144,10 @@ std::vector<float> board_to_floats(const Board& board) {
 }
 
 Move parse_string_to_move(const Board& board, const std::string& move_str) {
-    // 1. Handle Resignations / Timeouts explicitly
     if (move_str == "R" || move_str == "T" || move_str == "RESIGN") {
         return Move::Resign();
     }
 
-    // 2. Extract coordinates (e.g., 'c1', 'b2')
-    // Matches "a-h" followed by "1-8".
-    // Ignore surrounding chars (K, x, +, #, =R).
-    // Using simple regex to capture the first two valid squares found.
     std::regex move_regex("([a-h][1-8]).*?([a-h][1-8])");
     std::smatch match;
 
@@ -173,64 +163,39 @@ Move parse_string_to_move(const Board& board, const std::string& move_str) {
             magic_utils::to_sq_idx(8 - (to_str[1] - '0'), to_str[0] - 'a')
         );
 
-        // 3. Match against legal moves
-        // We do NOT strictly compare strings. If from/to match, it's the move.
-        // This implicitly handles promotions because in Chaturaji, 
-        // a pawn moving to the last rank ONLY has one legal move (promotion to Rook).
         std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
-        
         for (const auto& move : legal_moves) {
             if (move.from_loc == from_loc && move.to_loc == to_loc) {
                 return move;
             }
         }
-        
-        // Debug info if not found (optional)
-        // std::cerr << "Coords found: " << from_str << "->" << to_str << " but not legal." << std::endl;
     }
-
     throw std::invalid_argument("Illegal or malformed move string: " + move_str);
 }
 
 int move_to_policy_index(const Move& move, Player p) {
-    if (move.is_resignation()) {
-        return 0; // Index 0 represents Claiming the Win (Resignation)
-    }
-
+    if (move.is_resignation()) return 0;
     BoardLocation rel_from = get_rel_loc(move.from_loc.row, move.from_loc.col, p);
     BoardLocation rel_to   = get_rel_loc(move.to_loc.row, move.to_loc.col, p);
-
-    int from_index = rel_from.row * 8 + rel_from.col;
-    int to_index = rel_to.row * 8 + rel_to.col;
-    return from_index * 64 + to_index;
+    return (rel_from.row * 8 + rel_from.col) * 64 + (rel_to.row * 8 + rel_to.col);
 }
 
 Move policy_index_to_move(int index, Player p) {
-    if (index == 0) {
-        return Move::Resign();
-    }
-
+    if (index == 0) return Move::Resign();
     int to_rel_idx = index % 64;
     int from_rel_idx = index / 64;
-
-    BoardLocation from_rel(from_rel_idx / 8, from_rel_idx % 8);
-    BoardLocation to_rel(to_rel_idx / 8, to_rel_idx % 8);
-
-    BoardLocation abs_from = get_abs_loc(from_rel.row, from_rel.col, p);
-    BoardLocation abs_to   = get_abs_loc(to_rel.row, to_rel.col, p);
-
+    BoardLocation abs_from = get_abs_loc(from_rel_idx / 8, from_rel_idx % 8, p);
+    BoardLocation abs_to   = get_abs_loc(to_rel_idx / 8, to_rel_idx % 8, p);
     return Move(abs_from, abs_to, std::nullopt);
 }
 
 std::string get_san_string(const Move& move, const Board& board) {
      if (move.is_resignation()) return "RESIGN";
-
      std::stringstream ss;
      std::optional<Piece> from_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.from_loc.row, move.from_loc.col));
      std::optional<Piece> to_piece_opt = board.get_piece_at_sq(magic_utils::to_sq_idx(move.to_loc.row, move.to_loc.col)); 
 
      if (!from_piece_opt) return "ERROR";
-     
      switch(from_piece_opt->piece_type) {
         case PieceType::KNIGHT: ss << 'N'; break;
         case PieceType::BISHOP: ss << 'B'; break;
@@ -256,13 +221,11 @@ std::string get_san_string(const Move& move, const Board& board) {
 
 std::string get_uci_string(const Move& move) {
     if (move.is_resignation()) return "RESIGN";
-
     std::stringstream ss;
     ss << static_cast<char>('a' + move.from_loc.col);
     ss << (8 - move.from_loc.row);
     ss << static_cast<char>('a' + move.to_loc.col);
     ss << (8 - move.to_loc.row);
-
     if (move.promotion_piece_type) {
           switch(*move.promotion_piece_type) {
             case PieceType::ROOK:   ss << 'r'; break;
