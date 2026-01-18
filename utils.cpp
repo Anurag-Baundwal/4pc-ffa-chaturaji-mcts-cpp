@@ -104,14 +104,17 @@ std::vector<float> board_to_floats(const Board& board) {
     }
 
     // 2. Active Status (20-23)
+    uint8_t mask = board.get_active_mask();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        fill_plane(20 + rel_i, board.get_active_players().count(static_cast<Player>((cp_idx + rel_i) % 4)) ? 1.0f : 0.0f);
+        int abs_idx = (cp_idx + rel_i) % 4;
+        fill_plane(20 + rel_i, (mask & (1 << abs_idx)) ? 1.0f : 0.0f);
     }
 
     // 3. Points (24-27)
     const auto& points = board.get_player_points();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        float pts = static_cast<float>(points.at(static_cast<Player>((cp_idx + rel_i) % 4)));
+        int abs_idx = (cp_idx + rel_i) % 4;
+        float pts = static_cast<float>(points[abs_idx]);
         fill_plane(24 + rel_i, pts / 100.0f);
     }
 
