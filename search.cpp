@@ -170,9 +170,9 @@ void run_mcts_simulations_sync(
           if (next_node == nullptr || next_node == current_sim.current_node) {
                  if (current_sim.current_node->get_board().is_game_over()){
                     MCTSNode* terminal_leaf = current_sim.current_node; 
-                    std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
-                    std::map<Player, double> reward_map = get_reward_map(final_scores_map);
-                    std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
+                    std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
+                    std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
+                    
                     backpropagate_mcts_value(current_sim.path, terminal_player_values);
                  } else {
                      std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
@@ -186,9 +186,8 @@ void run_mcts_simulations_sync(
 
       if (current_sim.current_node->get_board().is_game_over()) {
           MCTSNode* terminal_leaf = current_sim.current_node;
-          std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
-          std::map<Player, double> reward_map = get_reward_map(final_scores_map);
-          std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
+          std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();         
+          std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
@@ -361,40 +360,52 @@ std::optional<Move> get_best_move_mcts_sync(
 }
 
 
-std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores) {
-    std::vector<std::pair<Player, int>> sorted_scores;
-    for (int p_idx = 0; p_idx < 4; ++p_idx) {
-        Player p = static_cast<Player>(p_idx);
-        int score = final_scores.count(p) ? final_scores.at(p) : 0; 
-        sorted_scores.emplace_back(p, score);
+std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points) {
+    // 1. Create pairs of (PlayerIndex, Score)
+    struct PScore { int p_idx; int score; };
+    std::array<PScore, 4> sorted_scores;
+    
+    for(int i=0; i<4; ++i) {
+        sorted_scores[i] = {i, final_points[i]};
     }
 
-    std::sort(sorted_scores.begin(), sorted_scores.end(),
-              [](const auto& a, const auto& b) {
-                  return a.second > b.second; 
+    // 2. Sort by score descending
+    // Since it's a small fixed-size array, std::sort is extremely fast here
+    std::sort(sorted_scores.begin(), sorted_scores.end(), 
+              [](const PScore& a, const PScore& b) {
+                  return a.score > b.score;
               });
 
-    std::map<Player, double> reward_map;
-    double rewards[] = {+1.0, +0.333, -0.333, -1.0}; // Rank 1, 2, 3, 4
+    // 3. Assign rewards handling ties
+    std::array<double, 4> result_rewards; // [0]=RED, [1]=BLUE...
+    
+    // Rewards for 1st, 2nd, 3rd, 4th place
+    const double rank_rewards[] = {+1.0, +0.333, -0.333, -1.0};
 
     size_t i = 0;
-    while (i < sorted_scores.size()) {
+    while (i < 4) {
         size_t j = i;
-        while (j < sorted_scores.size() && sorted_scores[j].second == sorted_scores[i].second) {
+        // Find end of tie group
+        while (j < 4 && sorted_scores[j].score == sorted_scores[i].score) {
             j++;
         }
-        double sum_rewards_for_tied_ranks = 0.0;
+        
+        // Calculate average reward for this group
+        double sum_rewards = 0.0;
         for (size_t k = i; k < j; ++k) {
-            sum_rewards_for_tied_ranks += rewards[k];
+            sum_rewards += rank_rewards[k];
         }
-        double avg_reward = sum_rewards_for_tied_ranks / (j - i);
+        double avg_reward = sum_rewards / (j - i);
 
+        // Assign to players
         for (size_t k = i; k < j; ++k) {
-            reward_map[sorted_scores[k].first] = avg_reward;
+            int p_idx = sorted_scores[k].p_idx;
+            result_rewards[p_idx] = avg_reward;
         }
         i = j;
     }
-    return reward_map;
+
+    return result_rewards;
 }
 
 } // namespace chaturaji_cpp

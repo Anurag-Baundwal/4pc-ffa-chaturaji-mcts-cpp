@@ -121,6 +121,10 @@ struct EvaluationResult {
     std::array<float, NN_VALUE_SIZE> value;          // Size: 4
 };
 
+// --- Type Aliases for Board State ---
+using PlayerPointMap = std::array<int, 4>; // Replaced std::map with std::array for POD layout
+using ActivePlayerSet = uint8_t;           // Replaced std::set with bitmask
+
 } // namespace chaturaji_cpp
 
 // --- Hash Specializations ---
