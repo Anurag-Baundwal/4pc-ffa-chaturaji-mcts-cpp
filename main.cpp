@@ -329,19 +329,19 @@ int main(int argc, char* argv[]) {
             if (board.is_game_over()) {
                  std::cout << "Game Over!" << std::endl;
                  if(board.get_termination_reason()) {
-                     std::cout << "Reason: " << *board.get_termination_reason() << std::endl;
+                     std::cout << "Reason: " << chaturaji_cpp::to_string(*board.get_termination_reason()) << std::endl;
                  }
                   std::cout << "\nFinal Adjusted Scores (determining ranks):" << std::endl;
                   auto final_results = board.get_game_result();
-                  for (const auto& pair : final_results) {
+                  for (int i = 0; i < 4; ++i) {
                       std::string p_name;
-                      switch(pair.first) {
+                      switch(static_cast<chaturaji_cpp::Player>(i)) {
                           case chaturaji_cpp::Player::RED: p_name = "RED"; break;
                           case chaturaji_cpp::Player::BLUE: p_name = "BLUE"; break;
                           case chaturaji_cpp::Player::YELLOW: p_name = "YELLOW"; break;
                           case chaturaji_cpp::Player::GREEN: p_name = "GREEN"; break;
                       }
-                      std::cout << "  " << p_name << ": " << pair.second << std::endl;
+                      std::cout << "  " << p_name << ": " << final_results[i] << std::endl;
                   }
                  mcts_root_node_main = nullptr; 
                  break;

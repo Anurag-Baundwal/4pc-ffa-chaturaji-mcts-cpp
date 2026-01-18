@@ -6,6 +6,7 @@
 #include <cassert>
 #include <regex>
 #include <algorithm> // For std::count
+#include <bitset>
 
 #include "board.h" // Include your board header
 #include "types.h" // Include your types header
@@ -85,19 +86,24 @@ Move parse_pgn_move_notation(const std::string& notation) {
 // Utility to print board state and info for comparison
 void print_state_comparison(const Board& board, const std::string& label) {
     std::cout << "\n--- State: " << label << " ---" << std::endl;
-    board.print_board(); // Assumes print_board shows player, points, etc.
+    board.print_board(); 
     std::cout << "FullMove: " << board.get_full_move_number()
               << ", Last Reset: " << board.get_move_number_of_last_reset()
               << ", 50-Move Clock: " << (board.get_full_move_number() - board.get_move_number_of_last_reset())
               << std::endl;
     std::cout << "Position Hash: " << board.get_position_key() << std::endl;
-    // Compare active players set
-    std::cout << "Active Players Set: { ";
+    
+    // Compare active players mask
+    std::cout << "Active Players Mask: " << std::bitset<4>(board.get_active_mask()) << " { ";
     for (Player p : board.get_active_players()) { std::cout << static_cast<int>(p) << " "; }
     std::cout << "}" << std::endl;
-    // Compare points map
-    std::cout << "Points Map: { ";
-    for (const auto& pair : board.get_player_points()) { std::cout << static_cast<int>(pair.first) << ":" << pair.second << " "; }
+
+    // Compare points array
+    std::cout << "Points Array: { ";
+    const auto& points = board.get_player_points();
+    for (int i = 0; i < 4; ++i) { 
+        std::cout << i << ":" << points[i] << " "; 
+    }
     std::cout << "}" << std::endl;
     std::cout << "--------------------------" << std::endl;
 }
@@ -225,8 +231,8 @@ bool test_resignation(Board& board) {
      ZobristKey hash_after = board.get_position_key();
      print_state_comparison(board, "After Resignation");
      assert(hash_before != hash_after && "Hash did not change after resignation");
-     assert(board.get_active_players().find(resigning_player) == board.get_active_players().end() && "Resigning player still active");
-
+     
+     assert(!board.is_player_active(resigning_player) && "Resigning player still active");
 
      board.undo_move(); // Undo the resignation (uses the same undo stack)
      ZobristKey hash_after_undo = board.get_position_key();
@@ -311,14 +317,14 @@ bool test_threefold_repetition(Board& board) {
   // **********************************************************
   std::cout << "  Checking game over state for threefold repetition (Initial Position, 3rd time)..." << std::endl;
   bool game_over_initial_rep = board.is_game_over(); // This call updates termination_reason_ if applicable
-  std::optional<std::string> reason_initial_rep = board.get_termination_reason();
+  auto reason_opt = board.get_termination_reason();
 
   // Restore board state BEFORE making assertions, so subsequent tests (if any) start fresh
   board = initial_board;
   std::cout << "  Restored initial board state." << std::endl;
 
   // NOW check the result
-  if (game_over_initial_rep && reason_initial_rep && *reason_initial_rep == "threefold_repetition") {
+  if (game_over_initial_rep && reason_opt && *reason_opt == TerminationReason::THREEFOLD_REPETITION) {
       std::cout << "+++ PASSED: Threefold repetition correctly detected after 4.G (Initial state 3rd occurrence)." << std::endl;
       // Test was successful up to this point for detecting the first repetition
       // We can skip the rest of the original test (Cycle 5 and subsequent checks)
@@ -327,7 +333,7 @@ bool test_threefold_repetition(Board& board) {
   } else {
       std::cerr << "--- FAILED: Threefold repetition was NOT detected after 4.G (Initial state 3rd occurrence)." << std::endl;
       std::cerr << "    Game Over flag: " << (game_over_initial_rep ? "Yes" : "No") << std::endl;
-      std::cerr << "    Termination Reason: " << (reason_initial_rep ? *reason_initial_rep : "None") << std::endl;
+      std::cerr << "    Termination Reason: " << (reason_opt ? chaturaji_cpp::to_string(*reason_opt) : "None") << std::endl;
       std::cerr << "    Count of initial hash in history *before* check was: " << history_count_initial_after_4 << std::endl;
       return false; // Fail the whole test function
   }
@@ -340,9 +346,8 @@ int main() {
 
   Board board; // Start with initial position
 
-  // --- Manually define the moves (Keep the existing vector) ---
+  // --- Manually define the moves ---
   std::vector<std::pair<std::string, Move>> manual_moves = {
-      // (Keep the same move list as before)
       // 1. f5-f6 .. e9-f9 .. i10-i9 .. j5-i5
       {"1.R", Move(pgn_to_loc("f5"), pgn_to_loc("f6"))},          // (6,2) -> (5,2) Pawn
       {"1.B", Move(pgn_to_loc("e9"), pgn_to_loc("f9"))},          // (2,1) -> (2,2) Pawn
@@ -455,7 +460,9 @@ int main() {
       else { /* Should not happen with manual list */ }
 
       // Check if expected player is active and whose turn it is
-      if (!board.get_active_players().count(expected_player)) {
+      // MODIFIED: Use active_mask instead of set check
+      bool isActive = (board.get_active_mask() & (1 << static_cast<int>(expected_player)));
+      if (!isActive) {
            std::cout << "--- INFO: Skipping move " << label << " because expected player "
                      << static_cast<int>(expected_player) << " is not active." << std::endl;
            continue; // Skip this move
@@ -524,7 +531,7 @@ int main() {
        // --- End Undo/Redo Test ---
 
 
-      // Interleave other tests (keep as before)
+      // Interleave other tests
       moves_played++; // Increment counter *after* successfully processing a move cycle
       if (moves_played == 10) {
            Board temp_board = board; // Test on a copy
@@ -548,7 +555,7 @@ int main() {
       }
   } // End main loop
 
-  // --- Final Tests (keep as before) ---
+  // --- Final Tests ---
   if(all_passed) {
       Board fresh_board;
       all_passed &= test_threefold_repetition(fresh_board);

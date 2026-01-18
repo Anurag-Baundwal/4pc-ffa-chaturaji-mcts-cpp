@@ -96,7 +96,7 @@ bazel test //:zobrist_test --test_output=all
 To run Perft (Performance Test):
 
 Compile the perft:
-bazel build //:perft
+bazel build //:perft -c opt
 
 Run the test:
 .\bazel-bin\perft.exe --depth 4 --divide

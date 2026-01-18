@@ -1,6 +1,6 @@
-// board.cpp
 #include "board.h"
 #include "magic_utils.h" // Include for magic_utils:: functions and constants
+#include "types.h"
 #include <algorithm> // For std::find, std::max_element, std::copy
 #include <array>     // For Zobrist key storage and bitboard arrays
 #include <cmath>     // For std::ceil, std::round (used in evaluate, get_game_result)
@@ -310,8 +310,13 @@ void Board::initialize_lookup_tables() {
 
 // --- Constructor ---
 Board::Board()
-    : current_player_(Player::RED), full_move_number_(1),
-      move_number_of_last_reset_(0), termination_reason_(std::nullopt) {
+    : active_mask_(0xF), // Default 00001111 (All 4 players active)
+      current_player_(Player::RED), 
+      full_move_number_(1),
+      move_number_of_last_reset_(0), 
+      termination_reason_(std::nullopt),
+      current_hash_(0) 
+{
   // Initialize bitboards to all 0s (empty)
   for (auto& player_bb_array : piece_bitboards_) {
       player_bb_array.fill(0ULL);
@@ -319,12 +324,9 @@ Board::Board()
   player_bitboards_.fill(0ULL);
   occupied_bitboard_ = 0ULL;
 
-  // Initialize player points and active players
-  for (int i = 0; i < 4; ++i) {
-    Player p = static_cast<Player>(i);
-    player_points_[p] = 0;
-    active_players_.insert(p);
-  }
+  // Initialize player points to 0
+  player_points_.fill(0);
+
   // Setup initial piece positions (only on bitboards now)
   setup_initial_board(); 
 
@@ -347,17 +349,21 @@ Board::Board()
   }
   // Hash current player's turn
   current_hash_ ^= zobrist_data.get_turn_key(current_player_);
+  
   // Hash active player statuses
-  for (Player p : active_players_) { // active_players_ is initialized with all players
-      current_hash_ ^= zobrist_data.get_active_player_status_key(p);
+  for (int i = 0; i < 4; ++i) {
+      if (active_mask_ & (1 << i)) {
+          current_hash_ ^= zobrist_data.get_active_player_status_key(static_cast<Player>(i));
+      }
   }
+  
   // Add initial position hash to history
   position_history_.push_back(current_hash_);
 }
 
 // --- Copy Constructor ---
 Board::Board(const Board &other)
-    : active_players_(other.active_players_),
+    : active_mask_(other.active_mask_),
       player_points_(other.player_points_),
       current_player_(other.current_player_),
       position_history_(other.position_history_),
@@ -374,7 +380,7 @@ Board::Board(const Board &other)
 
 // 
 Board::Board(const Board &other, MCTSChildCopyTag)
-    : active_players_(other.active_players_),
+    : active_mask_(other.active_mask_),
       player_points_(other.player_points_),
       current_player_(other.current_player_),
       position_history_(other.position_history_), // << Deep copy this
@@ -390,7 +396,7 @@ Board::Board(const Board &other, MCTSChildCopyTag)
 
 // --- Move Constructor ---
 Board::Board(Board &&other) noexcept
-    : active_players_(std::move(other.active_players_)),
+    : active_mask_(other.active_mask_),
       player_points_(std::move(other.player_points_)),
       current_player_(other.current_player_),
       position_history_(std::move(other.position_history_)),
@@ -417,7 +423,7 @@ Board::Board(Board &&other) noexcept
 // --- Copy Assignment Operator ---
 Board &Board::operator=(const Board &other) {
   if (this != &other) { // Self-assignment check
-    active_players_ = other.active_players_;
+    active_mask_ = other.active_mask_;
     player_points_ = other.player_points_;
     current_player_ = other.current_player_;
     position_history_ = other.position_history_;
@@ -437,7 +443,7 @@ Board &Board::operator=(const Board &other) {
 // --- Move Assignment Operator ---
 Board &Board::operator=(Board &&other) noexcept {
   if (this != &other) { // Self-assignment check
-    active_players_ = std::move(other.active_players_);
+    active_mask_ = other.active_mask_;
     player_points_ = std::move(other.player_points_);
     current_player_ = other.current_player_; // Enum copy is fine
     position_history_ = std::move(other.position_history_);
@@ -536,29 +542,29 @@ bool Board::is_valid_square(int row, int col) const {
 }
 
 // --- Pseudo-Legal Move Generation (Master Function) ---
-std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
-  std::vector<Move> pseudo_legal_moves;
-  pseudo_legal_moves.reserve(128);
-  if (!active_players_.count(player)) {
-      return pseudo_legal_moves; 
+void Board::get_pseudo_legal_moves(Player player, MoveList& moves) const {
+  moves.clear();
+  
+  // Check if player is active using bitmask
+  if (!(active_mask_ & (1 << static_cast<int>(player)))) {
+      return; 
   }
 
   // --- Resignation is always a valid option ---
   // Strategic reasons:
   // 1. Claim Win: End game while ahead (in 2-player endgame).
   // 2. Defensive: Prevent opponents from farming points from my pieces.
-  pseudo_legal_moves.push_back(Move::Resign());
+  moves.push_back(Move::Resign());
 
-  get_pawn_moves_bb(player, pseudo_legal_moves);
-  get_knight_moves_bb(player, pseudo_legal_moves);
-  get_bishop_moves_bb(player, pseudo_legal_moves);
-  get_rook_moves_bb(player, pseudo_legal_moves);
-  get_king_moves_bb(player, pseudo_legal_moves);
-  return pseudo_legal_moves;
+  get_pawn_moves_bb(player, moves);
+  get_knight_moves_bb(player, moves);
+  get_bishop_moves_bb(player, moves);
+  get_rook_moves_bb(player, moves);
+  get_king_moves_bb(player, moves);
 }
 
 // --- Bitboard-Based Move Generation Helpers ---
-void Board::get_pawn_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_pawn_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard pawns = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::PAWN)];
     Bitboard my_pieces = player_bitboards_[p_idx];
@@ -612,7 +618,7 @@ void Board::get_pawn_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_knight_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_knight_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard knights = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KNIGHT)];
     Bitboard not_my_pieces = ~player_bitboards_[p_idx];
@@ -631,7 +637,7 @@ void Board::get_knight_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_king_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_king_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard kings = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
     Bitboard not_my_pieces = ~player_bitboards_[p_idx];
@@ -649,7 +655,7 @@ void Board::get_king_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_rook_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard rooks = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::ROOK)];
     Bitboard my_pieces = player_bitboards_[p_idx];
@@ -659,9 +665,7 @@ void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
         int from_sq = magic_utils::pop_lsb(temp_rooks);
         BoardLocation from_loc = magic_utils::from_sq_idx(from_sq);
 
-        // Use Board's precomputed masks and shifts, which were initialized using magic_utils
         Bitboard blockers = occupied_bitboard_ & rook_masks_[from_sq]; 
-        // Use magic_utils constants for magics and Board's precomputed shifts
         unsigned int magic_idx = (blockers * magic_utils::RookMagics[from_sq]) >> rook_shift_bits_[from_sq];
         Bitboard possible_moves = rook_attack_table_[rook_attack_offsets_[from_sq] + magic_idx];
         
@@ -675,7 +679,7 @@ void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_bishop_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_bishop_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard bishops = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::BISHOP)];
     Bitboard my_pieces = player_bitboards_[p_idx];
@@ -708,10 +712,9 @@ std::optional<Piece> Board::make_move(const Move &move) {
   }
 
   UndoInfo undo_info;
-  undo_info.original_piece_bitboards = piece_bitboards_;
-  undo_info.original_player_bitboards = player_bitboards_;
-  undo_info.original_occupied_bitboard = occupied_bitboard_;
+
   undo_info.move = move;
+  undo_info.original_active_mask = active_mask_;
   undo_info.original_player = current_player_;
   undo_info.original_full_move_number = full_move_number_;
   undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
@@ -729,14 +732,18 @@ std::optional<Piece> Board::make_move(const Move &move) {
   std::vector<EnemyKingState> enemy_king_states;
   enemy_king_states.reserve(3);
 
-  for (Player p : active_players_) {
-      if (p != current_player_) {
-          int p_idx = static_cast<int>(p);
-          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
-          if (king_bb) {
-              int k_sq = magic_utils::get_lsb_index(king_bb);
-              // Store who attacks this king BEFORE the move
-              enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+  // Iterate 0..3 for active players using bitmask
+  for (int i = 0; i < 4; ++i) {
+      if (active_mask_ & (1 << i)) {
+          Player p = static_cast<Player>(i);
+          if (p != current_player_) {
+              int p_idx = static_cast<int>(p);
+              Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+              if (king_bb) {
+                  int k_sq = magic_utils::get_lsb_index(king_bb);
+                  // Store who attacks this king BEFORE the move
+                  enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+              }
           }
       }
   }
@@ -757,7 +764,6 @@ std::optional<Piece> Board::make_move(const Move &move) {
       throw std::runtime_error("Attempting to move opponent's piece.");
   }
   Piece moving_piece_obj = *moving_piece_opt;
-  undo_info.original_moving_piece_type = moving_piece_obj.piece_type;
   int moving_pt_bb_idx = piece_type_to_bb_idx(moving_piece_obj.piece_type);
 
   undo_info.captured_piece = get_piece_at_sq(to_sq_idx);
@@ -792,7 +798,7 @@ std::optional<Piece> Board::make_move(const Move &move) {
   
   if (is_capture) {
     const Piece &captured = undo_info.captured_piece.value();
-    player_points_[moving_piece_obj.player] += get_piece_capture_value(captured);
+    player_points_[static_cast<int>(moving_piece_obj.player)] += get_piece_capture_value(captured);
     if (captured.piece_type == PieceType::KING) {
         eliminate_player(captured.player);
         undo_info.eliminated_player = captured.player;
@@ -804,7 +810,7 @@ std::optional<Piece> Board::make_move(const Move &move) {
 
   for (const auto& king_state : enemy_king_states) {
       // Logic: If player is still active AND King still exists
-      if (active_players_.count(king_state.player)) {
+      if (active_mask_ & (1 << static_cast<int>(king_state.player))) {
           int p_idx = static_cast<int>(king_state.player);
           Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
           
@@ -823,10 +829,10 @@ std::optional<Piece> Board::make_move(const Move &move) {
 
   // Award Bonus and Store in UndoInfo
   if (kings_checked_count == 2) {
-      player_points_[current_player_] += 1;
+      player_points_[static_cast<int>(current_player_)] += 1;
       undo_info.check_bonus_points = 1;
   } else if (kings_checked_count == 3) {
-      player_points_[current_player_] += 5;
+      player_points_[static_cast<int>(current_player_)] += 5;
       undo_info.check_bonus_points = 5;
   }
   // ---------------------------------------
@@ -867,13 +873,17 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
   };
   std::vector<EnemyKingState> enemy_king_states;
   enemy_king_states.reserve(3);
-  for (Player p : active_players_) {
-      if (p != current_player_) {
-          int p_idx = static_cast<int>(p);
-          Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
-          if (king_bb) {
-              int k_sq = magic_utils::get_lsb_index(king_bb);
-              enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+  
+  for (int i = 0; i < 4; ++i) {
+      if (active_mask_ & (1 << i)) {
+          Player p = static_cast<Player>(i);
+          if (p != current_player_) {
+              int p_idx = static_cast<int>(p);
+              Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
+              if (king_bb) {
+                  int k_sq = magic_utils::get_lsb_index(king_bb);
+                  enemy_king_states.push_back({p, k_sq, get_attackers_on_sq(k_sq)});
+              }
           }
       }
   }
@@ -928,7 +938,7 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
 
   if (is_capture) {
     const Piece &captured_val = captured_piece_opt.value();
-    player_points_[moving_piece_obj.player] += get_piece_capture_value(captured_val);
+    player_points_[static_cast<int>(moving_piece_obj.player)] += get_piece_capture_value(captured_val);
     if (captured_val.piece_type == PieceType::KING) {
         eliminate_player(captured_val.player);
     }
@@ -937,7 +947,7 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
   // --- STEP 2: POST-MOVE CHECK SCORING (MCTS) ---
   int kings_checked_count = 0;
   for (const auto& king_state : enemy_king_states) {
-      if (active_players_.count(king_state.player)) {
+      if (active_mask_ & (1 << static_cast<int>(king_state.player))) {
           int p_idx = static_cast<int>(king_state.player);
           Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
           if (king_bb) {
@@ -951,9 +961,9 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
   }
 
   if (kings_checked_count == 2) {
-      player_points_[moving_piece_obj.player] += 1;
+      player_points_[static_cast<int>(moving_piece_obj.player)] += 1;
   } else if (kings_checked_count == 3) {
-      player_points_[moving_piece_obj.player] += 5;
+      player_points_[static_cast<int>(moving_piece_obj.player)] += 5;
   }
   // ----------------------------------------------
 
@@ -982,9 +992,8 @@ void Board::undo_move() {
   UndoInfo undo_info = undo_stack_.back();
   undo_stack_.pop_back();
 
-  piece_bitboards_ = undo_info.original_piece_bitboards;
-  player_bitboards_ = undo_info.original_player_bitboards;
-  occupied_bitboard_ = undo_info.original_occupied_bitboard;
+  // 1. Restore Scalars and History
+  active_mask_ = undo_info.original_active_mask;
   current_hash_ = undo_info.previous_hash;
   current_player_ = undo_info.original_player;
   full_move_number_ = undo_info.original_full_move_number;
@@ -993,35 +1002,97 @@ void Board::undo_move() {
   if (!position_history_.empty()) {
       position_history_.pop_back();
   }
-  
-  if (undo_info.eliminated_player) {
-    Player player_to_revive = *undo_info.eliminated_player;
-    active_players_.insert(player_to_revive); 
-  }
 
+  // 2. Restore Points (Logic remains the same)
   if (!undo_info.move.is_resignation() && undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
-    player_points_[undo_info.original_player] -= get_piece_capture_value(captured);
+    player_points_[static_cast<int>(undo_info.original_player)] -= get_piece_capture_value(captured);
   }
-
-  // --- UNDO BONUS POINTS ---
   if (undo_info.check_bonus_points > 0) {
-      player_points_[undo_info.original_player] -= undo_info.check_bonus_points;
+      player_points_[static_cast<int>(undo_info.original_player)] -= undo_info.check_bonus_points;
   }
-  // -------------------------
 
   termination_reason_ = std::nullopt;
+
+  // 3. Incremental Bitboard Restoration
+  // We must strictly reverse the operations done in make_move.
+  
+  // A. Resignation: Nothing to move back, just state restoration (handled above).
+  if (undo_info.move.is_resignation()) {
+      return; 
+  }
+
+  const Move& move = undo_info.move;
+  int from_sq = magic_utils::to_sq_idx(move.from_loc.row, move.from_loc.col);
+  int to_sq = magic_utils::to_sq_idx(move.to_loc.row, move.to_loc.col);
+  int player_idx = static_cast<int>(undo_info.original_player);
+
+  // --- Step 3a: Move the piece BACK (To -> From) ---
+  
+  // Determine what piece type is currently at 'to_sq' (the piece that moved)
+  // If it was a promotion, it is currently the Promoted Type (e.g. ROOK).
+  // If not, it is the original type.
+  PieceType piece_on_dest_sq = PieceType::PAWN; // Default, will find below
+  
+  // Optimization: We know the player, so we only scan their bitboards
+  bool found = false;
+  for(int pt = 1; pt <= 5; ++pt) {
+      PieceType pt_enum = static_cast<PieceType>(pt);
+      int bb_idx = piece_type_to_bb_idx(pt_enum);
+      if (magic_utils::get_bit(piece_bitboards_[player_idx][bb_idx], to_sq)) {
+          piece_on_dest_sq = pt_enum;
+          found = true;
+          break;
+      }
+  }
+
+  if (!found) {
+      // Should never happen in a bug-free engine
+      throw std::runtime_error("Critical Undo Error: Piece missing at destination.");
+  }
+
+  // Remove the piece from destination (To)
+  int moving_pt_bb_idx = piece_type_to_bb_idx(piece_on_dest_sq);
+  magic_utils::clear_bit(piece_bitboards_[player_idx][moving_pt_bb_idx], to_sq);
+  magic_utils::clear_bit(player_bitboards_[player_idx], to_sq);
+  magic_utils::clear_bit(occupied_bitboard_, to_sq);
+
+  // Place the piece back at source (From)
+  // CRITICAL: If it was a promotion, 'piece_on_dest_sq' is ROOK, but we must put back a PAWN.
+  PieceType original_piece_type = piece_on_dest_sq;
+  if (move.promotion_piece_type.has_value()) {
+      // In Chaturaji, pawns usually promote to Rooks.
+      // If we see a promotion recorded, the original piece was a PAWN.
+      original_piece_type = PieceType::PAWN;
+  }
+
+  int original_pt_bb_idx = piece_type_to_bb_idx(original_piece_type);
+  magic_utils::set_bit(piece_bitboards_[player_idx][original_pt_bb_idx], from_sq);
+  magic_utils::set_bit(player_bitboards_[player_idx], from_sq);
+  magic_utils::set_bit(occupied_bitboard_, from_sq);
+
+  // --- Step 3b: Restore Captured Piece (if any) ---
+  if (undo_info.captured_piece.has_value()) {
+      const Piece& captured = undo_info.captured_piece.value();
+      int cap_player_idx = static_cast<int>(captured.player);
+      int cap_pt_bb_idx = piece_type_to_bb_idx(captured.piece_type);
+
+      // Place the captured piece back at 'to_sq'
+      magic_utils::set_bit(piece_bitboards_[cap_player_idx][cap_pt_bb_idx], to_sq);
+      magic_utils::set_bit(player_bitboards_[cap_player_idx], to_sq);
+      magic_utils::set_bit(occupied_bitboard_, to_sq);
+  }
 }
 
 // --- Player Elimination ---
 void Board::eliminate_player(Player player) {
-  if (active_players_.count(player)) {
+  int pi = static_cast<int>(player);
+  if (active_mask_ & (1 << pi)) {
     const auto& zobrist_data = get_zobrist_data();
     current_hash_ ^= zobrist_data.get_active_player_status_key(player);
-    active_players_.erase(player);
+    active_mask_ &= ~(1 << pi);
   }
 }
-
 
 // --- Bitboard Accessors ---
 Bitboard Board::get_occupied_bitboard() const { return occupied_bitboard_; }
@@ -1032,7 +1103,7 @@ Bitboard Board::get_piece_bitboard(Player p, PieceType pt) const {
 
 Bitboard Board::get_squares_attacked_by(Player player) const {
     // Eliminated players do not attack squares.
-    if (!active_players_.count(player)) {
+    if (!(active_mask_ & (1 << static_cast<int>(player)))) {
         return 0ULL;
     }
 
@@ -1095,7 +1166,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
 
     // Helper lambda to check if a player is active
     auto is_active = [&](int p_idx) {
-        return active_players_.count(static_cast<Player>(p_idx));
+        return (active_mask_ & (1 << p_idx));
     };
 
     // 1. Knights (symmetric attacks)
@@ -1138,7 +1209,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     int c = loc.col;
 
     // Check against RED Pawns (Attack from Row + 1)
-    if (r < 7 && active_players_.count(Player::RED)) {
+    if (r < 7 && (active_mask_ & (1 << static_cast<int>(Player::RED)))) {
         Bitboard red_pawns = piece_bitboards_[static_cast<int>(Player::RED)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (c > 0 && magic_utils::get_bit(red_pawns, magic_utils::to_sq_idx(r + 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r + 1, c - 1));
@@ -1147,7 +1218,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against BLUE Pawns (Attack from Col - 1)
-    if (c > 0 && active_players_.count(Player::BLUE)) {
+    if (c > 0 && (active_mask_ & (1 << static_cast<int>(Player::BLUE)))) {
         Bitboard blue_pawns = piece_bitboards_[static_cast<int>(Player::BLUE)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (r > 0 && magic_utils::get_bit(blue_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
@@ -1156,7 +1227,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against YELLOW Pawns (Attack from Row - 1)
-    if (r > 0 && active_players_.count(Player::YELLOW)) {
+    if (r > 0 && (active_mask_ & (1 << static_cast<int>(Player::YELLOW)))) {
         Bitboard yellow_pawns = piece_bitboards_[static_cast<int>(Player::YELLOW)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (c > 0 && magic_utils::get_bit(yellow_pawns, magic_utils::to_sq_idx(r - 1, c - 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c - 1));
@@ -1165,7 +1236,7 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
     }
 
     // Check against GREEN Pawns (Attack from Col + 1)
-    if (c < 7 && active_players_.count(Player::GREEN)) {
+    if (c < 7 && (active_mask_ & (1 << static_cast<int>(Player::GREEN)))) {
         Bitboard green_pawns = piece_bitboards_[static_cast<int>(Player::GREEN)][piece_type_to_bb_idx(PieceType::PAWN)];
         if (r > 0 && magic_utils::get_bit(green_pawns, magic_utils::to_sq_idx(r - 1, c + 1))) 
             magic_utils::set_bit(attackers, magic_utils::to_sq_idx(r - 1, c + 1));
@@ -1175,9 +1246,6 @@ Bitboard Board::get_attackers_on_sq(int sq_idx) const {
 
     return attackers;
 }
-
-// --- Square Conversion Utilities ---
-// to_sq_idx and from_sq_idx are now in magic_utils
 
 // Utility to print a bitboard for debugging
 void Board::print_bitboard(Bitboard bb, const std::string& label) {
@@ -1193,25 +1261,31 @@ void Board::print_bitboard(Bitboard bb, const std::string& label) {
 }
 
 // --- Game State Accessors ---
-const Board::ActivePlayerSet &Board::get_active_players() const { return active_players_; }
-const Board::PlayerPointMap &Board::get_player_points() const { return player_points_; }
+const std::set<Player> Board::get_active_players() const {
+    std::set<Player> res;
+    for (int i = 0; i < 4; ++i) {
+        if (active_mask_ & (1 << i)) {
+            res.insert(static_cast<Player>(i));
+        }
+    }
+    return res;
+}
+
+const PlayerPointMap &Board::get_player_points() const { return player_points_; }
 Player Board::get_current_player() const { return current_player_; }
 int Board::get_full_move_number() const { return full_move_number_; }
 int Board::get_move_number_of_last_reset() const { return move_number_of_last_reset_; }
-const std::optional<std::string> &Board::get_termination_reason() const { return termination_reason_; }
+const std::optional<TerminationReason> &Board::get_termination_reason() const { return termination_reason_; }
 const Board::PositionHistory &Board::get_position_history() const { return position_history_; }
 
 Player Board::get_last_active_player() const {
-  if (active_players_.empty()) return Player::RED;
-  Player last_player = Player::RED; 
-  int max_val = -1;
-  for (Player p : active_players_) {
-    if (static_cast<int>(p) > max_val) {
-      max_val = static_cast<int>(p);
-      last_player = p;
-    }
+  if (active_mask_ == 0) return Player::RED;
+  for (int i = 3; i >= 0; --i) {
+      if (active_mask_ & (1 << i)) {
+          return static_cast<Player>(i);
+      }
   }
-  return last_player;
+  return Player::RED;
 }
 
 // --- Game Status ---
@@ -1220,19 +1294,22 @@ bool Board::is_game_over() const {
 
   // --- Autoclaim Logic (Referee Enforcement) ---
   // This logic detects if the game MUST end to protect the player who is in 2nd place.
-  // It only triggers if the active player (who is winning) could theoretically
-  // play on to help the loser overtake the 2nd place (inactive) player.
-  if (active_players_.size() == 2) {
+  int active_count = magic_utils::pop_count(static_cast<Bitboard>(active_mask_));
+  
+  if (active_count == 2) {
     Player p_curr = current_player_;
     Player p_opp;
-    for (Player p : active_players_) {
-      if (p != p_curr) { p_opp = p; break; }
+    for (int i = 0; i < 4; ++i) {
+        if (active_mask_ & (1 << i) && static_cast<Player>(i) != p_curr) {
+            p_opp = static_cast<Player>(i);
+            break;
+        }
     }
 
     // 1. Calculate points transfer if current player resigns/claims now
     int dead_kings_on_board = 0;
     for (int i = 0; i < 4; ++i) {
-      if (!active_players_.count(static_cast<Player>(i))) {
+      if (!(active_mask_ & (1 << i))) {
         if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
           dead_kings_on_board++;
         }
@@ -1241,14 +1318,15 @@ bool Board::is_game_over() const {
     int potential_transfer = 3 + (3 * dead_kings_on_board);
 
     // 2. Check scores
-    int score_curr = player_points_.at(p_curr);
-    int score_opp_after_transfer = player_points_.at(p_opp) + potential_transfer;
+    int score_curr = player_points_[static_cast<int>(p_curr)];
+    int score_opp_after_transfer = player_points_[static_cast<int>(p_opp)] + potential_transfer;
     
     // Check if Current Player is the Absolute Winner (cannot be overtaken)
     bool is_absolute_winner = (score_curr > score_opp_after_transfer);
     if (is_absolute_winner) {
-        for (const auto& pair : player_points_) {
-            if (pair.first != p_curr && pair.first != p_opp && pair.second >= score_curr) {
+        for (int i = 0; i < 4; ++i) {
+            Player p_loop = static_cast<Player>(i);
+            if (p_loop != p_curr && p_loop != p_opp && player_points_[i] >= score_curr) {
                 is_absolute_winner = false;
                 break;
             }
@@ -1258,9 +1336,9 @@ bool Board::is_game_over() const {
     if (is_absolute_winner) {
       // Find the score of the inactive player currently in 2nd place
       int best_inactive_score = -1;
-      for (const auto& pair : player_points_) {
-        if (!active_players_.count(pair.first)) {
-          if (pair.second > best_inactive_score) best_inactive_score = pair.second;
+      for (int i = 0; i < 4; ++i) {
+        if (!(active_mask_ & (1 << i))) {
+          if (player_points_[i] > best_inactive_score) best_inactive_score = player_points_[i];
         }
       }
 
@@ -1268,9 +1346,9 @@ bool Board::is_game_over() const {
       // If the inactive player has more points than the active opponent (is currently 2nd),
       // AND the active opponent cannot catch up even if we give them the resignation bonus,
       // then we FORCE the claim to freeze the standings.
-      if (best_inactive_score > player_points_.at(p_opp)) {
+      if (best_inactive_score > player_points_[static_cast<int>(p_opp)]) {
         if (score_opp_after_transfer <= best_inactive_score) {
-          termination_reason_ = "autoclaim";
+          termination_reason_ = TerminationReason::AUTOCLAIM;
           return true;
         }
       }
@@ -1278,8 +1356,8 @@ bool Board::is_game_over() const {
   }
 
   // --- Standard Termination Checks ---
-  if (active_players_.size() <= 1) { 
-    termination_reason_ = "elimination"; 
+  if (active_count <= 1) { 
+    termination_reason_ = TerminationReason::ELIMINATION; 
     return true; 
   }
 
@@ -1288,7 +1366,7 @@ bool Board::is_game_over() const {
     if (!undo_stack_.empty()) {
       Player player_who_just_moved = undo_stack_.back().original_player;
       if (player_who_just_moved == get_last_active_player()) {
-        termination_reason_ = "fifty_move_rule"; 
+        termination_reason_ = TerminationReason::FIFTY_MOVE_RULE; 
         return true;
       }
     }
@@ -1297,66 +1375,67 @@ bool Board::is_game_over() const {
   int count = 0;
   for (const auto &key : position_history_) if (key == current_hash_) count++;
   if (count >= 3) { 
-    termination_reason_ = "threefold_repetition"; 
+    termination_reason_ = TerminationReason::THREEFOLD_REPETITION; 
     return true; 
   }
   return false;
 }
 
-Board::PlayerPointMap Board::get_game_result() const {
-  PlayerPointMap results = player_points_;
+PlayerPointMap Board::get_game_result() const {
+  PlayerPointMap results = player_points_; // Copy current points
   
   // Calculate bonus points based on dead kings for standard draws (50-move/repetition)
   int num_kings_of_inactive_players = 0;
-  for (int p_idx_loop = 0; p_idx_loop < NUM_PLAYERS_BB; ++p_idx_loop) {
-      Player p_enum = static_cast<Player>(p_idx_loop);
-      if (!active_players_.count(p_enum)) {
-          if (piece_bitboards_[p_idx_loop][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+  for (int i = 0; i < 4; ++i) {
+      if (!(active_mask_ & (1 << i))) {
+          if (piece_bitboards_[i][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
               num_kings_of_inactive_players++;
           }
       }
   }
 
-  int num_active_players = active_players_.size();
-
-  if (termination_reason_) { 
-    const std::string &reason = *termination_reason_;
-    
-    if (reason == "autoclaim") {
-      // Autoclaim: The referee stopped the game.
+  int num_active = magic_utils::pop_count(static_cast<Bitboard>(active_mask_));
+  
+  if (termination_reason_) {
+    TerminationReason reason = *termination_reason_;
+    if (reason == TerminationReason::AUTOCLAIM) {
       // We manually simulate the points transfer that would happen if p_curr resigned.
       // (Winner keeps their points, Opponent gets the bonus).
-      
       Player p_curr = current_player_;
       Player p_opp = Player::RED;
-      for (Player p : active_players_) {
-          if (p != p_curr) { p_opp = p; break; }
+      for (int i=0; i<4; ++i) {
+        if ((active_mask_ & (1 << i)) && static_cast<Player>(i) != p_curr) { 
+        p_opp = static_cast<Player>(i); break;
+        }
       }
-
       // Opponent gets: 3 (Winner's King) + 3 * (Dead Kings on Board)
-      // Note: We count dead kings manually here because p_curr is still "active" in the set logic
       int points_to_add = 3; 
       for (int i = 0; i < 4; ++i) {
-         if (!active_players_.count(static_cast<Player>(i))) {
-             if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
-                 points_to_add += 3;
-             }
-         }
+        if (!(active_mask_ & (1 << i))) {
+          if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+              points_to_add += 3;
+          }
+        }
       }
-      results[p_opp] += points_to_add;
+      results[static_cast<int>(p_opp)] += points_to_add;
     } 
-    else if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
-      if (num_active_players > 0) { 
-        int dead_king_bonus_per_player = (num_kings_of_inactive_players > 0) ? 
-            static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active_players)) : 0;
-        for (Player p : active_players_) { 
-            results[p] += (2 + dead_king_bonus_per_player);
+    else if (reason == TerminationReason::FIFTY_MOVE_RULE || reason == TerminationReason::THREEFOLD_REPETITION) {
+      if (num_active > 0) { 
+        int bonus = (num_kings_of_inactive_players > 0) ? 
+          static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active)) : 0;
+        for (int i=0; i<4; ++i) { 
+          if(active_mask_ & (1 << i)) results[i] += (2 + bonus);
         }
       }
     } 
-    else if (reason == "elimination") {
-      if (num_active_players == 1 && num_kings_of_inactive_players > 0) {
-        results[*active_players_.begin()] += (3 * num_kings_of_inactive_players);
+    else if (reason == TerminationReason::ELIMINATION) {
+      if (num_active == 1 && num_kings_of_inactive_players > 0) {
+        for(int i=0; i<4; ++i) {
+          if(active_mask_ & (1<<i)) {
+            results[i] += (3 * num_kings_of_inactive_players);
+            break;
+          }
+        }
       }
     }
   }
@@ -1365,11 +1444,17 @@ Board::PlayerPointMap Board::get_game_result() const {
 
 std::optional<Player> Board::get_winner() const {
   if (!termination_reason_) return std::nullopt;
+  
   PlayerPointMap final_scores = get_game_result();
-  auto winner_it = std::max_element(final_scores.begin(), final_scores.end(),
-                       [](const auto &a, const auto &b) { return a.second < b.second; });
+  
+  // Find the iterator to the maximum score
+  auto winner_it = std::max_element(final_scores.begin(), final_scores.end());
+  
   if (winner_it == final_scores.end()) return std::nullopt;
-  return std::optional<Player>(winner_it->first);
+  
+  // Calculate the index (which corresponds to the Player enum)
+  int p_idx = std::distance(final_scores.begin(), winner_it);
+  return static_cast<Player>(p_idx);
 }
 
 int Board::get_piece_value(const Piece& piece) const {
@@ -1380,7 +1465,7 @@ int Board::get_piece_value(const Piece& piece) const {
   }
 }
 int Board::get_piece_capture_value(const Piece& piece) const {
-    if (!active_players_.count(piece.player)) {
+    if (!(active_mask_ & (1 << static_cast<int>(piece.player)))) {
         return (piece.piece_type == PieceType::KING) ? 3 : 0;
     }
     switch (piece.piece_type) {
@@ -1391,115 +1476,39 @@ int Board::get_piece_capture_value(const Piece& piece) const {
     }
 }
 
-Board::PlayerPointMap Board::evaluate() const {
-  PlayerPointMap scores;
-  for (int i = 0; i < 4; ++i) scores[static_cast<Player>(i)] = 0.0;
-
-  std::map<Player, BoardLocation> king_coords;
-  std::map<Player, bool> king_present;
-  for (int i = 0; i < 4; ++i) king_present[static_cast<Player>(i)] = false;
-
-  for (int p_idx = 0; p_idx < NUM_PLAYERS_BB; ++p_idx) {
-      Player p_enum = static_cast<Player>(p_idx);
-      Bitboard king_bb = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
-      if (king_bb != 0ULL) {
-          int king_sq = magic_utils::get_lsb_index(king_bb);
-          king_coords[p_enum] = magic_utils::from_sq_idx(king_sq);
-          king_present[p_enum] = true;
-      } else {
-          king_present[p_enum] = false;
-      }
-  }
-  
-  for (int sq_idx = 0; sq_idx < magic_utils::NUM_SQUARES; ++sq_idx) {
-      BoardLocation loc = magic_utils::from_sq_idx(sq_idx);
-      int r = loc.row;
-      int c = loc.col;
-      std::optional<Piece> piece_opt = get_piece_at_sq(sq_idx);
-
-      if (piece_opt) {
-        const Piece &piece = *piece_opt;
-        Player player = piece.player;
-        if (active_players_.count(player)) {
-          scores[player] += get_piece_value(piece);
-          if (piece.piece_type == PieceType::KNIGHT || piece.piece_type == PieceType::BISHOP) {
-            if (((player == Player::RED && r == 7) || (player == Player::YELLOW && r == 0) ||
-                 (player == Player::GREEN && c == 7) || (player == Player::BLUE && c == 0))) {
-              scores[player] -= 0.4; 
-            }
-          }
-          if (piece.piece_type == PieceType::KING) {
-            for (const auto &dir : KING_DIRS_EVAL) {
-              int nr = r + dir.first; int nc = c + dir.second;
-              if (is_valid_square(nr, nc)) {
-                std::optional<Piece> adjacent_opt = get_piece_at_sq(magic_utils::to_sq_idx(nr, nc));
-                if (adjacent_opt) {
-                  if (adjacent_opt->player == player) {
-                    scores[player] += (adjacent_opt->piece_type == PieceType::PAWN ? 0.2 : 0.05);
-                  } else {
-                    if (!active_players_.count(adjacent_opt->player)) {
-                        scores[player] += 0.15;        
-                    } else {
-                        scores[player] -= 0.15;        
-                    }
-                  }
-                }
-              }
-            }
-          } 
-          if (piece.piece_type == PieceType::PAWN) {
-            int dr = 0, dc = 0;
-            int cap_r1 = 0, cap_c1 = 0, cap_r2 = 0, cap_c2 = 0;
-            switch (player) {
-            case Player::RED:    scores[player] += 0.2 * (6 - r); dr = -1; dc = 0; cap_r1 = -1; cap_c1 = -1; cap_r2 = -1; cap_c2 = 1; break;
-            case Player::BLUE:   scores[player] += 0.2 * (c - 1); dr = 0; dc = 1; cap_r1 = -1; cap_c1 = 1; cap_r2 = 1; cap_c2 = 1; break;
-            case Player::YELLOW: scores[player] += 0.2 * (r - 1); dr = 1; dc = 0; cap_r1 = 1; cap_c1 = -1; cap_r2 = 1; cap_c2 = 1; break;
-            case Player::GREEN:  scores[player] += 0.2 * (6 - c); dr = 0; dc = -1; cap_r1 = -1; cap_c1 = -1; cap_r2 = 1; cap_c2 = -1; break;
-            }
-            if (is_valid_square(r + dr, c + dc) && get_piece_at_sq(magic_utils::to_sq_idx(r + dr, c + dc))) scores[player] -= 0.2;
-            
-            for (const auto &cap_delta : {std::make_pair(cap_r1, cap_c1), std::make_pair(cap_r2, cap_c2)}) {
-              int cap_r = r + cap_delta.first; int cap_c = c + cap_delta.second;
-              if (is_valid_square(cap_r, cap_c)) {
-                  std::optional<Piece> target_opt = get_piece_at_sq(magic_utils::to_sq_idx(cap_r, cap_c));
-                  if (target_opt) {
-                    const auto &target = *target_opt;
-                    if (target.player == player) {
-                      if (target.piece_type == PieceType::BISHOP || target.piece_type == PieceType::KNIGHT) {
-                        scores[player] += 0.2;
-                      }
-                    } else {
-                      scores[player] += 0.2;
-                      if (target.piece_type == PieceType::KING && active_players_.count(target.player)) {
-                        scores[player] += 0.1;
-                        scores[target.player] -= 0.5;
-                      }
-                    }
-                  }
-              }
-            }
-          }
-        }
-      }
-    }
+std::map<Player, int> Board::evaluate() const {
+  std::map<Player, int> scores_map;
   
   for (int i = 0; i < 4; ++i) {
-    Player p = static_cast<Player>(i);
-    if (active_players_.count(p) && !king_present[p]) scores[p] = -999.0; 
-    scores[p] += player_points_.at(p);
-    scores[p] -= 20;
+      scores_map[static_cast<Player>(i)] = player_points_[i];
   }
-  return scores;
+  
+  for (int p_idx = 0; p_idx < 4; ++p_idx) {
+      Player p_enum = static_cast<Player>(p_idx);
+      // If inactive and no king, harsh penalty (though points stay)
+      if ((active_mask_ & (1 << p_idx)) == 0 && piece_bitboards_[p_idx][4] == 0) {
+          scores_map[p_enum] = -999;
+          continue;
+      }
+      
+      // Count material
+      for (int pt = 0; pt < 5; ++pt) {
+          Bitboard bb = piece_bitboards_[p_idx][pt];
+          int count = magic_utils::pop_count(bb);
+          Piece p(p_enum, static_cast<PieceType>(pt + 1));
+          scores_map[p_enum] += count * get_piece_value(p);
+      }
+  }
+  
+  return scores_map;
 }
 
 // --- Player Actions ---
 void Board::resign() {
   Player resigning_player = current_player_; 
-  if (active_players_.count(resigning_player)) {
+  if (active_mask_ & (1 << static_cast<int>(resigning_player))) {
     UndoInfo resign_undo_info;
-    resign_undo_info.original_piece_bitboards = piece_bitboards_;
-    resign_undo_info.original_player_bitboards = player_bitboards_;
-    resign_undo_info.original_occupied_bitboard = occupied_bitboard_;
+    resign_undo_info.original_active_mask = active_mask_;
     resign_undo_info.original_player = resigning_player; 
     resign_undo_info.original_full_move_number = full_move_number_;
     resign_undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
@@ -1511,7 +1520,7 @@ void Board::resign() {
 
     eliminate_player(resigning_player);
 
-    if (active_players_.size() <= 1) {
+    if (magic_utils::pop_count(static_cast<Bitboard>(active_mask_)) <= 1) {
         const auto& zobrist_data = get_zobrist_data();
         current_hash_ ^= zobrist_data.get_turn_key(resigning_player); 
         is_game_over();
@@ -1524,21 +1533,17 @@ void Board::resign() {
 }
 
 void Board::advance_turn() {
+  if (active_mask_ == 0) return;
   const auto& zobrist_data = get_zobrist_data(); 
   Player old_player = current_player_;
   current_player_ = static_cast<Player>((static_cast<int>(current_player_) + 1) % 4);
   
-  while (active_players_.find(current_player_) == active_players_.end()) {
-    if (active_players_.size() <= 1) break;
+  while (!(active_mask_ & (1 << static_cast<int>(current_player_)))) {
     current_player_ = static_cast<Player>((static_cast<int>(current_player_) + 1) % 4);
   }
 
-  if (!active_players_.empty()) {
-      current_hash_ ^= zobrist_data.get_turn_key(old_player);
-      if(active_players_.count(current_player_)){ 
-         current_hash_ ^= zobrist_data.get_turn_key(current_player_); 
-      }
-  }
+  current_hash_ ^= zobrist_data.get_turn_key(old_player);
+  current_hash_ ^= zobrist_data.get_turn_key(current_player_); 
 }
 
 const std::string ANSI_RESET_BB = "\033[0m"; 
@@ -1558,7 +1563,7 @@ void Board::print_board() const {
       std::string symbol_str = " ";
       if (piece_opt) {
         const Piece &p = *piece_opt;
-        bool display_as_inactive = !active_players_.count(p.player);
+        bool display_as_inactive = !(active_mask_ & (1 << static_cast<int>(p.player)));
         const std::string* base_symbol = nullptr;
         switch (p.piece_type) {
             case PieceType::PAWN:   base_symbol = &UNICODE_PAWN_BB;   break;
@@ -1599,26 +1604,28 @@ void Board::print_board() const {
   }
   std::cout << std::endl;
   std::cout << "Active Players: ";
-  for(Player active_p : active_players_){
-      switch(active_p){
-          case Player::RED: std::cout << ANSI_RED_BB << "R " << ANSI_RESET_BB; break;
-          case Player::BLUE: std::cout << ANSI_BLUE_BB << "B " << ANSI_RESET_BB; break;
-          case Player::YELLOW: std::cout << ANSI_YELLOW_BB << "Y " << ANSI_RESET_BB; break;
-          case Player::GREEN: std::cout << ANSI_GREEN_BB << "G " << ANSI_RESET_BB; break;
+  for(int i=0; i<4; ++i){
+      if (active_mask_ & (1 << i)) {
+          switch(static_cast<Player>(i)){
+              case Player::RED: std::cout << ANSI_RED_BB << "R " << ANSI_RESET_BB; break;
+              case Player::BLUE: std::cout << ANSI_BLUE_BB << "B " << ANSI_RESET_BB; break;
+              case Player::YELLOW: std::cout << ANSI_YELLOW_BB << "Y " << ANSI_RESET_BB; break;
+              case Player::GREEN: std::cout << ANSI_GREEN_BB << "G " << ANSI_RESET_BB; break;
+          }
       }
   }
   std::cout << std::endl;
   std::cout << "Points: ";
-  for(const auto& pt_pair : player_points_){
-      switch(pt_pair.first){ 
-          case Player::RED: std::cout << ANSI_RED_BB << "R:" << pt_pair.second << ANSI_RESET_BB << " "; break;
-          case Player::BLUE: std::cout << ANSI_BLUE_BB << "B:" << pt_pair.second << ANSI_RESET_BB << " "; break;
-          case Player::YELLOW: std::cout << ANSI_YELLOW_BB << "Y:" << pt_pair.second << ANSI_RESET_BB << " "; break;
-          case Player::GREEN: std::cout << ANSI_GREEN_BB << "G:" << pt_pair.second << ANSI_RESET_BB << " "; break;
+  for(int i=0; i<4; ++i){
+      switch(static_cast<Player>(i)){ 
+          case Player::RED: std::cout << ANSI_RED_BB << "R:" << player_points_[i] << ANSI_RESET_BB << " "; break;
+          case Player::BLUE: std::cout << ANSI_BLUE_BB << "B:" << player_points_[i] << ANSI_RESET_BB << " "; break;
+          case Player::YELLOW: std::cout << ANSI_YELLOW_BB << "Y:" << player_points_[i] << ANSI_RESET_BB << " "; break;
+          case Player::GREEN: std::cout << ANSI_GREEN_BB << "G:" << player_points_[i] << ANSI_RESET_BB << " "; break;
       }
   }
   std::cout << std::endl;
-  if(termination_reason_) std::cout << "Game Over: " << *termination_reason_ << std::endl;
+  if(termination_reason_) std::cout << "Game Over: " << chaturaji_cpp::to_string(*termination_reason_) << std::endl;
 }
 
 Board::PositionKey Board::get_position_key() const { return current_hash_; }

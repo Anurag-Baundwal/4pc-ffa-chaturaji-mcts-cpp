@@ -1,9 +1,14 @@
 #pragma once
 #include <vector>
 #include <array>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <iostream>
 #include <optional>
-
+#include <stdexcept>
+#include <string>
 namespace chaturaji_cpp {
 
 // --- Board Dimensions & NN Configuration ---
@@ -20,6 +25,82 @@ constexpr int NN_VALUE_SIZE = 4;     // One value per player
 
 using Bitboard = uint64_t;
 
+template <typename T, size_t Capacity>
+class StaticVector {
+public:
+    StaticVector() : size_(0) {}
+
+    // Copy constructor
+    // Only copy the active elements, ignore the rest of the array.
+    StaticVector(const StaticVector& other) : size_(other.size_) {
+        std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+    }
+
+    // Assignment operator
+    StaticVector& operator=(const StaticVector& other) {
+        if (this != &other) {
+            size_ = other.size_;
+            std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+        }
+        return *this;
+    }
+
+    // Move ops
+    StaticVector(StaticVector&& other) noexcept : size_(other.size_) {
+        std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+        other.size_ = 0; 
+    }
+
+    StaticVector& operator=(StaticVector&& other) noexcept {
+        if (this != &other) {
+            size_ = other.size_;
+            std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+            other.size_ = 0; 
+        }
+        return *this;
+    }
+
+    void push_back(const T& value) {
+        assert(size_ < Capacity && "StaticVector capacity exceeded");
+        data_[size_++] = value;
+    }
+
+    template <typename... Args>
+    void emplace_back(Args&&... args) {
+        assert(size_ < Capacity && "StaticVector capacity exceeded");
+        data_[size_++] = T(std::forward<Args>(args)...);
+    }
+
+    void pop_back() {
+        if (size_ > 0) size_--;
+    }
+
+    void clear() {
+        size_ = 0;
+    }
+
+    size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+
+    // Element access
+    T& operator[](size_t index) { return data_[index]; }
+    const T& operator[](size_t index) const { return data_[index]; }
+    
+    // Front/Back access
+    T& back() { return data_[size_ - 1]; }
+    const T& back() const { return data_[size_ - 1]; }
+
+    // Iterators
+    T* begin() { return data_.data(); }
+    const T* begin() const { return data_.data(); }
+    T* end() { return data_.data() + size_; }
+    const T* end() const { return data_.data() + size_; }
+
+private:
+    std::array<T, Capacity> data_;
+    size_t size_;
+};
+
 enum class Player {
     RED = 0,
     BLUE = 1,
@@ -34,6 +115,29 @@ enum class PieceType {
     ROOK = 4,
     KING = 5,
 };
+
+enum class TerminationReason : uint8_t {
+    ELIMINATION,
+    FIFTY_MOVE_RULE,
+    THREEFOLD_REPETITION,
+    AUTOCLAIM
+};
+
+// Helper to convert termination reason enum to string for printing
+inline std::string to_string(TerminationReason reason) {
+    switch (reason) {
+        case TerminationReason::ELIMINATION: return "elimination";
+        case TerminationReason::FIFTY_MOVE_RULE: return "fifty_move_rule";
+        case TerminationReason::THREEFOLD_REPETITION: return "threefold_repetition";
+        case TerminationReason::AUTOCLAIM: return "autoclaim";
+        default: return "unknown";
+    }
+}
+
+// Operator to allow direct printing of TerminationReason to streams
+inline std::ostream& operator<<(std::ostream& os, TerminationReason reason) {
+    return os << to_string(reason);
+}
 
 using ZobristKey = uint64_t;
 
@@ -99,6 +203,8 @@ struct Move {
     }
 };
 
+using MoveList = StaticVector<Move, 128>;
+
 // --- Structures for Asynchronous Evaluation ---
 
 // Unique identifier for an evaluation request (can be for a batch)
@@ -120,6 +226,10 @@ struct EvaluationResult {
     std::array<float, NN_POLICY_SIZE> policy_logits; // Size: 4096
     std::array<float, NN_VALUE_SIZE> value;          // Size: 4
 };
+
+// --- Type Aliases for Board State ---
+using PlayerPointMap = std::array<int, 4>; // Replaced std::map with std::array for POD layout
+using ActivePlayerSet = uint8_t;           // Replaced std::set with bitmask
 
 } // namespace chaturaji_cpp
 

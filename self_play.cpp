@@ -51,7 +51,6 @@ SelfPlay::~SelfPlay() {
     }
 }
 
-
 const ReplayBuffer& SelfPlay::get_buffer() const {
     return buffer_;
 }
@@ -96,7 +95,7 @@ void SelfPlay::process_worker_batch(
           EvaluationResult result = futures[i].get(); 
           leaf_node->decrement_pending_visits();
 
-          // 1. Process Policy (Standard)
+          // 1. Process Policy
           std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
           bool is_root_node_eval = (leaf_node == path[0]); 
 
@@ -110,17 +109,12 @@ void SelfPlay::process_worker_batch(
               }
           }
           
-          // 2. Process Value - CRITICAL FIX HERE
-          // The NN returns values relative to the current player of the *leaf node*.
-          // We must rotate them back to absolute player indices for the MCTS tree.
+          // 2. Process Value
           std::array<double, 4> player_values_absolute;
-          
-          
           Player cp = leaf_node->get_board().get_current_player();
           int cp_idx = static_cast<int>(cp);
 
           for(int rel_i = 0; rel_i < 4; ++rel_i) {
-              // Map Relative Index (0=Current, 1=Next...) back to Absolute Index (Red/Blue...)
               int abs_p_idx = (cp_idx + rel_i) % 4;
               player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
           }
@@ -228,8 +222,7 @@ void SelfPlay::run_game_simulation(
       int move_count = 0;
 
       while (!board.is_game_over()) {
-          // Check if we can reuse the existing tree (if it exists and matches current state)
-          // Otherwise, create a fresh root.
+          // Check for tree reuse
           if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
               mcts_root_uptr = std::make_unique<MCTSNode>(board);
           }
@@ -242,13 +235,12 @@ void SelfPlay::run_game_simulation(
           
           bool root_noise_applicable = true; 
 
-          // If the tree is REUSED, the root is not a leaf, so process_worker_batch 
-          // will never trigger the noise logic. We must inject it manually here.
+          // If the tree is REUSED, the root is not a leaf, so the batch processing noise logic
+          // won't trigger. We must inject noise manually here.
           if (!current_root_ref.is_leaf()) {
               current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, rng_);
-              root_noise_applicable = false; // Prevent double application
+              root_noise_applicable = false; 
           }
-
 
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;
@@ -272,9 +264,8 @@ void SelfPlay::run_game_simulation(
 
               MCTSNode* leaf_node = current_mcts_path.current_node;
               if (leaf_node->get_board().is_game_over()) {
-                  std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
-                  std::map<Player, double> reward_map_terminal = get_reward_map(final_scores);
-                  std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map_terminal);
+                  PlayerPointMap final_scores = leaf_node->get_board().get_game_result();
+                  std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
                   leaf_node->increment_pending_visits();
@@ -301,31 +292,20 @@ void SelfPlay::run_game_simulation(
           Move chosen_move = choose_move(current_root_ref, current_temperature);
           board.make_move(chosen_move); 
 
-          // --- Tree Reuse Logic ---
+          // --- Tree Reuse Logic (Linked List) ---
           MCTSNode* chosen_child_raw_ptr = nullptr;
-          for (const auto& child_uptr_loop : current_root_ref.get_children()) {
-              if (child_uptr_loop->get_move() && child_uptr_loop->get_move().value() == chosen_move) {
-                  chosen_child_raw_ptr = child_uptr_loop.get();
+          MCTSNode* curr = current_root_ref.get_first_child();
+          while (curr) {
+              if (curr->get_move() && curr->get_move().value() == chosen_move) {
+                  chosen_child_raw_ptr = curr;
                   break;
               }
+              curr = curr->get_next_sibling();
           }
 
           if (chosen_child_raw_ptr) {
-              auto& old_root_children_vec = current_root_ref.get_children_for_reuse();
-              std::unique_ptr<MCTSNode> new_root_candidate_uptr;
-              for (auto it = old_root_children_vec.begin(); it != old_root_children_vec.end(); ++it) {
-                  if (it->get() == chosen_child_raw_ptr) {
-                      new_root_candidate_uptr = std::move(*it); 
-                      old_root_children_vec.erase(it);          
-                      break;
-                  }
-              }
-              if (new_root_candidate_uptr) {
-                  new_root_candidate_uptr->set_parent(nullptr);
-                  mcts_root_uptr = std::move(new_root_candidate_uptr);
-              } else {
-                  mcts_root_uptr = std::make_unique<MCTSNode>(board); 
-              }
+              MCTSNode* new_root_raw = mcts_root_uptr->detach_child_and_clear_others(chosen_child_raw_ptr);
+              mcts_root_uptr.reset(new_root_raw);
           } else {
               mcts_root_uptr = std::make_unique<MCTSNode>(board); 
           }
@@ -341,19 +321,22 @@ void SelfPlay::run_game_simulation(
 }
 
 std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double temperature) const {
-     std::map<Move, double> probs;
-    const auto& children = root.get_children();
-    if (children.empty()) { return probs; }
+    std::map<Move, double> probs;
+    if (root.is_leaf()) { return probs; }
 
     std::vector<double> visit_counts;
     std::vector<Move> moves;
-    visit_counts.reserve(children.size());
-    moves.reserve(children.size());
-
-    for (const auto& child : children) {
-        visit_counts.push_back(static_cast<double>(child->get_visit_count()));
-        if (child->get_move()) { moves.push_back(*child->get_move()); }
+    
+    // Iterate linked list children
+    MCTSNode* curr = root.get_first_child();
+    while (curr) {
+        visit_counts.push_back(static_cast<double>(curr->get_visit_count()));
+        if (curr->get_move()) { moves.push_back(*curr->get_move()); }
+        curr = curr->get_next_sibling();
     }
+    
+    // Safety check just in case node has children but no moves stored
+    if (moves.empty()) return probs;
 
     if (temperature == 0.0) {
         auto max_it = std::max_element(visit_counts.begin(), visit_counts.end());
@@ -406,9 +389,8 @@ void SelfPlay::process_game_result(
     const Board& final_board,
     std::vector<GameDataStep>& output_buffer 
 ) {
-    std::map<Player, int> final_scores = final_board.get_game_result();
-    std::map<Player, double> reward_map_for_game = get_reward_map(final_scores);
-    std::array<double, 4> game_rewards_array = convert_reward_map_to_array(reward_map_for_game);
+    std::array<int, 4> final_scores = final_board.get_game_result();
+    std::array<double, 4> game_rewards_array = get_reward_map_array(final_scores);
 
     for (const auto& history_step : game_history_for_rewards) {
         const Board& board_state = std::get<0>(history_step);

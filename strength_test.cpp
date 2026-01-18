@@ -91,7 +91,7 @@ void run_strength_test(
 
         // --- FAIR START INITIALIZATION ---
         // We attempt to find a starting position where, after 4 random moves,
-        // the evaluation for all players is roughly equal (-0.05 to 0.05).
+        // the evaluation for all players is roughly equal (-0.15 to 0.15).
         bool balanced_start_found = false;
         int attempts = 0;
         const int MAX_BALANCE_ATTEMPTS = 500; 
@@ -104,7 +104,8 @@ void run_strength_test(
             // 4-PLY RANDOM OPENING (One move per player)
             for (int p = 0; p < 4; ++p) {
                 if (board.is_game_over()) { game_ended_early = true; break; }
-                std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
+                MoveList moves;
+                board.get_pseudo_legal_moves(board.get_current_player(), moves);
                 if (moves.empty()) { game_ended_early = true; break; }
                 
                 std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
@@ -131,8 +132,8 @@ void run_strength_test(
                 bool is_fair = true;
                 for (int i = 0; i < 4; ++i) {
                     double avg_reward = total_vals[i] / visits;
-                    // Check range [-0.05, 0.05]
-                    if (avg_reward < -0.05 || avg_reward > 0.05) {
+                    // Check range [-0.15, 0.15]
+                    if (avg_reward < -0.15 || avg_reward > 0.15) {
                         is_fair = false;
                         break;
                     }
@@ -179,12 +180,15 @@ void run_strength_test(
         auto game_end_time = std::chrono::high_resolution_clock::now();
         total_game_time += std::chrono::duration<double>(game_end_time - game_start_time).count();
 
-        Board::PlayerPointMap final_scores = board.get_game_result();
+        // Get result array
+        PlayerPointMap final_scores = board.get_game_result();
+        
         std::vector<std::pair<Player, int>> results;
         for (int i = 0; i < 4; ++i) {
             Player p = static_cast<Player>(i);
-            results.push_back({p, final_scores[p]});
+            results.push_back({p, final_scores[i]});
         }
+
         std::sort(results.begin(), results.end(), [](auto& a, auto& b){ return a.second > b.second; });
 
         for (size_t rank = 0; rank < results.size(); ++rank) {

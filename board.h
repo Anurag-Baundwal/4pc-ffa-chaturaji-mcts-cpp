@@ -26,34 +26,24 @@ class Board;
 struct MCTSChildCopyTag {}; // Empty struct used purely for tagging/overloading
 
 struct UndoInfo {
-    Move move;                     // The move that was made
-    std::optional<Piece> captured_piece; // The piece that was on the 'to' square (or nullopt)
-    PieceType original_moving_piece_type; // Type of the piece *before* potential promotion
-    Player original_player;        // Player whose turn it was *before* the move
-    int original_full_move_number;
-    int original_move_number_of_last_reset;
-    bool was_history_cleared;      // Did this move clear the position history?
-    std::optional<Player> eliminated_player; // Player eliminated by this move (if any)
-    ZobristKey previous_hash;      // Hash *before* the move was made
-    int check_bonus_points = 0; 
-
-    // New fields for bitboard state, no original comments for these specific fields
-    std::array<std::array<Bitboard, 5>, 4> original_piece_bitboards;
-    std::array<Bitboard, 4> original_player_bitboards;
-    Bitboard original_occupied_bitboard;
-
-    // No need to store points delta; can be recalculated from captured_piece
-    // No need to store previous position history; just pop the last hash during undo
+    Move move;
+    std::optional<Piece> captured_piece = std::nullopt;
+    uint8_t original_active_mask = 0; 
+    Player original_player = Player::RED;
+    int original_full_move_number = 0;
+    int original_move_number_of_last_reset = 0;
+    bool was_history_cleared = false;
+    std::optional<Player> eliminated_player = std::nullopt;
+    ZobristKey previous_hash = 0;
+    int check_bonus_points = 0;
 };
 
 class Board {
 public:
     // --- Typedefs for clarity ---
     using PositionKey = ZobristKey;
-    using PositionHistory = std::vector<PositionKey>;
+    using PositionHistory = StaticVector<PositionKey, 256>;
     using GameHistory = std::vector<Move>; // Represents a sequence of moves played in a game
-    using PlayerPointMap = std::map<Player, int>;
-    using ActivePlayerSet = std::set<Player>;
 
     // --- Constructors ---
     Board(); // Default constructor initializes the board
@@ -88,18 +78,26 @@ public:
     // to_sq_idx and from_sq_idx are now in magic_utils
     std::optional<Piece> get_piece_at_sq(int sq_idx) const; // Get piece from bitboards
 
-    std::vector<Move> get_pseudo_legal_moves(Player player) const;
+    void get_pseudo_legal_moves(Player player, MoveList& moves) const;
     std::optional<Piece> make_move(const Move& move);
     std::optional<Piece> make_move_for_mcts(const Move& move);
     void undo_move();
 
     // --- Game State Accessors ---
-    const ActivePlayerSet& get_active_players() const;
+    const std::set<Player> get_active_players() const; // Legacy adapter: constructs set from mask
+    ActivePlayerSet get_active_mask() const { return active_mask_; } // Raw mask accessor
+    
+    // Helpers for bitmask
+    bool is_player_active(Player p) const {
+        return active_mask_ & (1 << static_cast<int>(p));
+    }
+
     const PlayerPointMap& get_player_points() const;
+    const PlayerPointMap& get_player_points_array() const { return player_points_; }
     Player get_current_player() const;
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
-    const std::optional<std::string>& get_termination_reason() const;
+    const std::optional<TerminationReason>& get_termination_reason() const;
     const PositionHistory& get_position_history() const;
     Bitboard get_occupied_bitboard() const; // Get combined occupied bitboard
     Bitboard get_player_bitboard(Player p) const; // Get bitboard for a specific player's pieces
@@ -115,7 +113,7 @@ public:
     std::optional<Player> get_winner() const; // Determines winner based on game result
 
     // --- Evaluation ---
-    PlayerPointMap evaluate() const; // Hand-crafted evaluation (can be removed later if only NN is used)
+    std::map<Player, int> evaluate() const; // Hand-crafted evaluation (returns Map for compat)
     int get_piece_value(const Piece& piece) const;
     int get_piece_capture_value(const Piece& piece) const;
 
@@ -136,13 +134,13 @@ public:
 
 private:
     // --- Internal State ---
-    ActivePlayerSet active_players_;
-    PlayerPointMap player_points_;
+    ActivePlayerSet active_mask_; // uint8_t bitmask
+    PlayerPointMap player_points_; // std::array<int, 4>
     Player current_player_;
     PositionHistory position_history_; // Stores Zobrist keys of past positions
     int full_move_number_;
     int move_number_of_last_reset_; // For 50-move rule
-    mutable std::optional<std::string> termination_reason_; // Store reason for game end
+    mutable std::optional<TerminationReason> termination_reason_;  // Store reason for game end
     ZobristKey current_hash_; // Current Zobrist hash of the position
     std::vector<UndoInfo> undo_stack_; // Stack to store information for undoing moves
 
@@ -186,11 +184,11 @@ private:
     static StaticInitializer static_initializer_;
 
     // --- Private Helper Methods for Move Generation (Bitboard based) ---
-    void get_pawn_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_knight_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_bishop_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_rook_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_king_moves_bb(Player player, std::vector<Move>& moves) const;
+    void get_pawn_moves_bb(Player player, MoveList& moves) const;
+    void get_knight_moves_bb(Player player, MoveList& moves) const;
+    void get_bishop_moves_bb(Player player, MoveList& moves) const;
+    void get_rook_moves_bb(Player player, MoveList& moves) const;
+    void get_king_moves_bb(Player player, MoveList& moves) const;
 
     // Private Helper for Turn Advancement
     void advance_turn();
