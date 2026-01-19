@@ -91,7 +91,7 @@ void run_strength_test(
 
         // --- FAIR START INITIALIZATION ---
         // We attempt to find a starting position where, after 4 random moves,
-        // the evaluation for all players is roughly equal (-0.05 to 0.05).
+        // the evaluation for all players is roughly equal (-0.15 to 0.15).
         bool balanced_start_found = false;
         int attempts = 0;
         const int MAX_BALANCE_ATTEMPTS = 500; 
@@ -131,8 +131,8 @@ void run_strength_test(
                 bool is_fair = true;
                 for (int i = 0; i < 4; ++i) {
                     double avg_reward = total_vals[i] / visits;
-                    // Check range [-0.05, 0.05]
-                    if (avg_reward < -0.05 || avg_reward > 0.05) {
+                    // Check range [-0.15, 0.15]
+                    if (avg_reward < -0.15 || avg_reward > 0.15) {
                         is_fair = false;
                         break;
                     }
