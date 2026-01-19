@@ -272,9 +272,8 @@ void SelfPlay::run_game_simulation(
 
               MCTSNode* leaf_node = current_mcts_path.current_node;
               if (leaf_node->get_board().is_game_over()) {
-                  std::map<Player, int> final_scores = leaf_node->get_board().get_game_result();
-                  std::map<Player, double> reward_map_terminal = get_reward_map(final_scores);
-                  std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map_terminal);
+                  PlayerPointMap final_scores = leaf_node->get_board().get_game_result();
+                  std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
                   leaf_node->increment_pending_visits();
@@ -406,9 +405,11 @@ void SelfPlay::process_game_result(
     const Board& final_board,
     std::vector<GameDataStep>& output_buffer 
 ) {
-    std::map<Player, int> final_scores = final_board.get_game_result();
-    std::map<Player, double> reward_map_for_game = get_reward_map(final_scores);
-    std::array<double, 4> game_rewards_array = convert_reward_map_to_array(reward_map_for_game);
+    // 1. Get points array
+    std::array<int, 4> final_scores = final_board.get_game_result();
+    
+    // 2. Calculate rewards array
+    std::array<double, 4> game_rewards_array = get_reward_map_array(final_scores);
 
     for (const auto& history_step : game_history_for_rewards) {
         const Board& board_state = std::get<0>(history_step);

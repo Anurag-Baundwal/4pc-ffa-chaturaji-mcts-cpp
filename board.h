@@ -97,8 +97,9 @@ public:
     bool is_player_active(Player p) const {
         return active_mask_ & (1 << static_cast<int>(p));
     }
-    
+
     const PlayerPointMap& get_player_points() const;
+    const PlayerPointMap& get_player_points_array() const { return player_points_; }
     Player get_current_player() const;
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
@@ -114,7 +115,7 @@ public:
 
     // --- Game Status ---
     bool is_game_over() const;             // Checks and sets termination_reason if true
-    std::map<Player, int> get_game_result() const; // Calculates final scores based on state (returns Map for compat)
+    PlayerPointMap get_game_result() const; // Calculates final scores based on state
     std::optional<Player> get_winner() const; // Determines winner based on game result
 
     // --- Evaluation ---

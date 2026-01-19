@@ -179,13 +179,15 @@ void run_strength_test(
         auto game_end_time = std::chrono::high_resolution_clock::now();
         total_game_time += std::chrono::duration<double>(game_end_time - game_start_time).count();
 
-        std::map<Player, int> final_scores = board.get_game_result();
+        // Get result array
+        PlayerPointMap final_scores = board.get_game_result();
         
         std::vector<std::pair<Player, int>> results;
         for (int i = 0; i < 4; ++i) {
             Player p = static_cast<Player>(i);
-            results.push_back({p, final_scores[p]});
+            results.push_back({p, final_scores[i]});
         }
+
         std::sort(results.begin(), results.end(), [](auto& a, auto& b){ return a.second > b.second; });
 
         for (size_t rank = 0; rank < results.size(); ++rank) {

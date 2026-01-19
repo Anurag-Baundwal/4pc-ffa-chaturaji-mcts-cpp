@@ -1,5 +1,6 @@
 #include "board.h"
 #include "magic_utils.h" // Include for magic_utils:: functions and constants
+#include "types.h"
 #include <algorithm> // For std::find, std::max_element, std::copy
 #include <array>     // For Zobrist key storage and bitboard arrays
 #include <cmath>     // For std::ceil, std::round (used in evaluate, get_game_result)
@@ -1326,64 +1327,60 @@ bool Board::is_game_over() const {
   return false;
 }
 
-std::map<Player, int> Board::get_game_result() const {
-  std::map<Player, int> results;
-  for (int i = 0; i < 4; ++i) {
-      results[static_cast<Player>(i)] = player_points_[i];
-  }
+PlayerPointMap Board::get_game_result() const {
+  PlayerPointMap results = player_points_; // Copy current points
   
   // Calculate bonus points based on dead kings for standard draws (50-move/repetition)
   int num_kings_of_inactive_players = 0;
-  for (int p_idx_loop = 0; p_idx_loop < 4; ++p_idx_loop) {
-      if (!(active_mask_ & (1 << p_idx_loop))) {
-          if (piece_bitboards_[p_idx_loop][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+  for (int i = 0; i < 4; ++i) {
+      if (!(active_mask_ & (1 << i))) {
+          if (piece_bitboards_[i][Board::piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
               num_kings_of_inactive_players++;
           }
       }
   }
 
-  int num_active_players = magic_utils::pop_count(static_cast<Bitboard>(active_mask_));
-
-  if (termination_reason_) { 
+  int num_active = magic_utils::pop_count(static_cast<Bitboard>(active_mask_));
+  
+  if (termination_reason_) {
     const std::string &reason = *termination_reason_;
-    
     if (reason == "autoclaim") {
       // We manually simulate the points transfer that would happen if p_curr resigned.
       // (Winner keeps their points, Opponent gets the bonus).
       Player p_curr = current_player_;
       Player p_opp = Player::RED;
       for (int i=0; i<4; ++i) {
-          if ((active_mask_ & (1 << i)) && static_cast<Player>(i) != p_curr) { p_opp = static_cast<Player>(i); break; }
+        if ((active_mask_ & (1 << i)) && static_cast<Player>(i) != p_curr) { 
+        p_opp = static_cast<Player>(i); break;
+        }
       }
-      
       // Opponent gets: 3 (Winner's King) + 3 * (Dead Kings on Board)
       int points_to_add = 3; 
       for (int i = 0; i < 4; ++i) {
-         if (!(active_mask_ & (1 << i))) {
-             if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
-                 points_to_add += 3;
-             }
-         }
+        if (!(active_mask_ & (1 << i))) {
+          if (piece_bitboards_[i][piece_type_to_bb_idx(PieceType::KING)] != 0ULL) {
+              points_to_add += 3;
+          }
+        }
       }
-      results[p_opp] += points_to_add;
+      results[static_cast<int>(p_opp)] += points_to_add;
     } 
     else if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
-      if (num_active_players > 0) { 
-        int dead_king_bonus_per_player = (num_kings_of_inactive_players > 0) ? 
-            static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active_players)) : 0;
+      if (num_active > 0) { 
+        int bonus = (num_kings_of_inactive_players > 0) ? 
+          static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active)) : 0;
         for (int i=0; i<4; ++i) { 
-            if(active_mask_ & (1 << i))
-                results[static_cast<Player>(i)] += (2 + dead_king_bonus_per_player);
+          if(active_mask_ & (1 << i)) results[i] += (2 + bonus);
         }
       }
     } 
     else if (reason == "elimination") {
-      if (num_active_players == 1 && num_kings_of_inactive_players > 0) {
+      if (num_active == 1 && num_kings_of_inactive_players > 0) {
         for(int i=0; i<4; ++i) {
-            if(active_mask_ & (1<<i)) {
-                results[static_cast<Player>(i)] += (3 * num_kings_of_inactive_players);
-                break;
-            }
+          if(active_mask_ & (1<<i)) {
+            results[i] += (3 * num_kings_of_inactive_players);
+            break;
+          }
         }
       }
     }
@@ -1393,11 +1390,17 @@ std::map<Player, int> Board::get_game_result() const {
 
 std::optional<Player> Board::get_winner() const {
   if (!termination_reason_) return std::nullopt;
-  auto final_scores = get_game_result(); 
-  auto winner_it = std::max_element(final_scores.begin(), final_scores.end(),
-                       [](const auto &a, const auto &b) { return a.second < b.second; });
+  
+  PlayerPointMap final_scores = get_game_result();
+  
+  // Find the iterator to the maximum score
+  auto winner_it = std::max_element(final_scores.begin(), final_scores.end());
+  
   if (winner_it == final_scores.end()) return std::nullopt;
-  return std::optional<Player>(winner_it->first);
+  
+  // Calculate the index (which corresponds to the Player enum)
+  int p_idx = std::distance(final_scores.begin(), winner_it);
+  return static_cast<Player>(p_idx);
 }
 
 int Board::get_piece_value(const Piece& piece) const {

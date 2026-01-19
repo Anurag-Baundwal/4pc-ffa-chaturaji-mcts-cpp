@@ -55,7 +55,7 @@ std::optional<Move> get_best_move_mcts_sync(
     bool verbose = false 
 );
 
-std::map<Player, double> get_reward_map(const std::map<Player, int>& final_scores);
+std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points);
 
 std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>& reward_map, double default_value = 0.0);
 
