@@ -28,7 +28,8 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
 
 std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
-    std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+    MoveList legal_moves;
+    board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
 
     if (legal_moves.empty()) {
         return policy_probs;
@@ -37,8 +38,7 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
     // 1. Gather logits for legal moves only
     std::vector<float> legal_logits;
     legal_logits.reserve(legal_moves.size());
-    std::vector<Move> valid_moves;
-    valid_moves.reserve(legal_moves.size());
+    MoveList valid_moves;
 
     float max_logit = -std::numeric_limits<float>::infinity();
 
@@ -296,7 +296,8 @@ std::optional<Move> get_best_move_mcts_sync(
 
     const auto& children_const_ref = current_mcts_root_shptr->get_children();
     if (children_const_ref.empty()) {
-        auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+        MoveList legal_moves;
+        board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
         if (legal_moves.empty()) {
             current_mcts_root_shptr = nullptr;
             return std::nullopt; 

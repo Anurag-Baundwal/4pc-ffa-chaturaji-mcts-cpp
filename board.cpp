@@ -542,31 +542,29 @@ bool Board::is_valid_square(int row, int col) const {
 }
 
 // --- Pseudo-Legal Move Generation (Master Function) ---
-std::vector<Move> Board::get_pseudo_legal_moves(Player player) const {
-  std::vector<Move> pseudo_legal_moves;
-  pseudo_legal_moves.reserve(128);
+void Board::get_pseudo_legal_moves(Player player, MoveList& moves) const {
+  moves.clear();
   
   // Check if player is active using bitmask
   if (!(active_mask_ & (1 << static_cast<int>(player)))) {
-      return pseudo_legal_moves; 
+      return; 
   }
 
   // --- Resignation is always a valid option ---
   // Strategic reasons:
   // 1. Claim Win: End game while ahead (in 2-player endgame).
   // 2. Defensive: Prevent opponents from farming points from my pieces.
-  pseudo_legal_moves.push_back(Move::Resign());
+  moves.push_back(Move::Resign());
 
-  get_pawn_moves_bb(player, pseudo_legal_moves);
-  get_knight_moves_bb(player, pseudo_legal_moves);
-  get_bishop_moves_bb(player, pseudo_legal_moves);
-  get_rook_moves_bb(player, pseudo_legal_moves);
-  get_king_moves_bb(player, pseudo_legal_moves);
-  return pseudo_legal_moves;
+  get_pawn_moves_bb(player, moves);
+  get_knight_moves_bb(player, moves);
+  get_bishop_moves_bb(player, moves);
+  get_rook_moves_bb(player, moves);
+  get_king_moves_bb(player, moves);
 }
 
 // --- Bitboard-Based Move Generation Helpers ---
-void Board::get_pawn_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_pawn_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard pawns = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::PAWN)];
     Bitboard my_pieces = player_bitboards_[p_idx];
@@ -620,7 +618,7 @@ void Board::get_pawn_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_knight_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_knight_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard knights = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KNIGHT)];
     Bitboard not_my_pieces = ~player_bitboards_[p_idx];
@@ -639,7 +637,7 @@ void Board::get_knight_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_king_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_king_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard kings = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::KING)];
     Bitboard not_my_pieces = ~player_bitboards_[p_idx];
@@ -657,7 +655,7 @@ void Board::get_king_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_rook_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard rooks = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::ROOK)];
     Bitboard my_pieces = player_bitboards_[p_idx];
@@ -667,9 +665,7 @@ void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
         int from_sq = magic_utils::pop_lsb(temp_rooks);
         BoardLocation from_loc = magic_utils::from_sq_idx(from_sq);
 
-        // Use Board's precomputed masks and shifts, which were initialized using magic_utils
         Bitboard blockers = occupied_bitboard_ & rook_masks_[from_sq]; 
-        // Use magic_utils constants for magics and Board's precomputed shifts
         unsigned int magic_idx = (blockers * magic_utils::RookMagics[from_sq]) >> rook_shift_bits_[from_sq];
         Bitboard possible_moves = rook_attack_table_[rook_attack_offsets_[from_sq] + magic_idx];
         
@@ -683,7 +679,7 @@ void Board::get_rook_moves_bb(Player player, std::vector<Move>& moves) const {
     }
 }
 
-void Board::get_bishop_moves_bb(Player player, std::vector<Move>& moves) const {
+void Board::get_bishop_moves_bb(Player player, MoveList& moves) const {
     int p_idx = static_cast<int>(player);
     Bitboard bishops = piece_bitboards_[p_idx][piece_type_to_bb_idx(PieceType::BISHOP)];
     Bitboard my_pieces = player_bitboards_[p_idx];

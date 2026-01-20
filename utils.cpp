@@ -166,7 +166,8 @@ Move parse_string_to_move(const Board& board, const std::string& move_str) {
             magic_utils::to_sq_idx(8 - (to_str[1] - '0'), to_str[0] - 'a')
         );
 
-        std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+        MoveList legal_moves;
+        board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
         for (const auto& move : legal_moves) {
             if (move.from_loc == from_loc && move.to_loc == to_loc) {
                 return move;

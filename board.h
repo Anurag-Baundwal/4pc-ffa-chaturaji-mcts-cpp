@@ -78,7 +78,7 @@ public:
     // to_sq_idx and from_sq_idx are now in magic_utils
     std::optional<Piece> get_piece_at_sq(int sq_idx) const; // Get piece from bitboards
 
-    std::vector<Move> get_pseudo_legal_moves(Player player) const;
+    void get_pseudo_legal_moves(Player player, MoveList& moves) const;
     std::optional<Piece> make_move(const Move& move);
     std::optional<Piece> make_move_for_mcts(const Move& move);
     void undo_move();
@@ -184,11 +184,11 @@ private:
     static StaticInitializer static_initializer_;
 
     // --- Private Helper Methods for Move Generation (Bitboard based) ---
-    void get_pawn_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_knight_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_bishop_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_rook_moves_bb(Player player, std::vector<Move>& moves) const;
-    void get_king_moves_bb(Player player, std::vector<Move>& moves) const;
+    void get_pawn_moves_bb(Player player, MoveList& moves) const;
+    void get_knight_moves_bb(Player player, MoveList& moves) const;
+    void get_bishop_moves_bb(Player player, MoveList& moves) const;
+    void get_rook_moves_bb(Player player, MoveList& moves) const;
+    void get_king_moves_bb(Player player, MoveList& moves) const;
 
     // Private Helper for Turn Advancement
     void advance_turn();

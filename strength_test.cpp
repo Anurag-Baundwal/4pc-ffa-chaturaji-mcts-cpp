@@ -104,7 +104,8 @@ void run_strength_test(
             // 4-PLY RANDOM OPENING (One move per player)
             for (int p = 0; p < 4; ++p) {
                 if (board.is_game_over()) { game_ended_early = true; break; }
-                std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
+                MoveList moves;
+                board.get_pseudo_legal_moves(board.get_current_player(), moves);
                 if (moves.empty()) { game_ended_early = true; break; }
                 
                 std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);

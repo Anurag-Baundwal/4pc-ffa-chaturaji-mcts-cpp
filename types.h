@@ -2,6 +2,7 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -60,11 +61,14 @@ public:
     }
 
     void push_back(const T& value) {
-        if (size_ < Capacity) {
-            data_[size_++] = value;
-        } else {
-            throw std::length_error("StaticVector capacity exceeded");
-        }
+        assert(size_ < Capacity && "StaticVector capacity exceeded");
+        data_[size_++] = value;
+    }
+
+    template <typename... Args>
+    void emplace_back(Args&&... args) {
+        assert(size_ < Capacity && "StaticVector capacity exceeded");
+        data_[size_++] = T(std::forward<Args>(args)...);
     }
 
     void pop_back() {
@@ -198,6 +202,8 @@ struct Move {
         return from_loc.row == -1 && from_loc.col == -1;
     }
 };
+
+using MoveList = StaticVector<Move, 128>;
 
 // --- Structures for Asynchronous Evaluation ---
 
