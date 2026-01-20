@@ -317,14 +317,14 @@ bool test_threefold_repetition(Board& board) {
   // **********************************************************
   std::cout << "  Checking game over state for threefold repetition (Initial Position, 3rd time)..." << std::endl;
   bool game_over_initial_rep = board.is_game_over(); // This call updates termination_reason_ if applicable
-  std::optional<std::string> reason_initial_rep = board.get_termination_reason();
+  auto reason_opt = board.get_termination_reason();
 
   // Restore board state BEFORE making assertions, so subsequent tests (if any) start fresh
   board = initial_board;
   std::cout << "  Restored initial board state." << std::endl;
 
   // NOW check the result
-  if (game_over_initial_rep && reason_initial_rep && *reason_initial_rep == "threefold_repetition") {
+  if (game_over_initial_rep && reason_opt && *reason_opt == TerminationReason::THREEFOLD_REPETITION) {
       std::cout << "+++ PASSED: Threefold repetition correctly detected after 4.G (Initial state 3rd occurrence)." << std::endl;
       // Test was successful up to this point for detecting the first repetition
       // We can skip the rest of the original test (Cycle 5 and subsequent checks)
@@ -333,7 +333,7 @@ bool test_threefold_repetition(Board& board) {
   } else {
       std::cerr << "--- FAILED: Threefold repetition was NOT detected after 4.G (Initial state 3rd occurrence)." << std::endl;
       std::cerr << "    Game Over flag: " << (game_over_initial_rep ? "Yes" : "No") << std::endl;
-      std::cerr << "    Termination Reason: " << (reason_initial_rep ? *reason_initial_rep : "None") << std::endl;
+      std::cerr << "    Termination Reason: " << (reason_opt ? chaturaji_cpp::to_string(*reason_opt) : "None") << std::endl;
       std::cerr << "    Count of initial hash in history *before* check was: " << history_count_initial_after_4 << std::endl;
       return false; // Fail the whole test function
   }

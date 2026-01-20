@@ -97,7 +97,7 @@ public:
     Player get_current_player() const;
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
-    const std::optional<std::string>& get_termination_reason() const;
+    const std::optional<TerminationReason>& get_termination_reason() const;
     const PositionHistory& get_position_history() const;
     Bitboard get_occupied_bitboard() const; // Get combined occupied bitboard
     Bitboard get_player_bitboard(Player p) const; // Get bitboard for a specific player's pieces
@@ -140,7 +140,7 @@ private:
     PositionHistory position_history_; // Stores Zobrist keys of past positions
     int full_move_number_;
     int move_number_of_last_reset_; // For 50-move rule
-    mutable std::optional<std::string> termination_reason_; // Store reason for game end
+    mutable std::optional<TerminationReason> termination_reason_;  // Store reason for game end
     ZobristKey current_hash_; // Current Zobrist hash of the position
     std::vector<UndoInfo> undo_stack_; // Stack to store information for undoing moves
 

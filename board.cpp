@@ -1279,7 +1279,7 @@ const PlayerPointMap &Board::get_player_points() const { return player_points_; 
 Player Board::get_current_player() const { return current_player_; }
 int Board::get_full_move_number() const { return full_move_number_; }
 int Board::get_move_number_of_last_reset() const { return move_number_of_last_reset_; }
-const std::optional<std::string> &Board::get_termination_reason() const { return termination_reason_; }
+const std::optional<TerminationReason> &Board::get_termination_reason() const { return termination_reason_; }
 const Board::PositionHistory &Board::get_position_history() const { return position_history_; }
 
 Player Board::get_last_active_player() const {
@@ -1352,7 +1352,7 @@ bool Board::is_game_over() const {
       // then we FORCE the claim to freeze the standings.
       if (best_inactive_score > player_points_[static_cast<int>(p_opp)]) {
         if (score_opp_after_transfer <= best_inactive_score) {
-          termination_reason_ = "autoclaim";
+          termination_reason_ = TerminationReason::AUTOCLAIM;
           return true;
         }
       }
@@ -1361,7 +1361,7 @@ bool Board::is_game_over() const {
 
   // --- Standard Termination Checks ---
   if (active_count <= 1) { 
-    termination_reason_ = "elimination"; 
+    termination_reason_ = TerminationReason::ELIMINATION; 
     return true; 
   }
 
@@ -1370,7 +1370,7 @@ bool Board::is_game_over() const {
     if (!undo_stack_.empty()) {
       Player player_who_just_moved = undo_stack_.back().original_player;
       if (player_who_just_moved == get_last_active_player()) {
-        termination_reason_ = "fifty_move_rule"; 
+        termination_reason_ = TerminationReason::FIFTY_MOVE_RULE; 
         return true;
       }
     }
@@ -1379,7 +1379,7 @@ bool Board::is_game_over() const {
   int count = 0;
   for (const auto &key : position_history_) if (key == current_hash_) count++;
   if (count >= 3) { 
-    termination_reason_ = "threefold_repetition"; 
+    termination_reason_ = TerminationReason::THREEFOLD_REPETITION; 
     return true; 
   }
   return false;
@@ -1401,8 +1401,8 @@ PlayerPointMap Board::get_game_result() const {
   int num_active = magic_utils::pop_count(static_cast<Bitboard>(active_mask_));
   
   if (termination_reason_) {
-    const std::string &reason = *termination_reason_;
-    if (reason == "autoclaim") {
+    TerminationReason reason = *termination_reason_;
+    if (reason == TerminationReason::AUTOCLAIM) {
       // We manually simulate the points transfer that would happen if p_curr resigned.
       // (Winner keeps their points, Opponent gets the bonus).
       Player p_curr = current_player_;
@@ -1423,7 +1423,7 @@ PlayerPointMap Board::get_game_result() const {
       }
       results[static_cast<int>(p_opp)] += points_to_add;
     } 
-    else if (reason == "fifty_move_rule" || reason == "threefold_repetition") {
+    else if (reason == TerminationReason::FIFTY_MOVE_RULE || reason == TerminationReason::THREEFOLD_REPETITION) {
       if (num_active > 0) { 
         int bonus = (num_kings_of_inactive_players > 0) ? 
           static_cast<int>(std::ceil(3.0 * num_kings_of_inactive_players / num_active)) : 0;
@@ -1432,7 +1432,7 @@ PlayerPointMap Board::get_game_result() const {
         }
       }
     } 
-    else if (reason == "elimination") {
+    else if (reason == TerminationReason::ELIMINATION) {
       if (num_active == 1 && num_kings_of_inactive_players > 0) {
         for(int i=0; i<4; ++i) {
           if(active_mask_ & (1<<i)) {
@@ -1629,7 +1629,7 @@ void Board::print_board() const {
       }
   }
   std::cout << std::endl;
-  if(termination_reason_) std::cout << "Game Over: " << *termination_reason_ << std::endl;
+  if(termination_reason_) std::cout << "Game Over: " << chaturaji_cpp::to_string(*termination_reason_) << std::endl;
 }
 
 Board::PositionKey Board::get_position_key() const { return current_hash_; }

@@ -4,9 +4,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
-
+#include <string>
 namespace chaturaji_cpp {
 
 // --- Board Dimensions & NN Configuration ---
@@ -110,6 +111,29 @@ enum class PieceType {
     ROOK = 4,
     KING = 5,
 };
+
+enum class TerminationReason : uint8_t {
+    ELIMINATION,
+    FIFTY_MOVE_RULE,
+    THREEFOLD_REPETITION,
+    AUTOCLAIM
+};
+
+// Helper to convert termination reason enum to string for printing
+inline std::string to_string(TerminationReason reason) {
+    switch (reason) {
+        case TerminationReason::ELIMINATION: return "elimination";
+        case TerminationReason::FIFTY_MOVE_RULE: return "fifty_move_rule";
+        case TerminationReason::THREEFOLD_REPETITION: return "threefold_repetition";
+        case TerminationReason::AUTOCLAIM: return "autoclaim";
+        default: return "unknown";
+    }
+}
+
+// Operator to allow direct printing of TerminationReason to streams
+inline std::ostream& operator<<(std::ostream& os, TerminationReason reason) {
+    return os << to_string(reason);
+}
 
 using ZobristKey = uint64_t;
 

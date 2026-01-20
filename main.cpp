@@ -329,7 +329,7 @@ int main(int argc, char* argv[]) {
             if (board.is_game_over()) {
                  std::cout << "Game Over!" << std::endl;
                  if(board.get_termination_reason()) {
-                     std::cout << "Reason: " << *board.get_termination_reason() << std::endl;
+                     std::cout << "Reason: " << chaturaji_cpp::to_string(*board.get_termination_reason()) << std::endl;
                  }
                   std::cout << "\nFinal Adjusted Scores (determining ranks):" << std::endl;
                   auto final_results = board.get_game_result();
