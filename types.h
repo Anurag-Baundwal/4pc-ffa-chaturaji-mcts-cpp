@@ -1,8 +1,11 @@
 #pragma once
 #include <vector>
 #include <array>
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <optional>
+#include <stdexcept>
 
 namespace chaturaji_cpp {
 
@@ -19,6 +22,79 @@ constexpr int NN_POLICY_SIZE = 4096; // 64 from_sq * 64 to_sq
 constexpr int NN_VALUE_SIZE = 4;     // One value per player
 
 using Bitboard = uint64_t;
+
+template <typename T, size_t Capacity>
+class StaticVector {
+public:
+    StaticVector() : size_(0) {}
+
+    // Copy constructor
+    // Only copy the active elements, ignore the rest of the array.
+    StaticVector(const StaticVector& other) : size_(other.size_) {
+        std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+    }
+
+    // Assignment operator
+    StaticVector& operator=(const StaticVector& other) {
+        if (this != &other) {
+            size_ = other.size_;
+            std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+        }
+        return *this;
+    }
+
+    // Move ops
+    StaticVector(StaticVector&& other) noexcept : size_(other.size_) {
+        std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+        other.size_ = 0; 
+    }
+
+    StaticVector& operator=(StaticVector&& other) noexcept {
+        if (this != &other) {
+            size_ = other.size_;
+            std::copy(other.data_.begin(), other.data_.begin() + size_, data_.begin());
+            other.size_ = 0; 
+        }
+        return *this;
+    }
+
+    void push_back(const T& value) {
+        if (size_ < Capacity) {
+            data_[size_++] = value;
+        } else {
+            throw std::length_error("StaticVector capacity exceeded");
+        }
+    }
+
+    void pop_back() {
+        if (size_ > 0) size_--;
+    }
+
+    void clear() {
+        size_ = 0;
+    }
+
+    size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+
+    // Element access
+    T& operator[](size_t index) { return data_[index]; }
+    const T& operator[](size_t index) const { return data_[index]; }
+    
+    // Front/Back access
+    T& back() { return data_[size_ - 1]; }
+    const T& back() const { return data_[size_ - 1]; }
+
+    // Iterators
+    T* begin() { return data_.data(); }
+    const T* begin() const { return data_.data(); }
+    T* end() { return data_.data() + size_; }
+    const T* end() const { return data_.data() + size_; }
+
+private:
+    std::array<T, Capacity> data_;
+    size_t size_;
+};
 
 enum class Player {
     RED = 0,

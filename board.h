@@ -42,9 +42,8 @@ class Board {
 public:
     // --- Typedefs for clarity ---
     using PositionKey = ZobristKey;
-    using PositionHistory = std::vector<PositionKey>;
+    using PositionHistory = StaticVector<PositionKey, 256>;
     using GameHistory = std::vector<Move>; // Represents a sequence of moves played in a game
-    // Note: types.h defines PlayerPointMap as std::array<int, 4> and ActivePlayerSet as uint8_t
 
     // --- Constructors ---
     Board(); // Default constructor initializes the board
