@@ -36,11 +36,6 @@ struct UndoInfo {
     std::optional<Player> eliminated_player = std::nullopt;
     ZobristKey previous_hash = 0;
     int check_bonus_points = 0;
-
-    // Bitboard state
-    std::array<std::array<Bitboard, 5>, 4> original_piece_bitboards;
-    std::array<Bitboard, 4> original_player_bitboards;
-    Bitboard original_occupied_bitboard;
 };
 
 class Board {

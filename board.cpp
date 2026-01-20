@@ -716,13 +716,9 @@ std::optional<Piece> Board::make_move(const Move &move) {
   }
 
   UndoInfo undo_info;
-  undo_info.original_piece_bitboards = piece_bitboards_;
-  undo_info.original_player_bitboards = player_bitboards_;
-  undo_info.original_occupied_bitboard = occupied_bitboard_;
-  // Save original mask
-  undo_info.original_active_mask = active_mask_;
-  
+
   undo_info.move = move;
+  undo_info.original_active_mask = active_mask_;
   undo_info.original_player = current_player_;
   undo_info.original_full_move_number = full_move_number_;
   undo_info.original_move_number_of_last_reset = move_number_of_last_reset_;
@@ -1000,12 +996,8 @@ void Board::undo_move() {
   UndoInfo undo_info = undo_stack_.back();
   undo_stack_.pop_back();
 
-  piece_bitboards_ = undo_info.original_piece_bitboards;
-  player_bitboards_ = undo_info.original_player_bitboards;
-  occupied_bitboard_ = undo_info.original_occupied_bitboard;
-  // Restore bitmask
+  // 1. Restore Scalars and History
   active_mask_ = undo_info.original_active_mask;
-  
   current_hash_ = undo_info.previous_hash;
   current_player_ = undo_info.original_player;
   full_move_number_ = undo_info.original_full_move_number;
@@ -1014,19 +1006,86 @@ void Board::undo_move() {
   if (!position_history_.empty()) {
       position_history_.pop_back();
   }
-  
+
+  // 2. Restore Points (Logic remains the same)
   if (!undo_info.move.is_resignation() && undo_info.captured_piece) {
     const Piece &captured = undo_info.captured_piece.value();
     player_points_[static_cast<int>(undo_info.original_player)] -= get_piece_capture_value(captured);
   }
-
-  // --- UNDO BONUS POINTS ---
   if (undo_info.check_bonus_points > 0) {
       player_points_[static_cast<int>(undo_info.original_player)] -= undo_info.check_bonus_points;
   }
-  // -------------------------
 
   termination_reason_ = std::nullopt;
+
+  // 3. Incremental Bitboard Restoration
+  // We must strictly reverse the operations done in make_move.
+  
+  // A. Resignation: Nothing to move back, just state restoration (handled above).
+  if (undo_info.move.is_resignation()) {
+      return; 
+  }
+
+  const Move& move = undo_info.move;
+  int from_sq = magic_utils::to_sq_idx(move.from_loc.row, move.from_loc.col);
+  int to_sq = magic_utils::to_sq_idx(move.to_loc.row, move.to_loc.col);
+  int player_idx = static_cast<int>(undo_info.original_player);
+
+  // --- Step 3a: Move the piece BACK (To -> From) ---
+  
+  // Determine what piece type is currently at 'to_sq' (the piece that moved)
+  // If it was a promotion, it is currently the Promoted Type (e.g. ROOK).
+  // If not, it is the original type.
+  PieceType piece_on_dest_sq = PieceType::PAWN; // Default, will find below
+  
+  // Optimization: We know the player, so we only scan their bitboards
+  bool found = false;
+  for(int pt = 1; pt <= 5; ++pt) {
+      PieceType pt_enum = static_cast<PieceType>(pt);
+      int bb_idx = piece_type_to_bb_idx(pt_enum);
+      if (magic_utils::get_bit(piece_bitboards_[player_idx][bb_idx], to_sq)) {
+          piece_on_dest_sq = pt_enum;
+          found = true;
+          break;
+      }
+  }
+
+  if (!found) {
+      // Should never happen in a bug-free engine
+      throw std::runtime_error("Critical Undo Error: Piece missing at destination.");
+  }
+
+  // Remove the piece from destination (To)
+  int moving_pt_bb_idx = piece_type_to_bb_idx(piece_on_dest_sq);
+  magic_utils::clear_bit(piece_bitboards_[player_idx][moving_pt_bb_idx], to_sq);
+  magic_utils::clear_bit(player_bitboards_[player_idx], to_sq);
+  magic_utils::clear_bit(occupied_bitboard_, to_sq);
+
+  // Place the piece back at source (From)
+  // CRITICAL: If it was a promotion, 'piece_on_dest_sq' is ROOK, but we must put back a PAWN.
+  PieceType original_piece_type = piece_on_dest_sq;
+  if (move.promotion_piece_type.has_value()) {
+      // In Chaturaji, pawns usually promote to Rooks.
+      // If we see a promotion recorded, the original piece was a PAWN.
+      original_piece_type = PieceType::PAWN;
+  }
+
+  int original_pt_bb_idx = piece_type_to_bb_idx(original_piece_type);
+  magic_utils::set_bit(piece_bitboards_[player_idx][original_pt_bb_idx], from_sq);
+  magic_utils::set_bit(player_bitboards_[player_idx], from_sq);
+  magic_utils::set_bit(occupied_bitboard_, from_sq);
+
+  // --- Step 3b: Restore Captured Piece (if any) ---
+  if (undo_info.captured_piece.has_value()) {
+      const Piece& captured = undo_info.captured_piece.value();
+      int cap_player_idx = static_cast<int>(captured.player);
+      int cap_pt_bb_idx = piece_type_to_bb_idx(captured.piece_type);
+
+      // Place the captured piece back at 'to_sq'
+      magic_utils::set_bit(piece_bitboards_[cap_player_idx][cap_pt_bb_idx], to_sq);
+      magic_utils::set_bit(player_bitboards_[cap_player_idx], to_sq);
+      magic_utils::set_bit(occupied_bitboard_, to_sq);
+  }
 }
 
 // --- Player Elimination ---
@@ -1038,7 +1097,6 @@ void Board::eliminate_player(Player player) {
     active_mask_ &= ~(1 << pi);
   }
 }
-
 
 // --- Bitboard Accessors ---
 Bitboard Board::get_occupied_bitboard() const { return occupied_bitboard_; }
@@ -1454,9 +1512,6 @@ void Board::resign() {
   Player resigning_player = current_player_; 
   if (active_mask_ & (1 << static_cast<int>(resigning_player))) {
     UndoInfo resign_undo_info;
-    resign_undo_info.original_piece_bitboards = piece_bitboards_;
-    resign_undo_info.original_player_bitboards = player_bitboards_;
-    resign_undo_info.original_occupied_bitboard = occupied_bitboard_;
     resign_undo_info.original_active_mask = active_mask_;
     resign_undo_info.original_player = resigning_player; 
     resign_undo_info.original_full_move_number = full_move_number_;
