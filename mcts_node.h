@@ -1,61 +1,47 @@
-// mcts_node.h
 #pragma once
 
-#include <vector>
-#include <memory> // For unique_ptr
+#include <memory> 
 #include <optional>
-#include <cmath>    // For sqrt, log
-#include <limits> // For infinity
-#include <array>  // For std::array
-#include <random> // For std::mt19937
+#include <cmath>    
+#include <limits> 
+#include <array>  
+#include <random> 
 
-#include "board.h" // Node contains a board state
-#include "types.h" // For Move, Player
-#include "mcts_node_pool.h" // Include the pool header
+#include "board.h" 
+#include "types.h" 
+#include "mcts_node_pool.h" 
 
 namespace chaturaji_cpp {
 
-// Virtual Loss Constant
 const double VIRTUAL_LOSS_VALUE = 1.0; 
 
 class MCTSNode {
 public:
     // --- Constructor ---
     MCTSNode(Board board_state, MCTSNode* parent = nullptr, std::optional<Move> move = std::nullopt, double prior = 0.0);
+    
+    // --- Destructor ---
+    ~MCTSNode();
 
     MCTSNode(const MCTSNode&) = delete; 
     MCTSNode& operator=(const MCTSNode&) = delete;
-    MCTSNode(MCTSNode&&) = default; 
-    MCTSNode& operator=(MCTSNode&&) = default; 
+    MCTSNode(MCTSNode&&) = delete; 
+    MCTSNode& operator=(MCTSNode&&) = delete; 
 
-    // --- Overload global new/delete operators for MCTSNode ---
-    // These static member functions will be called by `new MCTSNode()` and `delete node_ptr;`,
-    // including when `std::make_unique<MCTSNode>()` is used.
-    
-    /**
-     * @brief Custom allocation function that uses the MCTSNodePool.
-     * @param size The size of the object to allocate (should be sizeof(MCTSNode)).
-     * @return A pointer to the allocated memory.
-     */
+    // --- Custom Allocators ---
     static void* operator new(size_t size);
-
-    /**
-     * @brief Custom deallocation function that returns memory to the MCTSNodePool.
-     * Uses the C++14 sized delete operator, which is more efficient as it knows the size.
-     * @param ptr The pointer to the memory block to deallocate.
-     * @param size The size of the object being deallocated (should be sizeof(MCTSNode)).
-     */
     static void operator delete(void* ptr, size_t size); 
-    // Fallback delete (for C++11 or if sized delete isn't available)
-    // static void operator delete(void* ptr); // Not needed with C++14 sized delete
 
-    // --- Tree Traversal and Properties ---
+    // --- Tree Traversal ---
     bool is_leaf() const;
     bool is_root() const;
     MCTSNode* get_parent() const;
-    const std::vector<std::unique_ptr<MCTSNode>>& get_children() const; 
-    std::vector<std::unique_ptr<MCTSNode>>& get_children_for_reuse(); 
     void set_parent(MCTSNode* p); 
+    
+    // Linked List Accessors
+    MCTSNode* get_first_child() const;
+    MCTSNode* get_next_sibling() const;
+
     const Board& get_board() const;
     const std::optional<Move>& get_move() const; 
 
@@ -63,18 +49,16 @@ public:
     MCTSNode* select_child(double c_puct = 1.0) const;
     void expand(const std::map<Move, double>& policy_probs);
 
-    /**
-     * @brief Updates the visit count and total player values of this node.
-     * @param values_for_players An array of 4 values, representing the outcome from the
-     *                           simulation/evaluation for each of the 4 players (RED, BLUE, YELLOW, GREEN).
-     *                           Order corresponds to Player enum.
-     */
     void update_stats(const std::array<double, 4>& values_for_players); 
-
     void increment_pending_visits();
     void decrement_pending_visits();
-
     void inject_noise(double alpha, double epsilon, std::mt19937& rng);
+
+    // --- Tree Reuse Helper ---
+    // Detaches 'target_child' from this node's list, deletes all OTHER children,
+    // and returns the raw pointer to target_child. 
+    // This node (the parent) is left with no children.
+    MCTSNode* detach_child_and_clear_others(MCTSNode* target_child);
 
     // --- Accessors for Node Statistics ---
     int get_visit_count() const;
@@ -82,26 +66,23 @@ public:
     double get_prior() const;
     int get_pending_visits() const; 
 
-
 private:
-    Board board_state_; // State of the board at this node
-    MCTSNode* parent_;  // Pointer to the parent node (raw pointer to avoid circular unique_ptr/shared_ptr)
-    std::optional<Move> move_; // The move that led to this node from its parent
+    Board board_state_; 
+    MCTSNode* parent_;  
+    std::optional<Move> move_; 
 
-    std::vector<std::unique_ptr<MCTSNode>> children_; // Child nodes, managed by unique_ptr
+    // --- Linked List Topology ---
+    MCTSNode* first_child_;
+    MCTSNode* next_sibling_;
 
     // MCTS statistics
-    int visit_count_;           // Number of times this node has been visited
-    std::array<double, 4> total_player_values_; // Accumulated values for each player from simulations
-    double prior_;              // Prior probability from the neural network policy
+    int visit_count_;           
+    std::array<double, 4> total_player_values_; 
+    double prior_;              
+    int pending_visits_; 
 
-    int pending_visits_; // Number of active simulations traversing this node (virtual loss)
-
-    // Helper to calculate UCT score for a child, incorporating virtual loss
     double calculate_uct_score(const MCTSNode* child, double c_puct) const;
 
-    // Static instance of the node pool, shared by all MCTSNode objects.
-    // It will be initialized once when the program starts.
     static MCTSNodePool s_node_pool; 
 };
 
