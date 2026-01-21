@@ -6,14 +6,14 @@
 #include <iostream> // For logging
 #include <memory> // For std::unique_ptr (to manage memory chunks)
 
-#include "mcts_node_fwd.h" // Include forward declaration
+#include "mcts_node_fwd.h" 
 
 namespace chaturaji_cpp {
 
 class MCTSNodePool {
 public:
-    // Initial capacity for the first block. The pool will grow if needed.
-    // Default capacity set to 1,500,000 nodes as a reasonable starting point for MCTS.
+    // Initial capacity: 1.5M nodes
+    // Will grow if needed
     MCTSNodePool(size_t node_size, size_t initial_capacity = 1500000);
     ~MCTSNodePool();
 
@@ -36,6 +36,13 @@ public:
      * @param ptr A void pointer to the memory block to deallocate.
      */
     void deallocate(void* ptr);
+
+    // --- Helper methods for Thread-Local Caching ---
+    // Moves a batch of nodes from the global free list to the provided vector.
+    void batch_fill_from_global(std::vector<MCTSNode*>& target_cache, size_t count);
+
+    // Moves all nodes from the provided vector back to the global free list.
+    void batch_return_to_global(std::vector<MCTSNode*>& source_cache);
 
 private:
     // std::vector of unique_ptrs to char arrays to manage dynamically allocated memory chunks.
