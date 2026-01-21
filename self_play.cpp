@@ -104,6 +104,8 @@ void SelfPlay::process_worker_batch(
                   policy_probs = add_dirichlet_noise(policy_probs, dirichlet_alpha_, dirichlet_epsilon_);
                   root_noise_applicable = false; 
               }
+              // Check if game is over before expanding
+              // Repetition checks handled before node was added to batch
               if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
                    leaf_node->expand(policy_probs);
               }
@@ -219,10 +221,25 @@ void SelfPlay::run_game_simulation(
       std::unique_ptr<MCTSNode> mcts_root_uptr = nullptr;
 
       std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_history_for_rewards;
-      int move_count = 0;
+      // External history buffer for the root game state (since Board no longer stores it)
+      std::vector<ZobristKey> game_history;
+      game_history.reserve(256);
+      game_history.push_back(board.get_position_key());
 
-      while (!board.is_game_over()) {
-          // Check for tree reuse
+      int move_count = 0;
+      std::optional<TerminationReason> termination_override = std::nullopt;
+
+      while (true) {
+          // 1. Check for Termination
+          if (board.is_game_over()) {
+              break; 
+          }
+          if (board.is_repetition(game_history)) {
+              termination_override = TerminationReason::THREEFOLD_REPETITION;
+              break;
+          }
+
+          // 2. MCTS Setup / Tree Reuse
           if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
               mcts_root_uptr = std::make_unique<MCTSNode>(board);
           }
@@ -235,13 +252,12 @@ void SelfPlay::run_game_simulation(
           
           bool root_noise_applicable = true; 
 
-          // If the tree is REUSED, the root is not a leaf, so the batch processing noise logic
-          // won't trigger. We must inject noise manually here.
           if (!current_root_ref.is_leaf()) {
               current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, rng_);
               root_noise_applicable = false; 
           }
 
+          // 3. MCTS Simulations
           for (int sim = 0; sim < simulations_per_move_; ++sim) {
               SimulationState current_mcts_path;
               current_mcts_path.current_node = &current_root_ref;
@@ -263,8 +279,21 @@ void SelfPlay::run_game_simulation(
               }
 
               MCTSNode* leaf_node = current_mcts_path.current_node;
-              if (leaf_node->get_board().is_game_over()) {
-                  PlayerPointMap final_scores = leaf_node->get_board().get_game_result();
+              
+              // Leaf Checks: Standard Game Over or Tree-Walking Repetition
+              bool is_game_over = leaf_node->get_board().is_game_over();
+              bool is_repetition = false;
+              if (!is_game_over) {
+                  is_repetition = leaf_node->check_repetition();
+              }
+
+              if (is_game_over || is_repetition) {
+                  std::array<int, 4> final_scores;
+                  if (is_repetition) {
+                      final_scores = leaf_node->get_board().get_game_result(TerminationReason::THREEFOLD_REPETITION);
+                  } else {
+                      final_scores = leaf_node->get_board().get_game_result();
+                  }
                   std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
@@ -290,9 +319,17 @@ void SelfPlay::run_game_simulation(
 
           game_history_for_rewards.emplace_back(board, final_policy, root_player);
           Move chosen_move = choose_move(current_root_ref, current_temperature);
+          
           board.make_move(chosen_move); 
 
-          // --- Tree Reuse Logic (Linked List) ---
+          // Manage external game history
+          // If a reset (pawn move/capture) happened, the 50-move counter will equal the full move number
+          if (board.get_full_move_number() == board.get_move_number_of_last_reset()) {
+              game_history.clear();
+          }
+          game_history.push_back(board.get_position_key());
+
+          // --- Tree Reuse Logic ---
           MCTSNode* chosen_child_raw_ptr = nullptr;
           MCTSNode* curr = current_root_ref.get_first_child();
           while (curr) {
@@ -313,10 +350,9 @@ void SelfPlay::run_game_simulation(
       } 
 
       int completed_count = games_completed_counter.fetch_add(1) + 1;
-      
       std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games << " (" << move_count << " moves)." << std::endl;
       
-      process_game_result(game_history_for_rewards, board, local_buffer);
+      process_game_result(game_history_for_rewards, board, local_buffer, termination_override);
   } 
 }
 
@@ -327,7 +363,6 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
     std::vector<double> visit_counts;
     std::vector<Move> moves;
     
-    // Iterate linked list children
     MCTSNode* curr = root.get_first_child();
     while (curr) {
         visit_counts.push_back(static_cast<double>(curr->get_visit_count()));
@@ -335,7 +370,6 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
         curr = curr->get_next_sibling();
     }
     
-    // Safety check just in case node has children but no moves stored
     if (moves.empty()) return probs;
 
     if (temperature == 0.0) {
@@ -387,9 +421,10 @@ Move SelfPlay::choose_move(const MCTSNode& root, double temperature) {
 void SelfPlay::process_game_result(
     std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_history_for_rewards, 
     const Board& final_board,
-    std::vector<GameDataStep>& output_buffer 
+    std::vector<GameDataStep>& output_buffer,
+    std::optional<TerminationReason> reason_override // Added override for repetition logic
 ) {
-    std::array<int, 4> final_scores = final_board.get_game_result();
+    std::array<int, 4> final_scores = final_board.get_game_result(reason_override);
     std::array<double, 4> game_rewards_array = get_reward_map_array(final_scores);
 
     for (const auto& history_step : game_history_for_rewards) {

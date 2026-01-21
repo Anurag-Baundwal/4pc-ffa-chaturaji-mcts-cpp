@@ -116,6 +116,9 @@ void evaluate_and_expand_batch_sync(
 
       std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
 
+      // Only expand if valid. 
+      // Note: Terminal nodes (game over/repetition) are handled in run_mcts_simulations_sync 
+      // and not added to pending_eval, so we assume leaf_node here is not terminal.
       if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
            if (!policy_probs.empty()) {
                 leaf_node->expand(policy_probs);
@@ -123,8 +126,6 @@ void evaluate_and_expand_batch_sync(
       } 
       
       // --- Un-rotate the values ---
-      // The NN returns values [Relative0, Relative1, Relative2, Relative3]
-      // where 0 is "Current Player". Map this back to [Red, Blue, Yellow, Green]
       std::array<double, 4> player_values_absolute;
       Player cp = leaf_node->get_board().get_current_player();
       int cp_idx = static_cast<int>(cp);
@@ -146,6 +147,7 @@ void run_mcts_simulations_sync(
   double c_puct,
   int batch_size) 
 {
+  // Initial evaluation for a fresh root
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
       SimulationState root_state;
@@ -164,39 +166,49 @@ void run_mcts_simulations_sync(
       current_sim.current_node = &root;
       current_sim.path.push_back(current_sim.current_node);
 
-      // Traversal using select_child (which internally uses linked list logic now)
+      // Traversal using select_child
       while (!current_sim.current_node->is_leaf()) {
            MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 if (current_sim.current_node->get_board().is_game_over()){
-                    MCTSNode* terminal_leaf = current_sim.current_node; 
-                    std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
-                    std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-                    
-                    backpropagate_mcts_value(current_sim.path, terminal_player_values);
-                 } else {
-                     std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
-                     backpropagate_mcts_value(current_sim.path, neutral_values);
-                 }
-                 goto next_simulation_sync; 
+                 // Should ideally not happen if node is expanded and not game over
+                 break; 
           }
           current_sim.current_node = next_node;
           current_sim.path.push_back(current_sim.current_node);
       } 
 
-      if (current_sim.current_node->get_board().is_game_over()) {
-          MCTSNode* terminal_leaf = current_sim.current_node;
-          std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();         
+      MCTSNode* leaf_node = current_sim.current_node;
+      
+      // 1. Check Standard Game Over (Elimination, 50-move, Autoclaim)
+      bool is_game_over = leaf_node->get_board().is_game_over();
+      
+      // 2. Check Repetition (using Tree Walking)
+      bool is_repetition = false;
+      if (!is_game_over) {
+          is_repetition = leaf_node->check_repetition();
+      }
+
+      if (is_game_over || is_repetition) {
+          std::array<int, 4> final_scores;
+          if (is_repetition) {
+              // Force 3-fold repetition scoring
+              final_scores = leaf_node->get_board().get_game_result(TerminationReason::THREEFOLD_REPETITION);
+          } else {
+              // Standard result
+              final_scores = leaf_node->get_board().get_game_result();
+          }
           std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
       } else {
+          // Not terminal, add to batch
           pending_evaluation.push_back(std::move(current_sim)); 
           if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
               evaluate_and_expand_batch_sync(pending_evaluation, network);
           }
       }
-      next_simulation_sync:; 
   } 
+  
+  // Process remaining items in batch
   evaluate_and_expand_batch_sync(pending_evaluation, network);
 }
 
@@ -342,7 +354,7 @@ std::optional<Move> get_best_move_mcts_sync(
         // 2. new_root_raw is now a valid pointer to a node with no parent.
         //    The old root is still managed by current_mcts_root_shptr, but has no children now.
         
-        // 3. Reset the shared_ptr. This deletes the old root (and since it has no children, recursion is minimal).
+        // 3. Reset the shared_ptr. This deletes the old root.
         //    Then it takes ownership of the new root.
         current_mcts_root_shptr.reset(new_root_raw);
         

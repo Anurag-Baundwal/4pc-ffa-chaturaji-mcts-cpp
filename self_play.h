@@ -62,7 +62,8 @@ private:
     void process_game_result(
         std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,
         const Board& final_board,
-        std::vector<GameDataStep>& output_buffer 
+        std::vector<GameDataStep>& output_buffer,
+        std::optional<TerminationReason> reason_override = std::nullopt
     );
     
     std::map<Move, double> add_dirichlet_noise(

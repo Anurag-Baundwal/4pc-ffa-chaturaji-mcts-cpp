@@ -42,7 +42,6 @@ class Board {
 public:
     // --- Typedefs for clarity ---
     using PositionKey = ZobristKey;
-    using PositionHistory = StaticVector<PositionKey, 256>;
     using GameHistory = std::vector<Move>; // Represents a sequence of moves played in a game
 
     // --- Constructors ---
@@ -54,9 +53,8 @@ public:
     /**
      * @brief Special copy constructor for MCTS child node creation.
      * It performs a deep copy of essential game state (like bitboards, hashes,
-     * player info, and crucially, position_history_) but initializes
-     * MCTS-transient states like undo_stack_ as empty and termination_reason_
-     * as nullopt.
+     * player info) but initializes MCTS-transient states like undo_stack_ 
+     * as empty and termination_reason_ as nullopt.
      * @param other The parent board to copy from.
      * @param tag An empty tag struct to differentiate this constructor.
      */
@@ -98,7 +96,11 @@ public:
     int get_full_move_number() const;
     int get_move_number_of_last_reset() const;
     const std::optional<TerminationReason>& get_termination_reason() const;
-    const PositionHistory& get_position_history() const;
+    
+    // Checks for repetition using an externally provided history vector.
+    // This replaces the internal position_history_ logic.
+    bool is_repetition(const std::vector<PositionKey>& external_history) const;
+
     Bitboard get_occupied_bitboard() const; // Get combined occupied bitboard
     Bitboard get_player_bitboard(Player p) const; // Get bitboard for a specific player's pieces
     Bitboard get_piece_bitboard(Player p, PieceType pt) const; // Get bitboard for specific player and piece type
@@ -108,8 +110,12 @@ public:
 
 
     // --- Game Status ---
-    bool is_game_over() const;             // Checks and sets termination_reason if true
-    PlayerPointMap get_game_result() const; // Calculates final scores based on state
+    bool is_game_over() const;             // Checks and sets termination_reason if true (excluding repetition)
+    
+    // Calculates final scores based on state. 
+    // reason_override can be used to force a specific scoring rule (e.g. for externally detected repetition).
+    PlayerPointMap get_game_result(std::optional<TerminationReason> reason_override = std::nullopt) const;
+    
     std::optional<Player> get_winner() const; // Determines winner based on game result
 
     // --- Evaluation ---
@@ -137,7 +143,6 @@ private:
     ActivePlayerSet active_mask_; // uint8_t bitmask
     PlayerPointMap player_points_; // std::array<int, 4>
     Player current_player_;
-    PositionHistory position_history_; // Stores Zobrist keys of past positions
     int full_move_number_;
     int move_number_of_last_reset_; // For 50-move rule
     mutable std::optional<TerminationReason> termination_reason_;  // Store reason for game end

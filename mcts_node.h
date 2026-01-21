@@ -54,6 +54,11 @@ public:
     void decrement_pending_visits();
     void inject_noise(double alpha, double epsilon, std::mt19937& rng);
 
+    // --- Repetition Detection (Tree Walking) ---
+    // Checks if the current board state has occurred 3 times within the current branch.
+    // Traverses up parent pointers.
+    bool check_repetition() const;
+
     // --- Tree Reuse Helper ---
     // Detaches 'target_child' from this node's list, deletes all OTHER children,
     // and returns the raw pointer to target_child. 

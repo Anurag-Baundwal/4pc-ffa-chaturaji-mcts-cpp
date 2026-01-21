@@ -27,8 +27,8 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
     board_state_(std::move(board_state)), 
     parent_(parent),
     move_(move),
-    first_child_(nullptr),   // Init
-    next_sibling_(nullptr),  // Init
+    first_child_(nullptr),   
+    next_sibling_(nullptr),  
     visit_count_(0),
     total_player_values_({0.0, 0.0, 0.0, 0.0}),
     prior_(prior),
@@ -37,9 +37,6 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
 
 // --- Destructor ---
 MCTSNode::~MCTSNode() {
-    // Iteratively delete the linked list of children to prevent recursion depth issues
-    // though strict recursion on 'delete' happens here, the width is handled iteratively.
-    // For deep trees, a stack-based deletion might be safer, but for MCTS depth ~200 this is okay.
     MCTSNode* current = first_child_;
     while (current) {
         MCTSNode* next = current->next_sibling_;
@@ -85,6 +82,7 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
          std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
         return;
     }
+    // Repetition check handled by caller/tree walking before expansion
     if (board_state_.is_game_over()) return;
 
     MCTSNode* tail = nullptr;
@@ -93,11 +91,9 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
         const Move& move = pair.first;
         double prior_prob = pair.second;
         
-        // Create new node
         Board next_board = Board::create_mcts_child_board(board_state_, move);
         MCTSNode* new_node = new MCTSNode(std::move(next_board), this, move, prior_prob);
 
-        // Link into list
         if (!tail) {
             first_child_ = new_node;
         } else {
@@ -122,14 +118,12 @@ void MCTSNode::decrement_pending_visits() {
 void MCTSNode::inject_noise(double alpha, double epsilon, std::mt19937& rng) {
     if (is_leaf()) return;
 
-    // 1. Count children
     int child_count = 0;
     MCTSNode* curr = first_child_;
     while (curr) { child_count++; curr = curr->next_sibling_; }
 
     if (child_count == 0) return;
 
-    // 2. Generate Noise
     std::gamma_distribution<double> gamma_dist(alpha, 1.0);
     std::vector<double> noise_samples;
     noise_samples.reserve(child_count);
@@ -142,7 +136,6 @@ void MCTSNode::inject_noise(double alpha, double epsilon, std::mt19937& rng) {
     }
     if (noise_sum < 1e-9) noise_sum = 1.0;
 
-    // 3. Apply
     curr = first_child_;
     int idx = 0;
     while (curr) {
@@ -153,31 +146,44 @@ void MCTSNode::inject_noise(double alpha, double epsilon, std::mt19937& rng) {
     }
 }
 
+// --- Repetition Detection (Tree Walking) ---
+bool MCTSNode::check_repetition() const {
+    // If the board 50-move counter was just reset, repetition cannot extend past that point
+    int limit = board_state_.get_full_move_number() - board_state_.get_move_number_of_last_reset();
+    // A sequence needs at least 4 ply (root + 4 moves) to have a 3rd repetition
+    if (limit < 4) return false; 
+
+    ZobristKey current_key = board_state_.get_position_key();
+    int count = 1; // Current position counts as 1st occurrence
+
+    const MCTSNode* curr = parent_;
+    // Walk up the tree
+    while (curr && limit > 0) {
+        if (curr->get_board().get_position_key() == current_key) {
+            count++;
+            if (count >= 3) return true;
+        }
+        curr = curr->get_parent();
+        limit--;
+    }
+    return false;
+}
+
 // --- Tree Reuse Logic ---
 MCTSNode* MCTSNode::detach_child_and_clear_others(MCTSNode* target_child) {
     MCTSNode* curr = first_child_;
-    
-    // We iterate through all children.
-    // If it's the target, we detach it.
-    // If it's not, we delete it.
-    
     while (curr) {
         MCTSNode* next = curr->next_sibling_;
         
         if (curr == target_child) {
-            // Unhook this child from the list structure
             curr->next_sibling_ = nullptr;
             curr->parent_ = nullptr;
         } else {
-            // Delete the unused sibling
             delete curr;
         }
         curr = next;
     }
-
-    // Now this node (the parent) has no valid children
     first_child_ = nullptr;
-    
     return target_child;
 }
 
