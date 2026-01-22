@@ -82,10 +82,9 @@ private:
     int simulations_per_move_;
     size_t max_buffer_size_;
     ReplayBuffer buffer_; 
-    double mcts_c_puct_;
-    int temperature_decay_move_;
     int worker_batch_size_; 
-    double dirichlet_alpha_;
+    double mcts_c_puct_;
+    int temperature_decay_move_;    double dirichlet_alpha_;
     double dirichlet_epsilon_;
 
     std::mt19937 rng_; 

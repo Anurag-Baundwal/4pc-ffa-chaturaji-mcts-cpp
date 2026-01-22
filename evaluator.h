@@ -34,17 +34,25 @@ public:
 
     std::future<EvaluationResult> submit_request(EvaluationRequest request);
 
+    // Optimized batch submission to reduce locking
+    std::vector<std::future<EvaluationResult>> submit_batch(std::vector<EvaluationRequest>&& requests);
+
 private:
     void evaluation_loop();
 
     Model* network_; // Non-owning pointer
     int max_batch_size_;
 
-    ThreadSafeQueue<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> request_queue_;
+    // Sharded queue for reduced contention
+    const int num_shards_ = 8;
+    std::vector<std::unique_ptr<ThreadSafeQueue<std::pair<EvaluationRequest, std::promise<EvaluationResult>>>>> request_queues_;
 
     std::thread evaluator_thread_;
     std::atomic<bool> stop_requested_;
     std::atomic<RequestId> next_request_id_;
+
+    // High-throughput lock-free synchronization
+    std::atomic<size_t> total_pending_count_{0};
 };
 
 } // namespace chaturaji_cpp

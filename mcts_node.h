@@ -22,11 +22,12 @@ class MCTSNode {
 public:
     // --- Constructor ---
     MCTSNode(Board board_state, MCTSNode* parent = nullptr, std::optional<Move> move = std::nullopt, double prior = 0.0);
+    ~MCTSNode(); // Custom destructor for iterative cleanup
 
     MCTSNode(const MCTSNode&) = delete; 
     MCTSNode& operator=(const MCTSNode&) = delete;
-    MCTSNode(MCTSNode&&) = default; 
-    MCTSNode& operator=(MCTSNode&&) = default; 
+    MCTSNode(MCTSNode&&) = delete;
+    MCTSNode& operator=(MCTSNode&&) = delete;
 
     // --- Overload global new/delete operators for MCTSNode ---
     // These static member functions will be called by `new MCTSNode()` and `delete node_ptr;`,
@@ -53,8 +54,13 @@ public:
     bool is_leaf() const;
     bool is_root() const;
     MCTSNode* get_parent() const;
-    const std::vector<std::unique_ptr<MCTSNode>>& get_children() const; 
-    std::vector<std::unique_ptr<MCTSNode>>& get_children_for_reuse(); 
+
+    // Topology Accessors
+    MCTSNode* get_first_child() const;
+    MCTSNode* get_next_sibling() const;
+    void set_next_sibling(MCTSNode* node);
+    void set_first_child(MCTSNode* node);
+
     void set_parent(MCTSNode* p); 
     const Board& get_board() const;
     const std::optional<Move>& get_move() const; 
@@ -85,10 +91,11 @@ public:
 
 private:
     Board board_state_; // State of the board at this node
-    MCTSNode* parent_;  // Pointer to the parent node (raw pointer to avoid circular unique_ptr/shared_ptr)
-    std::optional<Move> move_; // The move that led to this node from its parent
+    MCTSNode* parent_;  // Pointer to the parent node
+    MCTSNode* first_child_ = nullptr; // Head of child list
+    MCTSNode* next_sibling_ = nullptr; // Next node in parent's list
 
-    std::vector<std::unique_ptr<MCTSNode>> children_; // Child nodes, managed by unique_ptr
+    std::optional<Move> move_; // The move that led to this node from its parent
 
     // MCTS statistics
     int visit_count_;           // Number of times this node has been visited
@@ -98,7 +105,8 @@ private:
     int pending_visits_; // Number of active simulations traversing this node (virtual loss)
 
     // Helper to calculate UCT score for a child, incorporating virtual loss
-    double calculate_uct_score(const MCTSNode* child, double c_puct) const;
+    // parent_log_visits_sqrt: sqrt(parent_visits + epsilon) * pb_c_factor
+    double calculate_uct_score(const MCTSNode* child, double pb_c_base_term, double parent_visits_sqrt) const;
 
     // Static instance of the node pool, shared by all MCTSNode objects.
     // It will be initialized once when the program starts.

@@ -67,7 +67,7 @@ void run_strength_test(
             // Initialize a model with random weights
             std::cout << "  Old Model Path:    [NONE] - Initializing random weights..." << std::endl;
             std::string random_onnx = "temp_strength_random.onnx";
-            std::string init_cmd = "python model.py export_random " + random_onnx;
+            std::string init_cmd = "python3 model.py export_random " + random_onnx;
             if (std::system(init_cmd.c_str()) == 0) {
                 old_network = std::make_unique<Model>(random_onnx);
             } else {
@@ -104,7 +104,8 @@ void run_strength_test(
             // 4-PLY RANDOM OPENING (One move per player)
             for (int p = 0; p < 4; ++p) {
                 if (board.is_game_over()) { game_ended_early = true; break; }
-                std::vector<Move> moves = board.get_pseudo_legal_moves(board.get_current_player());
+                MoveList moves;
+                board.get_pseudo_legal_moves(board.get_current_player(), moves);
                 if (moves.empty()) { game_ended_early = true; break; }
                 
                 std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
@@ -179,11 +180,11 @@ void run_strength_test(
         auto game_end_time = std::chrono::high_resolution_clock::now();
         total_game_time += std::chrono::duration<double>(game_end_time - game_start_time).count();
 
-        Board::PlayerPointMap final_scores = board.get_game_result();
+        auto final_scores = board.get_game_result();
         std::vector<std::pair<Player, int>> results;
         for (int i = 0; i < 4; ++i) {
             Player p = static_cast<Player>(i);
-            results.push_back({p, final_scores[p]});
+            results.push_back(std::make_pair(p, final_scores[p]));
         }
         std::sort(results.begin(), results.end(), [](auto& a, auto& b){ return a.second > b.second; });
 

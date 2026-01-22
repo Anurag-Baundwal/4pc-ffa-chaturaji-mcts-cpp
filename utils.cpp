@@ -46,100 +46,148 @@ namespace {
         PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::KING
     };
 
-    BoardLocation get_rel_loc(int r, int c, Player p) {
-        switch (p) {
-            case Player::RED:    return {r, c};
-            case Player::BLUE:   return {7 - c, r};
-            case Player::YELLOW: return {7 - r, 7 - c};
-            case Player::GREEN:  return {c, 7 - r};
-            default: return {r, c};
+    // Precomputed rotation table: [player][sq_idx] -> relative_sq_idx
+    // 4 players * 64 squares = 256 bytes. Highly cache efficient.
+    struct RotationTable {
+        std::array<std::array<uint8_t, 64>, 4> to_relative;
+        std::array<std::array<uint8_t, 64>, 4> to_absolute;
+
+        constexpr RotationTable() : to_relative{}, to_absolute{} {
+            for (int p = 0; p < 4; ++p) {
+                for (int r = 0; r < 8; ++r) {
+                    for (int c = 0; c < 8; ++c) {
+                        int abs_sq = r * 8 + c;
+                        int rr = r, rc = c;
+                        
+                        // Logic from original get_rel_loc
+                        switch (static_cast<Player>(p)) {
+                            case Player::RED:    rr = r; rc = c; break;
+                            case Player::BLUE:   rr = 7 - c; rc = r; break;
+                            case Player::YELLOW: rr = 7 - r; rc = 7 - c; break;
+                            case Player::GREEN:  rr = c; rc = 7 - r; break;
+                        }
+                        int rel_sq = rr * 8 + rc;
+                        
+                        to_relative[p][abs_sq] = static_cast<uint8_t>(rel_sq);
+                        to_absolute[p][rel_sq] = static_cast<uint8_t>(abs_sq);
+                    }
+                }
+            }
         }
+    };
+
+    constexpr RotationTable ROTATION_TABLE;
+
+    // Inline helper for speed
+    inline int get_rel_sq_idx(int abs_sq_idx, Player p) {
+        return ROTATION_TABLE.to_relative[static_cast<int>(p)][abs_sq_idx];
+    }
+
+    inline int get_abs_sq_idx(int rel_sq_idx, Player p) {
+        return ROTATION_TABLE.to_absolute[static_cast<int>(p)][rel_sq_idx];
+    }
+    
+    // Legacy helpers using the new table
+    BoardLocation get_rel_loc(int r, int c, Player p) {
+        int idx = get_rel_sq_idx(r * 8 + c, p);
+        return {idx / 8, idx % 8};
     }
 
     BoardLocation get_abs_loc(int r, int c, Player p) {
-        switch (p) {
-            case Player::RED:    return {r, c};
-            case Player::BLUE:   return {c, 7 - r};
-            case Player::YELLOW: return {7 - r, 7 - c};
-            case Player::GREEN:  return {7 - c, r};
-            default: return {r, c};
-        }
+        int idx = get_abs_sq_idx(r * 8 + c, p);
+        return {idx / 8, idx % 8};
     }
 }
 
-std::vector<float> board_to_floats(const Board& board) {
-    std::vector<float> tensor_data(NN_INPUT_SIZE, 0.0f);
+void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
+    if (tensor_data.size() != NN_INPUT_SIZE) {
+        tensor_data.resize(NN_INPUT_SIZE);
+    }
+    // Fast zeroing
+    std::fill(tensor_data.begin(), tensor_data.end(), 0.0f);
+
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 
-    auto fill_plane = [&](int channel_idx, float value) {
-        if (value == 0.0f) return; 
-        int offset = channel_idx * BOARD_AREA;
-        std::fill_n(tensor_data.begin() + offset, BOARD_AREA, value);
+    auto fill_plane_fast = [&](int channel_idx, float value) {
+        if (value == 0.0f) return;
+        float* ptr = tensor_data.data() + (channel_idx * BOARD_AREA);
+        std::fill_n(ptr, BOARD_AREA, value);
     };
 
-    auto set_pixel = [&](int channel_idx, int r, int c, float value) {
-        BoardLocation rel = get_rel_loc(r, c, current_p);
-        int index = (channel_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
-        tensor_data[index] = value;
-    };
-
-    // --- Relative Feature Encoding ---
-    // Inputs are rotated so that index 0 always represents the current player.
-    // Mapping: Rel 0 = Current, Rel 1 = Next, Rel 2 = Opposite, Rel 3 = Previous.
-    // 1. Piece Placement (0-19)
+    // 1. Piece Placement
     for (int rel_i = 0; rel_i < 4; ++rel_i) { 
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p_enum = static_cast<Player>(abs_p_idx);
+        int base_channel = rel_i * 5;
+
         for (int pt_idx = 0; pt_idx < 5; ++pt_idx) { 
             PieceType pt_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; 
             Bitboard bb = board.get_piece_bitboard(p_enum, pt_enum);
-            int channel = (rel_i * 5) + pt_idx;
+            int channel = base_channel + pt_idx;
+            int offset = channel * BOARD_AREA;
+            float* channel_ptr = tensor_data.data() + offset;
+
             while(bb) {
-                int sq_idx = magic_utils::pop_lsb(bb);
-                BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
-                set_pixel(channel, abs_loc.row, abs_loc.col, 1.0f);
+                int abs_sq = magic_utils::pop_lsb(bb);
+                int rel_sq = get_rel_sq_idx(abs_sq, current_p);
+                channel_ptr[rel_sq] = 1.0f;
             }
         }
     }
 
-    // 2. Active Status (20-23)
+    // 2. Active Status
+    const auto& active_players = board.get_active_players(); // Set version
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        fill_plane(20 + rel_i, board.get_active_players().count(static_cast<Player>((cp_idx + rel_i) % 4)) ? 1.0f : 0.0f);
-    }
-
-    // 3. Points (24-27)
-    const auto& points = board.get_player_points();
-    for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        float pts = static_cast<float>(points.at(static_cast<Player>((cp_idx + rel_i) % 4)));
-        fill_plane(24 + rel_i, pts / 100.0f);
-    }
-
-    // 4. 50-Move Clock (28)
-    int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
-    fill_plane(28, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
-
-    // 5. Attack Planes (29-32)
-    for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        Bitboard bb = board.get_squares_attacked_by(static_cast<Player>((cp_idx + rel_i) % 4));
-        while(bb) {
-            int sq_idx = magic_utils::pop_lsb(bb);
-            BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
-            set_pixel(29 + rel_i, abs_loc.row, abs_loc.col, 1.0f);
+        if (active_players.count(static_cast<Player>((cp_idx + rel_i) % 4))) {
+            fill_plane_fast(20 + rel_i, 1.0f);
         }
     }
 
-    // 6. In-Check Planes (33-36)
+    // 3. Points
+    const auto& points = board.get_player_points();
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        int abs_idx = (cp_idx + rel_i) % 4;
+        float pts = static_cast<float>(points[abs_idx]);
+        fill_plane_fast(24 + rel_i, pts / 100.0f);
+    }
+
+    // 4. 50-Move Clock
+    int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
+    fill_plane_fast(28, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+
+    // 5. Attack Planes
     std::array<Bitboard, 4> all_atks;
     for(int i=0; i<4; ++i) all_atks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        int abs_idx = (cp_idx + rel_i) % 4;
+        Bitboard bb = all_atks[abs_idx];
+        int channel = 29 + rel_i;
+        int offset = channel * BOARD_AREA;
+        float* channel_ptr = tensor_data.data() + offset;
+        
+        while(bb) {
+            int abs_sq = magic_utils::pop_lsb(bb);
+            int rel_sq = get_rel_sq_idx(abs_sq, current_p);
+            channel_ptr[rel_sq] = 1.0f;
+        }
+    }
+
+    // 6. In-Check Planes
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
         Bitboard king = board.get_piece_bitboard(static_cast<Player>(abs_idx), PieceType::KING);
         Bitboard stressors = 0;
         for(int opp=0; opp<4; ++opp) if(opp != abs_idx) stressors |= all_atks[opp];
-        if (king & stressors) fill_plane(33 + rel_i, 1.0f);
+        if (king & stressors) fill_plane_fast(33 + rel_i, 1.0f);
     }
+}
 
+// Wrapper for compatibility
+std::vector<float> board_to_floats(const Board& board) {
+    std::vector<float> tensor_data(NN_INPUT_SIZE);
+    board_to_floats_into(board, tensor_data);
     return tensor_data;
 }
 

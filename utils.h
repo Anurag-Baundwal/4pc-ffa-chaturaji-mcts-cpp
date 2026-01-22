@@ -29,6 +29,11 @@ struct RunStats {
 
 std::vector<float> board_to_floats(const Board& board);
 
+/**
+ * @brief Converts board state into an existing vector to avoid allocation.
+ */
+void board_to_floats_into(const Board& board, std::vector<float>& out_buffer);
+
 // --- Move Indexing ---
 
 int move_to_policy_index(const Move& move, Player p);

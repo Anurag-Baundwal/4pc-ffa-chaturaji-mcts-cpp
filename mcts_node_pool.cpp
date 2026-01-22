@@ -2,8 +2,14 @@
 #include "mcts_node_pool.h"
 #include <stdexcept>
 #include <algorithm> // For std::max
+#include <vector>
 
 namespace chaturaji_cpp {
+
+// Thread-local cache for nodes
+static thread_local std::vector<void*> t_free_cache;
+static const size_t CACHE_BATCH_SIZE = 1000;
+static const size_t MAX_CACHE_SIZE = 2000;
 
 // Constructor: Allocates the initial chunk of memory
 MCTSNodePool::MCTSNodePool(size_t node_size, size_t initial_capacity)
@@ -45,40 +51,69 @@ void MCTSNodePool::grow() {
 
 // Allocates a node from the pool
 void* MCTSNodePool::allocate() {
-    std::lock_guard<std::mutex> lock(mutex_); // Protect shared resources
-    
-    // If no nodes are available in the free list, grow the pool
-    if (free_list_.empty()) {
-        grow(); 
+    if (t_free_cache.empty()) {
+        allocate_batch(t_free_cache, CACHE_BATCH_SIZE);
     }
     
-    // Take a node from the back of the free list
-    MCTSNode* node = free_list_.back();
-    free_list_.pop_back();
+    if (t_free_cache.empty()) {
+        // Fallback or OOM handling (shouldn't happen with grow())
+        throw std::runtime_error("MCTSNodePool: Failed to allocate nodes.");
+    }
     
-    // Update statistics
-    allocated_count_++;
-    peak_allocated_count_ = std::max(peak_allocated_count_, allocated_count_ - freed_count_);
-    
+    void* node = t_free_cache.back();
+    t_free_cache.pop_back();
     return node;
 }
 
 // Deallocates a node, returning it to the pool's free list
 void MCTSNodePool::deallocate(void* ptr) {
-    // Standard behavior for delete: ignore nullptr
-    if (ptr == nullptr) return; 
+    if (ptr == nullptr) return;
+
+    t_free_cache.push_back(ptr);
+
+    if (t_free_cache.size() >= MAX_CACHE_SIZE) {
+        // Move half of the cache back to the global pool
+        size_t return_count = t_free_cache.size() / 2;
+        std::vector<void*> batch_to_return;
+        batch_to_return.reserve(return_count);
+
+        // Move items from end of cache to batch
+        for(size_t i=0; i<return_count; ++i) {
+             batch_to_return.push_back(t_free_cache.back());
+             t_free_cache.pop_back();
+        }
+
+        deallocate_batch(batch_to_return);
+    }
+}
+
+// Batch functions (Global Lock)
+void MCTSNodePool::allocate_batch(std::vector<void*>& out_nodes, size_t count) {
+    std::lock_guard<std::mutex> lock(mutex_);
     
-    std::lock_guard<std::mutex> lock(mutex_); // Protect shared resources
+    size_t available = free_list_.size();
+    while (available < count) {
+        grow();
+        available = free_list_.size();
+    }
     
-    // In a production-grade allocator, you'd add checks to ensure `ptr`
-    // actually belongs to one of the pool's managed memory chunks to prevent
-    // corruption if a foreign pointer is passed. For this context, we assume validity.
+    // Transfer 'count' nodes
+    size_t start_idx = free_list_.size() - count;
+    for (size_t i = 0; i < count; ++i) {
+        out_nodes.push_back(free_list_[start_idx + i]);
+    }
+    free_list_.resize(start_idx); // Efficiently remove from back
     
-    // Add the pointer back to the free list
-    free_list_.push_back(reinterpret_cast<MCTSNode*>(ptr));
-    
-    // Update statistics
-    freed_count_++;
+    allocated_count_ += count;
+    peak_allocated_count_ = std::max(peak_allocated_count_, allocated_count_ - freed_count_);
+}
+
+void MCTSNodePool::deallocate_batch(const std::vector<void*>& in_nodes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (void* ptr : in_nodes) {
+        free_list_.push_back(reinterpret_cast<MCTSNode*>(ptr));
+    }
+    freed_count_ += in_nodes.size();
 }
 
 } // namespace chaturaji_cpp

@@ -8,7 +8,7 @@
 #include <iostream> 
 #include <memory> 
 #include <cmath>
-#include <iomanip> // Added for std::setw, std::setprecision
+#include <iomanip>
 
 namespace chaturaji_cpp {
 
@@ -28,17 +28,16 @@ std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>
 
 std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& policy_logits, const Board& board) {
     std::map<Move, double> policy_probs;
-    std::vector<Move> legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+    MoveList legal_moves;
+    board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
 
     if (legal_moves.empty()) {
         return policy_probs;
     }
 
-    // 1. Gather logits for legal moves only
-    std::vector<float> legal_logits;
-    legal_logits.reserve(legal_moves.size());
-    std::vector<Move> valid_moves;
-    valid_moves.reserve(legal_moves.size());
+    // 1. Gather logits for legal moves only (Stack allocated)
+    StackFloatVector legal_logits;
+    MoveList valid_moves;
 
     float max_logit = -std::numeric_limits<float>::infinity();
 
@@ -59,9 +58,9 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
     // 2. Compute Softmax manually with temperature scaling
     float sum_exp = 0.0f;
     const float policy_temperature = 1.36f; 
-    for (float& val : legal_logits) {
-        val = std::exp((val - max_logit) / policy_temperature); // Subtract max for stability and apply temperature
-        sum_exp += val;
+    for (size_t i = 0; i < legal_logits.size(); ++i) {
+        legal_logits[i] = std::exp((legal_logits[i] - max_logit) / policy_temperature);
+        sum_exp += legal_logits[i];
     }
 
     // 3. Normalize and populate map
@@ -95,8 +94,8 @@ void evaluate_and_expand_batch_sync(
 
   for (size_t i = 0; i < pending_eval.size(); ++i) {
       EvaluationRequest req;
-      req.request_id = static_cast<RequestId>(i); // Use index as ID for sync correlation
-      req.state_floats = board_to_floats(pending_eval[i].current_node->get_board());
+      req.request_id = static_cast<RequestId>(i);
+      board_to_floats_into(pending_eval[i].current_node->get_board(), req.state_floats);
       requests.push_back(std::move(req));
   }
 
@@ -105,7 +104,6 @@ void evaluate_and_expand_batch_sync(
 
   // 3. Process Results
   for (const auto& result : results) {
-      // Because we used index as request_id and it's synchronous, we can map back directly.
       size_t idx = static_cast<size_t>(result.request_id);
       if (idx >= pending_eval.size()) continue;
 
@@ -123,9 +121,6 @@ void evaluate_and_expand_batch_sync(
            }
       } 
       
-      // --- Un-rotate the values ---
-      // The NN returns values [Relative0, Relative1, Relative2, Relative3]
-      // where 0 is "Current Player". We need to map this back to [Red, Blue, Yellow, Green]
       std::array<double, 4> player_values_absolute;
       Player cp = leaf_node->get_board().get_current_player();
       int cp_idx = static_cast<int>(cp);
@@ -170,7 +165,7 @@ void run_mcts_simulations_sync(
           if (next_node == nullptr || next_node == current_sim.current_node) {
                  if (current_sim.current_node->get_board().is_game_over()){
                     MCTSNode* terminal_leaf = current_sim.current_node; 
-                    std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
+                    auto final_scores_map = terminal_leaf->get_board().get_game_result();
                     std::map<Player, double> reward_map = get_reward_map(final_scores_map);
                     std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
                     backpropagate_mcts_value(current_sim.path, terminal_player_values);
@@ -186,7 +181,7 @@ void run_mcts_simulations_sync(
 
       if (current_sim.current_node->get_board().is_game_over()) {
           MCTSNode* terminal_leaf = current_sim.current_node;
-          std::map<Player, int> final_scores_map = terminal_leaf->get_board().get_game_result();
+          auto final_scores_map = terminal_leaf->get_board().get_game_result();
           std::map<Player, double> reward_map = get_reward_map(final_scores_map);
           std::array<double, 4> terminal_player_values = convert_reward_map_to_array(reward_map);
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
@@ -246,12 +241,10 @@ std::optional<Move> get_best_move_mcts_sync(
         }
         std::cout << std::endl << std::endl;
 
-        // Gather children for sorting
+        // Gather children for sorting (Linked List Iteration)
         std::vector<MCTSNode*> children_ptrs;
-        const auto& children = current_mcts_root_shptr->get_children();
-        for(const auto& c : children) {
-            // Only consider visited children or those with high priors if few visits
-            if(c->get_visit_count() > 0) children_ptrs.push_back(c.get());
+        for (MCTSNode* c = current_mcts_root_shptr->get_first_child(); c; c = c->get_next_sibling()) {
+            if(c->get_visit_count() > 0) children_ptrs.push_back(c);
         }
 
         // Sort by visits (descending)
@@ -278,7 +271,7 @@ std::optional<Move> get_best_move_mcts_sync(
             double cp_val = c_values[static_cast<int>(cp)] / std::max(1, visits);
 
             std::cout << std::right << std::setw(3) << count << " | "
-                      << std::left << std::setw(8) << get_uci_string(m) // or get_san_string(m, board)
+                      << std::left << std::setw(8) << get_uci_string(m)
                       << " | " << std::right << std::setw(6) << visits
                       << " | " << std::fixed << std::setprecision(3) << prior
                       << " | " << std::showpos << std::setw(12) << cp_val << std::noshowpos
@@ -295,9 +288,9 @@ std::optional<Move> get_best_move_mcts_sync(
     }
     // --- VERBOSE OUTPUT END ---
 
-    const auto& children_const_ref = current_mcts_root_shptr->get_children();
-    if (children_const_ref.empty()) {
-        auto legal_moves = board.get_pseudo_legal_moves(board.get_current_player());
+    if (!current_mcts_root_shptr->get_first_child()) {
+        MoveList legal_moves;
+        board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
         if (legal_moves.empty()) {
             current_mcts_root_shptr = nullptr;
             return std::nullopt; 
@@ -309,52 +302,62 @@ std::optional<Move> get_best_move_mcts_sync(
     }
 
     // Select Best Child (Robust: Visits > Prior)
-    auto best_child_by_visit_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
-        [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
-            return a->get_visit_count() < b->get_visit_count();
-        });
+    // Iterate linked list manually to find max
+    MCTSNode* best_child_by_visit = nullptr;
+    int max_visits = -1;
 
-    MCTSNode* chosen_child_raw_ptr = nullptr;
-    if (best_child_by_visit_it != children_const_ref.end() && (*best_child_by_visit_it)->get_visit_count() > 0) {
-        chosen_child_raw_ptr = (*best_child_by_visit_it).get();
-    } else {
-        if (verbose) std::cerr << "Warning: All child nodes have zero visits. Using prior." << std::endl;
-        auto best_child_by_prior_it = std::max_element(children_const_ref.begin(), children_const_ref.end(),
-            [](const std::unique_ptr<MCTSNode>& a, const std::unique_ptr<MCTSNode>& b) {
-                return a->get_prior() < b->get_prior(); 
-            });
-        if (best_child_by_prior_it != children_const_ref.end()) {
-            chosen_child_raw_ptr = (*best_child_by_prior_it).get();
+    for (MCTSNode* c = current_mcts_root_shptr->get_first_child(); c; c = c->get_next_sibling()) {
+        if (c->get_visit_count() > max_visits) {
+            max_visits = c->get_visit_count();
+            best_child_by_visit = c;
         }
     }
 
-    // Move the tree root
+    MCTSNode* chosen_child_raw_ptr = nullptr;
+    if (best_child_by_visit && best_child_by_visit->get_visit_count() > 0) {
+        chosen_child_raw_ptr = best_child_by_visit;
+    } else {
+        if (verbose) std::cerr << "Warning: All child nodes have zero visits. Using prior." << std::endl;
+        // Fallback to prior
+        MCTSNode* best_child_by_prior = nullptr;
+        double max_prior = -1.0;
+        for (MCTSNode* c = current_mcts_root_shptr->get_first_child(); c; c = c->get_next_sibling()) {
+            if (c->get_prior() > max_prior) {
+                max_prior = c->get_prior();
+                best_child_by_prior = c;
+            }
+        }
+        chosen_child_raw_ptr = best_child_by_prior;
+    }
+
+    // Move the tree root (Tree Reuse with Linked List)
     if (chosen_child_raw_ptr && chosen_child_raw_ptr->get_move()) {
         std::optional<Move> chosen_move = chosen_child_raw_ptr->get_move();
         
-        auto& old_root_children_vec_for_reuse = current_mcts_root_shptr->get_children_for_reuse();
-        std::unique_ptr<MCTSNode> new_root_candidate_uptr;
+        // Unlink chosen child from the list so it doesn't get deleted by old root
+        MCTSNode* prev = nullptr;
+        for (MCTSNode* c = current_mcts_root_shptr->get_first_child(); c; c = c->get_next_sibling()) {
+            if (c == chosen_child_raw_ptr) {
+                if (prev) prev->set_next_sibling(c->get_next_sibling());
+                else current_mcts_root_shptr->set_first_child(c->get_next_sibling());
 
-        for (auto it = old_root_children_vec_for_reuse.begin(); it != old_root_children_vec_for_reuse.end(); ++it) {
-            if (it->get() == chosen_child_raw_ptr) {
-                new_root_candidate_uptr = std::move(*it);
-                old_root_children_vec_for_reuse.erase(it);
+                c->set_next_sibling(nullptr); // Detach
+                c->set_parent(nullptr);
                 break;
             }
+            prev = c;
         }
 
-        if (new_root_candidate_uptr) {
-            new_root_candidate_uptr->set_parent(nullptr);
-            current_mcts_root_shptr = std::move(new_root_candidate_uptr);
-        } else {
-            current_mcts_root_shptr = nullptr;
-        }
+        // Reset shared_ptr to new root. Old root dies and deletes all other children.
+        current_mcts_root_shptr.reset(chosen_child_raw_ptr);
         return chosen_move;
 
     } else {
         current_mcts_root_shptr = nullptr;
-        if (!children_const_ref.empty() && children_const_ref[0]->get_move()) {
-            return children_const_ref[0]->get_move();
+        // Return first child move as fallback if it exists
+        MCTSNode* first = current_mcts_root_shptr ? current_mcts_root_shptr->get_first_child() : nullptr;
+        if (first && first->get_move()) {
+            return first->get_move();
         }
         return std::nullopt;
     }
@@ -365,7 +368,8 @@ std::map<Player, double> get_reward_map(const std::map<Player, int>& final_score
     std::vector<std::pair<Player, int>> sorted_scores;
     for (int p_idx = 0; p_idx < 4; ++p_idx) {
         Player p = static_cast<Player>(p_idx);
-        int score = final_scores.count(p) ? final_scores.at(p) : 0; 
+        auto it = final_scores.find(p);
+        int score = (it != final_scores.end()) ? it->second : 0;
         sorted_scores.emplace_back(p, score);
     }
 

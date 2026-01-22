@@ -37,6 +37,10 @@ public:
      */
     void deallocate(void* ptr);
 
+    // Batch operations for thread-local caching
+    void allocate_batch(std::vector<void*>& out_nodes, size_t count);
+    void deallocate_batch(const std::vector<void*>& in_nodes);
+
 private:
     // std::vector of unique_ptrs to char arrays to manage dynamically allocated memory chunks.
     // This allows the pool to grow by adding new chunks without invalidating pointers

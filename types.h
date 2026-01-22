@@ -99,6 +99,55 @@ struct Move {
     }
 };
 
+// Static-capacity list for moves to avoid heap allocation
+struct MoveList {
+    static constexpr size_t MAX_MOVES = 256;
+    std::array<Move, MAX_MOVES> data;
+    size_t count = 0;
+
+    void push_back(const Move& m) {
+        if (count < MAX_MOVES) {
+            data[count++] = m;
+        }
+    }
+
+    void clear() { count = 0; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+
+    Move* begin() { return data.data(); }
+    Move* end() { return data.data() + count; }
+    const Move* begin() const { return data.data(); }
+    const Move* end() const { return data.data() + count; }
+
+    Move& operator[](size_t i) { return data[i]; }
+    const Move& operator[](size_t i) const { return data[i]; }
+};
+
+struct StackFloatVector {
+    static constexpr size_t MAX_SIZE = 256; // Matches MoveList MAX_MOVES
+    std::array<float, MAX_SIZE> data;
+    size_t count = 0;
+
+    void push_back(float f) {
+        if (count < MAX_SIZE) {
+            data[count++] = f;
+        }
+    }
+
+    void clear() { count = 0; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+
+    float* begin() { return data.data(); }
+    float* end() { return data.data() + count; }
+    const float* begin() const { return data.data(); }
+    const float* end() const { return data.data() + count; }
+
+    float& operator[](size_t i) { return data[i]; }
+    const float& operator[](size_t i) const { return data[i]; }
+};
+
 // --- Structures for Asynchronous Evaluation ---
 
 // Unique identifier for an evaluation request (can be for a batch)
@@ -108,7 +157,7 @@ using RequestId = uint64_t;
  * @brief Data sent from an MCTS worker to the evaluator.
  */
 struct EvaluationRequest {
-    RequestId request_id;
+    RequestId request_id = 0;
     std::vector<float> state_floats; // Size: NN_INPUT_SIZE (34 * 8 * 8 = 2176)
 };
 

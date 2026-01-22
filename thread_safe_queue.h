@@ -24,6 +24,14 @@ public:
         cond_var_.notify_one();
     }
 
+    void push_batch(std::vector<T>& values) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& val : values) {
+            queue_.push(std::move(val));
+        }
+        cond_var_.notify_all();
+    }
+
     // Blocking pop
     T wait_and_pop() {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -52,6 +60,18 @@ public:
             return value;
         }
         return std::nullopt; // Timeout occurred or spurious wakeup with empty queue
+    }
+
+    // New efficient batch retrieval
+    size_t pop_batch(std::vector<T>& dest, size_t max_count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t popped_count = 0;
+        while (!queue_.empty() && popped_count < max_count) {
+            dest.push_back(std::move(queue_.front()));
+            queue_.pop();
+            popped_count++;
+        }
+        return popped_count;
     }
 
     bool empty() const {

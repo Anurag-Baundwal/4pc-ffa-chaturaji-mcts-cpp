@@ -96,9 +96,12 @@ void print_state_comparison(const Board& board, const std::string& label) {
     for (Player p : board.get_active_players()) { std::cout << static_cast<int>(p) << " "; }
     std::cout << "}" << std::endl;
     // Compare points map
-    std::cout << "Points Map: { ";
-    for (const auto& pair : board.get_player_points()) { std::cout << static_cast<int>(pair.first) << ":" << pair.second << " "; }
-    std::cout << "}" << std::endl;
+    std::cout << "Points: ";
+    const auto& points = board.get_player_points();
+    for (size_t i = 0; i < points.size(); ++i) {
+        std::cout << static_cast<int>(i) << ":" << points[i] << " ";
+    }
+    std::cout << std::endl;
     std::cout << "--------------------------" << std::endl;
 }
 
@@ -221,11 +224,13 @@ bool test_resignation(Board& board) {
      ZobristKey hash_before = board.get_position_key();
      print_state_comparison(board, "Before Resignation");
 
-     board.resign(); // Player resigns
+     board.make_move(Move::Resign()); // Player resigns (using make_move to support undo)
      ZobristKey hash_after = board.get_position_key();
      print_state_comparison(board, "After Resignation");
      assert(hash_before != hash_after && "Hash did not change after resignation");
-     assert(board.get_active_players().find(resigning_player) == board.get_active_players().end() && "Resigning player still active");
+
+     std::set<Player> active_after = board.get_active_players();
+     assert(active_after.find(resigning_player) == active_after.end() && "Resigning player still active");
 
 
      board.undo_move(); // Undo the resignation (uses the same undo stack)
