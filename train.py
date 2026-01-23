@@ -79,17 +79,21 @@ class ReplayBuffer:
         return self.states[idx], self.policies[idx], self.values[idx]
 
 def train_loop(args):
+    # Device Detection
     if hasattr(torch, 'xpu') and torch.xpu.is_available():
         device = torch.device("xpu")
         print(f"[Python] Using Intel XPU: {torch.xpu.get_device_name(0)}")
+        use_amp = False # Disable CUDA AMP on Intel XPU
     elif torch.cuda.is_available():
         device = torch.device("cuda")
         print("[Python] Using CUDA")
+        use_amp = True  # Enable AMP on NVIDIA GPU
     else:
         device = torch.device("cpu")
         print("[Python] Using CPU")
-    
-    # Define save paths directly in the target directory
+        use_amp = False
+
+    # Define save paths...
     model_pth = os.path.join(args.save_dir, "latest.pth")
     opt_pth = os.path.join(args.save_dir, "latest.optimizer.pth")
     onnx_path = os.path.join(args.save_dir, "latest.onnx")
@@ -98,7 +102,10 @@ def train_loop(args):
     model = ChaturajiNN().to(device)
     # Lc0 and AlphaZero use SGD with Momentum=0.9
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
-    print(f"[Python] Optimizer: SGD (lr={args.lr}, momentum=0.9, wd={args.wd})")
+    
+    # Initialize Scalers
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    print(f"[Python] Optimizer: SGD (lr={args.lr}, momentum=0.9, wd={args.wd}) | AMP Enabled: {use_amp}")
 
     # 2. Loading Logic
     if args.load_weights:
@@ -164,15 +171,18 @@ def train_loop(args):
         s, tp, tv = s.to(device), tp.to(device), tv.to(device)
         
         optimizer.zero_grad()
-        p, v = model(s)
         
-        # Explicit loss components
-        loss_policy = -torch.sum(tp * F.log_softmax(p, dim=1), dim=1).mean()
-        loss_value = F.mse_loss(v, tv)
-        loss = loss_policy + 1.25 * loss_value
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            p, v = model(s)
+            
+            # Explicit loss components
+            loss_policy = -torch.sum(tp * F.log_softmax(p, dim=1), dim=1).mean()
+            loss_value = F.mse_loss(v, tv)
+            loss = loss_policy + 1.25 * loss_value
         
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         
         # Individual component reporting for every step
         print(f"  Step {step+1}/{num_steps}, Loss: {loss.item():.4f} "

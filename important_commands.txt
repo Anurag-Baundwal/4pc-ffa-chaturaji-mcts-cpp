@@ -1,12 +1,21 @@
 Commands that you can run in the project root.
 
+---------------------------------------------------------------------
 To compile the engine:
+
+Standard Build (CPU or Intel iGPU via OpenVINO):
 bazel build //:chaturaji_engine -c opt
 
-Note: On Windows, always run the resulting executable from the root folder 
-(e.g., .\bazel-bin\chaturaji_engine.exe) so it can find your Python scripts 
-and DLLs correctly.
+NVIDIA GPU Build (Requires CUDA Toolkit & cuDNN):
+bazel build //:chaturaji_engine -c opt --define=use_cuda=true
 
+Note: On Windows, always run the resulting executable from the root folder 
+(e.g., .\bazel-bin\chaturaji_engine.exe). 
+
+Note on GPU Usage: 
+- The C++ engine uses the flag above to enable CUDA for MCTS search.
+- The Python training script (train.py) detects CUDA automatically; it 
+  will use your GPU for training even if the C++ engine was built for CPU.
 ---------------------------------------------------------------------
 
 To train a model:

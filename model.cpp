@@ -18,21 +18,48 @@ Model::Model(const std::string& model_path) :
     session_options.SetIntraOpNumThreads(1);
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-    // --- ATTEMPT TO LOAD OPENVINO ---
-    try {
-        std::unordered_map<std::string, std::string> ov_options;
-        
-        // Just use "GPU". Do not set num_streams to "AUTO" as it causes crashes on some versions.
-        ov_options["device_type"] = "GPU"; 
-        
-        session_options.AppendExecutionProvider("OpenVINO", ov_options);
-        
-        std::cout << "[C++] Model: Enabled OpenVINO Execution Provider (GPU)." << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "[C++] Model: Warning: OpenVINO setup failed: " << e.what() << std::endl;
-        std::cerr << "[C++] Model: Falling back to CPU." << std::endl;
+    bool provider_loaded = false;
+
+    // --- 1. Attempt to use CUDA (NVIDIA GPU) ---
+
+    #ifdef USE_CUDA
+        try {
+            OrtCUDAProviderOptions cuda_options;
+            cuda_options.device_id = 0;
+            cuda_options.arena_extend_strategy = 0; 
+            cuda_options.gpu_mem_limit = SIZE_MAX;
+            cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive;
+            cuda_options.do_copy_in_default_stream = 1;
+
+            session_options.AppendExecutionProvider_CUDA(cuda_options);
+            
+            std::cout << "[C++] Model: Enabled CUDA Execution Provider." << std::endl;
+            provider_loaded = true;
+        } catch (const std::exception& e) {
+            std::cerr << "[C++] Model: CUDA defined but initialization failed: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[C++] Model: CUDA defined but initialization failed (unknown error)." << std::endl;
+        }
+    #endif
+
+    // --- 2. Attempt OpenVINO (Intel iGPU/CPU) ---
+    if (!provider_loaded) {
+        try {
+            std::unordered_map<std::string, std::string> ov_options;
+            ov_options["device_type"] = "GPU"; 
+            session_options.AppendExecutionProvider("OpenVINO", ov_options);
+            
+            std::cout << "[C++] Model: Enabled OpenVINO Execution Provider." << std::endl;
+            provider_loaded = true;
+        } catch (const std::exception& e) {
+            std::cerr << "[C++] Model: Warning: OpenVINO setup failed: " << e.what() << std::endl;
+        }
     }
-    // --------------------------------
+
+    // --- 3. CPU Fallback ---
+    if (!provider_loaded) {
+        std::cout << "[C++] Model: Falling back to CPU execution." << std::endl;
+    }
 
     session_ = Ort::Session(env_, std::wstring(model_path.begin(), model_path.end()).c_str(), session_options);
 }

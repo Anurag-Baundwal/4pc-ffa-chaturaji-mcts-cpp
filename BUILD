@@ -85,9 +85,13 @@ cc_library(
     srcs = ["model.cpp"],
     hdrs = ["model.h"],
     copts = ["/std:c++17"],
+    defines = select({
+        ":cuda_build": ["USE_CUDA"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":chaturaji_types",
-        "@onnxruntime//:onnxruntime", # Switched to ONNX
+        "@onnxruntime//:onnxruntime",
     ],
 )
 
