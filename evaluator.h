@@ -9,7 +9,7 @@
 #include <atomic>
 #include <memory>   
 
-#include "model.h" // Uses the new ONNX-based Model class
+#include "model.h" 
 #include "types.h" 
 #include "thread_safe_queue.h" 
 
@@ -18,7 +18,7 @@ namespace chaturaji_cpp {
 class Evaluator {
 public:
     /**
-     * @param network Pointer to the loaded ONNX Model. The Evaluator does NOT own the model.
+     * @param network Pointer to the loaded ONNX Model.
      * @param max_batch_size The maximum number of requests to batch together.
      */
     Evaluator(Model* network, int max_batch_size = 4096);
@@ -37,10 +37,18 @@ public:
 private:
     void evaluation_loop();
 
-    Model* network_; // Non-owning pointer
+    Model* network_; 
     int max_batch_size_;
 
-    ThreadSafeQueue<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> request_queue_;
+    // --- Multi-Queue Implementation ---
+    // Instead of one single queue protected by one lock (which causes a bottleneck 
+    // when many threads try to push at once), we use multiple independent queues.
+    using QueueItem = std::pair<EvaluationRequest, std::promise<EvaluationResult>>;
+    
+    static constexpr int NUM_INPUT_QUEUES = 8;
+    
+    // A vector of pointers to the queues. We pick one based on the request ID.
+    std::vector<std::unique_ptr<ThreadSafeQueue<QueueItem>>> request_queues_;
 
     std::thread evaluator_thread_;
     std::atomic<bool> stop_requested_;

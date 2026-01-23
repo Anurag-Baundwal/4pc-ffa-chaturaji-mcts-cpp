@@ -15,7 +15,12 @@ Evaluator::Evaluator(Model* network, int max_batch_size) :
     if (!network_) {
         throw std::runtime_error("Evaluator received a null network pointer.");
     }
-    // ONNX Runtime models are ready to run upon loading; no need for .to(device) or .eval()
+    
+    // Initialize the input queues
+    request_queues_.reserve(NUM_INPUT_QUEUES);
+    for (int i = 0; i < NUM_INPUT_QUEUES; ++i) {
+        request_queues_.push_back(std::make_unique<ThreadSafeQueue<QueueItem>>());
+    }
 }
 
 Evaluator::~Evaluator() {
@@ -29,7 +34,7 @@ void Evaluator::start() {
     }
     stop_requested_ = false;
     evaluator_thread_ = std::thread(&Evaluator::evaluation_loop, this);
-    std::cout << "Evaluator thread started." << std::endl;
+    std::cout << "Evaluator thread started (using " << NUM_INPUT_QUEUES << " input queues)." << std::endl;
 }
 
 void Evaluator::stop() {
@@ -42,37 +47,80 @@ void Evaluator::stop() {
 }
 
 std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest request) {
-    request.request_id = next_request_id_++;
+    // 1. Assign Unique ID
+    RequestId id = next_request_id_++;
+    request.request_id = id;
+
     std::promise<EvaluationResult> result_promise;
     std::future<EvaluationResult> result_future = result_promise.get_future();
 
-    request_queue_.push({std::move(request), std::move(result_promise)});
+    // 2. Select Input Queue (Round-Robin based on ID)
+    // This distributes the locking load across multiple mutexes.
+    int queue_idx = id % NUM_INPUT_QUEUES;
+
+    // 3. Push to the specific queue
+    request_queues_[queue_idx]->push({std::move(request), std::move(result_promise)});
+    
     return result_future;
 }
 
 void Evaluator::evaluation_loop() {
-    std::vector<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> batch_with_promises;
+    std::vector<QueueItem> batch_with_promises;
     batch_with_promises.reserve(max_batch_size_); 
+
+    // Index to ensure we check all queues fairly (Round-Robin polling)
+    int current_poll_queue_idx = 0;
 
     while (!stop_requested_) {
         batch_with_promises.clear(); 
 
-        // 1. Get first request with timeout
-        std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> first_pair_opt =
-            request_queue_.try_pop_for(std::chrono::milliseconds(1));
+        // --- 1. Fetch First Item (Non-Blocking Attempt) ---
+        // We iterate through all queues. If all are empty, we sleep briefly.
+        
+        bool found_any = false;
+        
+        // Try to find at least one item in any queue
+        for (int i = 0; i < NUM_INPUT_QUEUES; ++i) {
+            int idx = (current_poll_queue_idx + i) % NUM_INPUT_QUEUES;
+            std::optional<QueueItem> item = request_queues_[idx]->try_pop();
+            
+            if (item) {
+                batch_with_promises.push_back(std::move(*item));
+                found_any = true;
+                // Update start index for next time to ensure fairness
+                current_poll_queue_idx = (idx + 1) % NUM_INPUT_QUEUES;
+                break;
+            }
+        }
 
-        if (stop_requested_) { break; } 
-        if (!first_pair_opt) { continue; } 
+        if (!found_any) {
+            if (stop_requested_) break;
+            // Sleep briefly to avoid busy waiting if all queues are empty
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
 
-        batch_with_promises.push_back(std::move(*first_pair_opt));
-
-        // 2. Greedily fill the rest of the batch
+        // --- 2. Greedily fill the rest of the batch ---
+        // Continue checking queues until batch is full or queues are drained
+        int empty_queues_count = 0;
+        
         while (batch_with_promises.size() < static_cast<size_t>(max_batch_size_)) {
-            std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> next_pair = request_queue_.try_pop(); 
+            // Check the current queue
+            std::optional<QueueItem> next_pair = request_queues_[current_poll_queue_idx]->try_pop();
+            
             if (next_pair) {
                 batch_with_promises.push_back(std::move(*next_pair));
+                empty_queues_count = 0; // Reset consecutive empty count since we found something
             } else {
-                break; 
+                empty_queues_count++;
+            }
+
+            // Move to next queue
+            current_poll_queue_idx = (current_poll_queue_idx + 1) % NUM_INPUT_QUEUES;
+
+            // If we've checked all queues and found nothing consecutively, stop filling
+            if (empty_queues_count >= NUM_INPUT_QUEUES) {
+                break;
             }
         }
 
@@ -80,35 +128,33 @@ void Evaluator::evaluation_loop() {
             continue;
         }
 
-        // 3. Prepare requests for ONNX Model
+        // --- 3. Prepare requests for ONNX Model ---
         std::vector<EvaluationRequest> requests_for_nn;
         requests_for_nn.reserve(batch_with_promises.size());
         for (const auto& pair : batch_with_promises) {
             requests_for_nn.push_back(pair.first); 
         }
 
-        // 4. Perform Batched Inference
+        // --- 4. Perform Batched Inference ---
         std::vector<EvaluationResult> batch_results;
         try {
-            // Call the ONNX model (Synchronous)
             batch_results = network_->evaluate_batch(requests_for_nn);
         } catch (const std::exception& e) {
             std::cerr << "!!! EXCEPTION during ONNX batch evaluation: " << e.what() << std::endl;
             for (auto& pair : batch_with_promises) {
                 try {
                     pair.second.set_exception(std::current_exception());
-                } catch (const std::future_error& fe) { /* ignore */ }
+                } catch (...) { }
             }
             continue; 
         }
 
         if (batch_results.size() != batch_with_promises.size()) {
             std::cerr << "Error: Model output batch size mismatch!" << std::endl;
-            // Handle error logic if necessary...
             continue;
         }
 
-        // 5. Fulfill Promises with Results
+        // --- 5. Fulfill Promises (Return Results) ---
         for (size_t i = 0; i < batch_results.size(); ++i) {
             try {
                 batch_with_promises[i].second.set_value(std::move(batch_results[i]));
@@ -120,13 +166,15 @@ void Evaluator::evaluation_loop() {
         }
     } 
 
-    // Cleanup
+    // Cleanup: Drain all queues on stop
     if (stop_requested_) {
-        std::optional<std::pair<EvaluationRequest, std::promise<EvaluationResult>>> remaining_pair_opt;
-        while((remaining_pair_opt = request_queue_.try_pop())) {
-            try {
-                remaining_pair_opt->second.set_exception(std::make_exception_ptr(std::runtime_error("Evaluator shutting down.")));
-            } catch (...) {}
+        for (auto& queue_ptr : request_queues_) {
+            std::optional<QueueItem> remaining_pair_opt;
+            while((remaining_pair_opt = queue_ptr->try_pop())) {
+                try {
+                    remaining_pair_opt->second.set_exception(std::make_exception_ptr(std::runtime_error("Evaluator shutting down.")));
+                } catch (...) {}
+            }
         }
     }
 }
