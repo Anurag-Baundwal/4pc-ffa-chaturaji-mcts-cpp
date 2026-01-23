@@ -7,3 +7,4 @@ webdriver-manager
 pywin32
 pytesseract
 Pillow
+onnxconverter-common

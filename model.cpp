@@ -4,7 +4,9 @@
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
+#include <filesystem>
 
+namespace fs = std::filesystem;
 namespace chaturaji_cpp {
 
 Model::Model(const std::string& model_path) :
@@ -19,9 +21,9 @@ Model::Model(const std::string& model_path) :
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
     bool provider_loaded = false;
+    std::string final_model_path = model_path;
 
     // --- 1. Attempt to use CUDA (NVIDIA GPU) ---
-
     #ifdef USE_CUDA
         try {
             OrtCUDAProviderOptions cuda_options;
@@ -35,6 +37,17 @@ Model::Model(const std::string& model_path) :
             
             std::cout << "[C++] Model: Enabled CUDA Execution Provider." << std::endl;
             provider_loaded = true;
+
+            // --- FP16 Auto-Detection Logic ---
+            // If we are on CUDA, check if an FP16 version of the model exists.
+            // Convention: "model.onnx" -> "model_fp16.onnx"
+            if (model_path.size() > 5 && model_path.substr(model_path.size() - 5) == ".onnx") {
+                std::string fp16_path = model_path.substr(0, model_path.size() - 5) + "_fp16.onnx";
+                if (fs::exists(fp16_path)) {
+                    final_model_path = fp16_path;
+                    std::cout << "[C++] Model: Found and using FP16 model for GPU: " << final_model_path << std::endl;
+                }
+            }
         } catch (const std::exception& e) {
             std::cerr << "[C++] Model: CUDA defined but initialization failed: " << e.what() << std::endl;
         } catch (...) {
@@ -61,7 +74,8 @@ Model::Model(const std::string& model_path) :
         std::cout << "[C++] Model: Falling back to CPU execution." << std::endl;
     }
 
-    session_ = Ort::Session(env_, std::wstring(model_path.begin(), model_path.end()).c_str(), session_options);
+    // Load the session using the selected path (FP16 or Standard)
+    session_ = Ort::Session(env_, std::wstring(final_model_path.begin(), final_model_path.end()).c_str(), session_options);
 }
 
 std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<EvaluationRequest>& requests) {

@@ -2,6 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import onnx 
+import warnings
+
+try:
+    from onnxconverter_common import float16
+    HAS_FP16_CONVERTER = True
+except ImportError:
+    HAS_FP16_CONVERTER = False
 
 # --- Board Dimensions & NN Configuration ---
 BOARD_DIM = 8
@@ -124,6 +131,7 @@ def export_to_onnx(model_path, output_path, random_init=False):
     """
     Exports the PyTorch model to ONNX format.
     If random_init is True, exports a model with random weights instead of loading from disk.
+    Also attempts to create an FP16 copy for NVIDIA GPU inference.
     """
     if random_init:
         print(f"Exporting random initialized model to {output_path}...")
@@ -175,9 +183,31 @@ def export_to_onnx(model_path, output_path, random_init=False):
         print("[Python] 'dynamo' arg not supported, calling standard export.")
         torch.onnx.export(**export_args)
 
-    # 3. Apply Patch
+    # 3. Apply Patch to the main FP32 model
     force_patch_onnx_batch_size(output_path)
-    print(f"Successfully exported ONNX model to {output_path}")
+    print(f"Successfully exported FP32 ONNX model to {output_path}")
+
+    # 4. Attempt FP16 Conversion
+    if HAS_FP16_CONVERTER:
+        try:
+            print("[Python] Attempting to create FP16 model...")
+            
+            # suppress truncation warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, message="the float32 number.*will be truncated")
+                
+                model_fp32 = onnx.load(output_path)
+                model_fp16 = float16.convert_float_to_float16(model_fp32, keep_io_types=True)
+                
+                fp16_path = output_path.replace(".onnx", "_fp16.onnx")
+                onnx.save(model_fp16, fp16_path)
+                print(f"[Python] Successfully exported FP16 ONNX model to {fp16_path}")
+
+        except Exception as e:
+            print(f"[Python] Warning: FP16 conversion failed: {e}")
+    else:
+        print("[Python] 'onnxconverter-common' not installed. Skipping FP16 export.")
+        print("         (To enable: pip install onnxconverter-common)")
 
 if __name__ == "__main__":
     import sys
