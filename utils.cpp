@@ -67,11 +67,18 @@ namespace {
     }
 }
 
-std::vector<float> board_to_floats(const Board& board) {
-    std::vector<float> tensor_data(NN_INPUT_SIZE, 0.0f);
+void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
+    // 1. Ensure capacity and clear old data
+    if (tensor_data.size() != NN_INPUT_SIZE) {
+        tensor_data.resize(NN_INPUT_SIZE);
+    }
+    // Faster than reallocation: just fill with 0
+    std::fill(tensor_data.begin(), tensor_data.end(), 0.0f);
+
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 
+    // Capture tensor_data by reference
     auto fill_plane = [&](int channel_idx, float value) {
         if (value == 0.0f) return; 
         int offset = channel_idx * BOARD_AREA;
@@ -142,8 +149,6 @@ std::vector<float> board_to_floats(const Board& board) {
         for(int opp=0; opp<4; ++opp) if(opp != abs_idx) stressors |= all_atks[opp];
         if (king & stressors) fill_plane(33 + rel_i, 1.0f);
     }
-
-    return tensor_data;
 }
 
 Move parse_string_to_move(const Board& board, const std::string& move_str) {

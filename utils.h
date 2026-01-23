@@ -27,7 +27,7 @@ struct RunStats {
 
 // --- Tensor Conversion ---
 
-std::vector<float> board_to_floats(const Board& board);
+void board_to_floats_into(const Board& board, std::vector<float>& out_buffer);
 
 // --- Move Indexing ---
 

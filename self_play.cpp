@@ -80,7 +80,7 @@ void SelfPlay::process_worker_batch(
            continue;
       }
       EvaluationRequest req;
-      req.state_floats = board_to_floats(leaf_node->get_board());
+      board_to_floats_into(leaf_node->get_board(), req.state_floats);
       futures.push_back(evaluator_->submit_request(std::move(req)));
       pending_batch[i].pending_request_id = req.request_id; 
   }

@@ -26,6 +26,9 @@ public:
     void write_batch(const std::vector<GameDataStep>& data) {
         if (!outfile_.is_open()) return;
 
+        // Allocate buffer once
+        std::vector<float> state_floats(NN_INPUT_SIZE);
+
         for (const auto& step : data) {
             // 0. Extract shared data first
             const Board& board = std::get<0>(step);
@@ -34,8 +37,9 @@ public:
             const std::array<double, 4>& abs_rewards = std::get<3>(step);
 
             // 1. Board State
-            std::vector<float> state_floats = board_to_floats(board);
+            board_to_floats_into(board, state_floats);
             
+            // safety check
             if (state_floats.size() != NN_INPUT_SIZE) {
                 std::cerr << "Error: board_to_floats returned incorrect size: " << state_floats.size() 
                           << " expected " << NN_INPUT_SIZE << std::endl;
