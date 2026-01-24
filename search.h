@@ -44,6 +44,9 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
  * @param c_puct Exploration constant.
  * @param mcts_batch_size Batch size for NN inference.
  * @param verbose If true, prints detailed statistics (evaluations, move candidates) to stdout.
+ * @param spite_weight Weight for Utility Mixing (Root Spite). Adjusts the search to assume 
+ *                     opponents will prioritize lowering the root player's score. 
+ *                     0.0 = Rational (maximize own score), 1.0 = Paranoid (minimize yours).
  */
 std::optional<Move> get_best_move_mcts_sync( 
     const Board& board,
@@ -52,7 +55,8 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr, 
     double c_puct = 2.5,
     int mcts_batch_size = 16,
-    bool verbose = false 
+    bool verbose = false,
+    double spite_weight = 0.0
 );
 
 std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points);

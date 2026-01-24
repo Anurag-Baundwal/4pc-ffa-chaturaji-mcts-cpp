@@ -144,7 +144,10 @@ void run_mcts_simulations_sync(
   Model* network,
   int simulations,
   double c_puct,
-  int batch_size) 
+  int batch_size,
+  Player root_player,
+  double spite_weight
+)  
 {
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
@@ -166,19 +169,19 @@ void run_mcts_simulations_sync(
 
       // Traversal using select_child (which internally uses linked list logic now)
       while (!current_sim.current_node->is_leaf()) {
-           MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
+          MCTSNode* next_node = current_sim.current_node->select_child(c_puct, root_player, spite_weight);
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 if (current_sim.current_node->get_board().is_game_over()){
-                    MCTSNode* terminal_leaf = current_sim.current_node; 
-                    std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
-                    std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-                    
-                    backpropagate_mcts_value(current_sim.path, terminal_player_values);
-                 } else {
-                     std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
-                     backpropagate_mcts_value(current_sim.path, neutral_values);
-                 }
-                 goto next_simulation_sync; 
+              if (current_sim.current_node->get_board().is_game_over()){
+                MCTSNode* terminal_leaf = current_sim.current_node; 
+                std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
+                std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
+                
+                backpropagate_mcts_value(current_sim.path, terminal_player_values);
+              } else {
+                  std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
+                  backpropagate_mcts_value(current_sim.path, neutral_values);
+              }
+              goto next_simulation_sync; 
           }
           current_sim.current_node = next_node;
           current_sim.path.push_back(current_sim.current_node);
@@ -208,7 +211,9 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
     int mcts_batch_size,
-    bool verbose) 
+    bool verbose,
+    double spite_weight
+)  
 {
     if (board.is_game_over()) {
       current_mcts_root_shptr = nullptr;
@@ -220,9 +225,23 @@ std::optional<Move> get_best_move_mcts_sync(
     } else {
         current_mcts_root_shptr = std::make_shared<MCTSNode>(board);
     }
+
+    Player root_player = board.get_current_player();
+
     
+    // DYNAMIC SPITE REDUCTION
+    // Reduce spite if fewer players are alive (spite makes less sense in 1v1)
+    int num_eliminated = 4 - static_cast<int>(board.get_active_players().size());
+    double effective_spite = spite_weight;
+    for (int i = 0; i < num_eliminated; ++i) effective_spite *= 0.66;
+    
+    if (verbose && spite_weight > 0.0) {
+        std::cout << "info string Active Players: " << board.get_active_players().size() 
+                  << " | Effective Spite: " << std::fixed << std::setprecision(3) << effective_spite << std::endl;
+    }
+
     // Run MCTS
-    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size); 
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size, root_player, effective_spite);  
 
     // --- VERBOSE OUTPUT ---
     if (verbose) {

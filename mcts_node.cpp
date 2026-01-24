@@ -62,7 +62,7 @@ const std::optional<Move>& MCTSNode::get_move() const { return move_; }
 
 // --- MCTS Operations ---
 
-MCTSNode* MCTSNode::select_child(double c_puct) const {
+MCTSNode* MCTSNode::select_child(double c_puct, Player root_player, double spite_weight) const {
     if (is_leaf()) return nullptr; 
 
     MCTSNode* best_child = nullptr;
@@ -70,7 +70,7 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 
     MCTSNode* child = first_child_;
     while (child) {
-        double score = calculate_uct_score(child, c_puct);
+        double score = calculate_uct_score(child, c_puct, root_player, spite_weight);
         if (score > best_score) {
             best_score = score;
             best_child = child;
@@ -187,7 +187,7 @@ const std::array<double, 4>& MCTSNode::get_total_player_values() const { return 
 double MCTSNode::get_prior() const { return prior_; }
 int MCTSNode::get_pending_visits() const { return pending_visits_; }
 
-double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
+double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct, Player root_player, double spite_weight) const {
     const double epsilon = 1e-8; 
     const double cpuct_base = 6144.0;
     
@@ -199,8 +199,24 @@ double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const
     Player parent_player_enum = this->board_state_.get_current_player();
     int parent_player_idx = static_cast<int>(parent_player_enum);
 
-    double child_total_value_for_parent = child->total_player_values_[parent_player_idx];
-    double effective_value = child_total_value_for_parent - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
+    // --- SPITE LOGIC START ---
+    // If it is NOT the root player's turn, and spite is active:
+    // The node evaluation becomes a mix of "What is good for me (opp)" and "What is bad for Root"
+    double value_sum = child->total_player_values_[parent_player_idx];
+
+    // Only apply if it's NOT the root player's turn and spite is enabled
+    if (spite_weight > 0.001) {
+        int root_idx = static_cast<int>(root_player);
+        if (parent_player_idx != root_idx) {
+            double value_root = child->total_player_values_[root_idx];
+            
+            // Spite Formula: Utility = (1 - w) * MyScore + w * (-RootScore)
+            // We apply this to the accumulated sum before averaging
+            value_sum = ((1.0 - spite_weight) * value_sum) - (spite_weight * value_root);
+        }
+    }
+
+    double effective_value = value_sum - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
 
     double q_value = 0.0;
     if (child_visits > epsilon) { 

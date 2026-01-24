@@ -46,7 +46,7 @@ public:
     const std::optional<Move>& get_move() const; 
 
     // --- MCTS Operations ---
-    MCTSNode* select_child(double c_puct = 1.0) const;
+    MCTSNode* select_child(double c_puct = 1.0, Player root_player = Player::RED, double spite_weight = 0.0) const;
     void expand(const std::map<Move, double>& policy_probs);
 
     void update_stats(const std::array<double, 4>& values_for_players); 
@@ -81,7 +81,7 @@ private:
     double prior_;              
     int pending_visits_; 
 
-    double calculate_uct_score(const MCTSNode* child, double c_puct) const;
+    double calculate_uct_score(const MCTSNode* child, double c_puct, Player root_player, double spite_weight) const;
 
     static MCTSNodePool s_node_pool; 
 };

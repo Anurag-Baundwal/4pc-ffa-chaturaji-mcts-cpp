@@ -49,6 +49,13 @@ int main(int argc, char* argv[]) {
         if (!batch_str.empty()) {
             mcts_batch_size = std::stoi(batch_str);
         }
+        
+        double global_spite_weight = 0.0;
+        std::string spite_str = get_cmd_option(argv, argv + argc, "--spite");
+        if (!spite_str.empty()) {
+            global_spite_weight = std::stod(spite_str);
+            std::cout << "info string Spite Weight set to: " << global_spite_weight << std::endl;
+        }
 
         std::unique_ptr<chaturaji_cpp::Model> network;
         try {
@@ -120,9 +127,9 @@ int main(int argc, char* argv[]) {
                 // Run Search
                 // verbose=true prints the stats you requested
                 auto best_move_opt = chaturaji_cpp::get_best_move_mcts_sync(
-                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true 
+                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true,
+                    global_spite_weight
                 );
-
                 if (best_move_opt) {
                     std::cout << "bestmove " << chaturaji_cpp::get_uci_string(*best_move_opt) << std::endl;
                 } else {
