@@ -16,7 +16,7 @@ namespace chaturaji_cpp {
 
 class Board;
 class MCTSNode;
-class Model; // Forward declaration of the new Model class
+class Model; 
 struct Move;
 
 struct SimulationState {
@@ -44,6 +44,7 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
  * @param c_puct Exploration constant.
  * @param mcts_batch_size Batch size for NN inference.
  * @param verbose If true, prints detailed statistics (evaluations, move candidates) to stdout.
+  * @param pessimism_factor Multiplier for negative rewards. E.g., 5.0 makes losses 5x more painful.
  */
 std::optional<Move> get_best_move_mcts_sync( 
     const Board& board,
@@ -52,7 +53,8 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr, 
     double c_puct = 2.5,
     int mcts_batch_size = 16,
-    bool verbose = false 
+    bool verbose = false,
+    double pessimism_factor = 1.0 // Default 1.0 = Risk Neutral
 );
 
 std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points);
