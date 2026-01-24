@@ -169,8 +169,8 @@ int main(int argc, char* argv[]) {
         int num_workers = 12;   
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
-        double learning_rate = 0.02;
-        double weight_decay = 0.0001;
+        double learning_rate = 0.001;
+        double weight_decay = 0.01;
         int max_buffer_size = 1000000;
         int temp_decay_move = 20;
         double d_alpha = 0.4;

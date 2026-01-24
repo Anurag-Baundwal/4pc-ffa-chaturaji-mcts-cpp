@@ -242,11 +242,18 @@ def train_loop(args):
 
     # --- 3. Model & Optimizer ---
     model = ChaturajiNN().to(device)
-    # Standard AlphaZero settings: SGD with Momentum
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
+    
+    # Using NAdamW (Nesterov-accelerated Adam with Decoupled Weight Decay)
+    optimizer = optim.NAdam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.wd,
+        decoupled_weight_decay=True
+    )
+
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
 
-    print(f"[Python] Optimizer: SGD(lr={args.lr}, mom=0.9, wd={args.wd})")
+    print(f"[Python] Optimizer: NadamW(lr={args.lr}, wd={args.wd})")
 
     # --- 4. Load Weights ---
     if args.load_weights:
@@ -339,8 +346,8 @@ if __name__ == "__main__":
     parser.add_argument("--new-samples", type=int, default=0)
     parser.add_argument("--sampling-rate", type=float, default=1.5)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=0.02)
-    parser.add_argument("--wd", type=float, default=0.0001)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--wd", type=float, default=0.01)
     parser.add_argument("--load-weights", type=str, default="")
     
     args = parser.parse_args()
