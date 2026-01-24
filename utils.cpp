@@ -151,6 +151,64 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
     }
 }
 
+PackedSample create_packed_sample(
+    const Board& board, 
+    const std::map<Move, double>& policy, 
+    const std::array<double, 4>& rewards
+) {
+    PackedSample sample;
+    // Clear memory to ensure padding bytes are 0 (avoids junk data)
+    std::memset(&sample, 0, sizeof(PackedSample));
+
+    // 1. Pack Bitboards and Player Data
+    for(int p = 0; p < 4; ++p) {
+        Player pl = static_cast<Player>(p);
+        for(int t = 0; t < 5; ++t) {
+            // PieceType 1-5 (PAWN..KING) maps to index 0-4
+            sample.piece_bitboards[p][t] = board.get_piece_bitboard(pl, static_cast<PieceType>(t + 1));
+        }
+        sample.attack_bitboards[p] = board.get_squares_attacked_by(pl);
+        sample.player_points[p] = board.get_player_points_array()[p];
+        sample.values[p] = static_cast<float>(rewards[p]);
+    }
+
+    // 2. Pack Game Scalars
+    sample.full_move_number = board.get_full_move_number();
+    sample.move_number_last_reset = board.get_move_number_of_last_reset();
+    sample.active_mask = board.get_active_mask();
+    sample.current_player = static_cast<uint8_t>(board.get_current_player());
+
+    // 3. Pack Policy (Sparse)
+    // Convert map to vector of pairs for sorting
+    std::vector<std::pair<float, uint16_t>> sorted_policy;
+    sorted_policy.reserve(policy.size());
+
+    Player cp = board.get_current_player();
+    for(const auto& item : policy) {
+        int idx = move_to_policy_index(item.first, cp);
+        // Ensure index is valid for our neural net size (4096)
+        if(idx >= 0 && idx < 4096) {
+            sorted_policy.push_back({static_cast<float>(item.second), static_cast<uint16_t>(idx)});
+        }
+    }
+
+    // Sort descending by probability to keep the most important moves 
+    // if we exceed MAX_STORED_MOVES (though 64 legal moves is rare in Chaturaji)
+    std::sort(sorted_policy.begin(), sorted_policy.end(), [](const auto& a, const auto& b){
+        return a.first > b.first;
+    });
+
+    int count = std::min(static_cast<int>(sorted_policy.size()), MAX_STORED_MOVES);
+    sample.num_policy_entries = count;
+
+    for(int i = 0; i < count; ++i) {
+        sample.move_probs[i] = sorted_policy[i].first;
+        sample.move_indices[i] = sorted_policy[i].second;
+    }
+
+    return sample;
+}
+
 Move parse_string_to_move(const Board& board, const std::string& move_str) {
     if (move_str == "R" || move_str == "T" || move_str == "RESIGN") {
         return Move::Resign();

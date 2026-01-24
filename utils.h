@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <map>
 
 #include "board.h" 
 #include "types.h" 
@@ -28,6 +29,16 @@ struct RunStats {
 // --- Tensor Conversion ---
 
 void board_to_floats_into(const Board& board, std::vector<float>& out_buffer);
+
+/**
+ * @brief Compress a board state, policy, and rewards into a PackedSample struct.
+ * Used for saving training data efficiently.
+ */
+PackedSample create_packed_sample(
+    const Board& board, 
+    const std::map<Move, double>& policy, 
+    const std::array<double, 4>& rewards
+);
 
 // --- Move Indexing ---
 

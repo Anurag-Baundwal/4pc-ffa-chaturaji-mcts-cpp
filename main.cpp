@@ -171,7 +171,7 @@ int main(int argc, char* argv[]) {
         int worker_batch_size = 48;
         double learning_rate = 0.02;
         double weight_decay = 0.0001;
-        int max_buffer_size = 200000;
+        int max_buffer_size = 1000000;
         int temp_decay_move = 20;
         double d_alpha = 0.4;
         double d_epsilon = 0.25;

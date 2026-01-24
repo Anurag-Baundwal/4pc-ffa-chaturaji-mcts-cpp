@@ -229,3 +229,15 @@ cc_binary(
         ":chaturaji_magic_utils",
     ],
 )
+
+cc_binary(
+    name = "pack_test_gen",
+    srcs = ["pack_test_gen.cpp"],
+    copts = ["/std:c++17"],
+    deps = [
+        ":chaturaji_board",
+        ":chaturaji_types",
+        ":chaturaji_utils",
+        ":chaturaji_magic_utils",
+    ],
+)

@@ -227,6 +227,42 @@ struct EvaluationResult {
     std::array<float, NN_VALUE_SIZE> value;          // Size: 4
 };
 
+// Maximum sparse policy entries to store (moves with very low prob are truncated)
+constexpr int MAX_STORED_MOVES = 64; 
+
+// Ensure byte alignment is 1 (Compact binary storage)
+#pragma pack(push, 1)
+
+// A compact representation of a training sample ~600-700 bytes
+struct PackedSample {
+    // --- Board State (Bitboards & Scalars) ---
+    // 20 Piece Bitboards (4 players * 5 types)
+    uint64_t piece_bitboards[4][5]; 
+    
+    // 4 Attack Bitboards (Pre-calculated in C++ to save Python CPU)
+    uint64_t attack_bitboards[4];
+
+    // Game state scalars
+    int32_t player_points[4];
+    int32_t full_move_number;
+    int32_t move_number_last_reset;
+    uint8_t active_mask;
+    uint8_t current_player;
+    
+    // Padding to align next section
+    uint8_t _padding[2]; 
+
+    // --- Sparse Policy ---
+    int32_t num_policy_entries;
+    uint16_t move_indices[MAX_STORED_MOVES]; // Policy indices (0-4095)
+    float move_probs[MAX_STORED_MOVES];      // Probabilities associated with indices
+
+    // --- Value ---
+    float values[4]; // Final game result
+};
+
+#pragma pack(pop)
+
 // --- Type Aliases for Board State ---
 using PlayerPointMap = std::array<int, 4>; // Replaced std::map with std::array for POD layout
 using ActivePlayerSet = uint8_t;           // Replaced std::set with bitmask

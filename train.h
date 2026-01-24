@@ -22,7 +22,7 @@ void train(
     double learning_rate = 0.02,
     double weight_decay = 0.0001,
     int simulations_per_move = 128,
-    int max_buffer_size = 200000,  
+    int max_buffer_size = 1000000,
     int temp_decay_move = 20,
     double dirichlet_alpha = 0.4,
     double dirichlet_epsilon = 0.25,

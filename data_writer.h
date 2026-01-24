@@ -26,45 +26,18 @@ public:
     void write_batch(const std::vector<GameDataStep>& data) {
         if (!outfile_.is_open()) return;
 
-        // Allocate buffer once
-        std::vector<float> state_floats(NN_INPUT_SIZE);
-
         for (const auto& step : data) {
-            // 0. Extract shared data first
+            // Extract data
             const Board& board = std::get<0>(step);
             const auto& policy_map = std::get<1>(step);
-            Player move_player = std::get<2>(step);
+            // const Player move_player = std::get<2>(step); // Packed inside board logic
             const std::array<double, 4>& abs_rewards = std::get<3>(step);
 
-            // 1. Board State
-            board_to_floats_into(board, state_floats);
-            
-            // safety check
-            if (state_floats.size() != NN_INPUT_SIZE) {
-                std::cerr << "Error: board_to_floats returned incorrect size: " << state_floats.size() 
-                          << " expected " << NN_INPUT_SIZE << std::endl;
-            }
-            
-            outfile_.write(reinterpret_cast<const char*>(state_floats.data()), sizeof(float) * state_floats.size());
+            // Pack it
+            PackedSample sample = create_packed_sample(board, policy_map, abs_rewards);
 
-            // 2. Policy Tensor (NN_POLICY_SIZE = 4096)
-            std::vector<float> policy_dense(NN_POLICY_SIZE, 0.0f);
-            for (const auto& kv : policy_map) {
-                int idx = move_to_policy_index(kv.first, move_player); 
-                if (idx >= 0 && idx < NN_POLICY_SIZE) {
-                    policy_dense[idx] = static_cast<float>(kv.second);
-                }
-            }
-            outfile_.write(reinterpret_cast<const char*>(policy_dense.data()), sizeof(float) * NN_POLICY_SIZE);
-
-            // 3. Value (NN_VALUE_SIZE = 4)
-            int cp_idx = static_cast<int>(move_player);
-
-            float rel_rewards[4];
-            for (int rel_i = 0; rel_i < 4; ++rel_i) {
-                rel_rewards[rel_i] = static_cast<float>(abs_rewards[(cp_idx + rel_i) % 4]);
-            }
-            outfile_.write(reinterpret_cast<const char*>(rel_rewards), sizeof(float) * 4);
+            // Write raw struct bytes
+            outfile_.write(reinterpret_cast<const char*>(&sample), sizeof(PackedSample));
         }
         outfile_.flush();
     }

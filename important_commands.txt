@@ -109,3 +109,21 @@ bazel build //:perft -c opt
 
 Run the test:
 .\bazel-bin\perft.exe --depth 4 --divide
+
+---------------------------------------------------------------------
+
+To verify the Packed Binary Data format (Training Data Compression):
+
+This ensures that the C++ data packing and the Python on-the-fly unpacking
+result in identical tensors.
+
+1. Compile the generator:
+   bazel build //:pack_test_gen
+
+2. Run the generator (creates test_*.bin files):
+   .\bazel-bin\pack_test_gen.exe
+
+3. Run the python verification script:
+   python pack_verify.py
+
+Expected output: Matches for Values, Policy, and Input State.

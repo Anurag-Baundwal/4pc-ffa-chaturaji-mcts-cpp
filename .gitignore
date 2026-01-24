@@ -22,6 +22,10 @@ venv/
 training_data*/
 training_log*.txt
 
+# === Test Artifacts ===
+test_packed.bin
+test_truth_*.bin
+
 # === Models and Neural Networks ===
 # Ignores the entire models folder
 models*/
