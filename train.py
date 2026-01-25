@@ -19,7 +19,6 @@ from model import (
 MAX_STORED_MOVES = 64
 
 # Define the numpy dtype that matches the C++ PackedSample struct exactly.
-# This allows us to map the binary data directly into memory without parsing loops.
 PACKED_DTYPE = np.dtype([
     ('piece_bbs',     np.uint64, (4, 5)), # [Player][PieceType]
     ('attack_bbs',    np.uint64, (4,)),   # [Player]
@@ -43,6 +42,7 @@ def unpack_batch_to_tensors(raw_batch):
     
     # --- 1. Expand Policy (Sparse -> Dense) ---
     policy_target = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.float32)
+    legal_actions_mask = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.bool) # <--- NEW
     
     num_entries = raw_batch['num_policy']
     move_indices = raw_batch['move_indices'].astype(np.int64)
@@ -53,7 +53,11 @@ def unpack_batch_to_tensors(raw_batch):
     col_indices = np.arange(MAX_STORED_MOVES)[None, :].repeat(batch_size, axis=0)
     mask = col_indices < num_entries[:, None]
     
+    # Fill Probabilities
     policy_target[row_indices[mask], move_indices[mask]] = torch.from_numpy(move_probs[mask])
+    
+    # Fill Legal Mask (Any move present in MCTS data is considered legal)
+    legal_actions_mask[row_indices[mask], move_indices[mask]] = True # <--- NEW
 
     # --- 2. Expand Values ---
     # The C++ struct stores Absolute values [Red, Blue, Yellow, Green].
@@ -146,7 +150,8 @@ def unpack_batch_to_tensors(raw_batch):
         if len(idx) > 0:
             states[idx] = torch.rot90(states[idx], k=k, dims=[-2, -1])
 
-    return states, policy_target, value_target
+    # Return the mask as the 4th value
+    return states, policy_target, value_target, legal_actions_mask
 
 class ReplayBuffer:
     def __init__(self, data_dir, max_size):
@@ -170,8 +175,6 @@ class ReplayBuffer:
                 break
             
             try:
-                # Direct memory mapping or reading into struct array
-                # This is extremely fast compared to Python struct.unpack
                 chunk = np.fromfile(fp, dtype=PACKED_DTYPE)
                 
                 if chunk.size == 0: continue
@@ -306,18 +309,26 @@ def train_loop(args):
         batch = buffer.sample_batch(args.batch_size)
         if batch is None: break
         
-        s, tp, tv = batch
-        s, tp, tv = s.to(device), tp.to(device), tv.to(device)
+        # Unpack the mask as well
+        s, tp, tv, mask = batch
+        s, tp, tv, mask = s.to(device), tp.to(device), tv.to(device), mask.to(device)
         
         optimizer.zero_grad()
         
         with torch.amp.autocast('cuda', enabled=use_amp):
             p, v = model(s)
-            
+
             # AlphaZero Loss:
             # 1. Policy: Cross Entropy (maximize log prob of target)
             # 2. Value: MSE
-            loss_policy = -torch.sum(tp * F.log_softmax(p, dim=1), dim=1).mean()
+            
+            # --- MASKING ILLEGAL MOVES ---
+            # Set logits for illegal moves to negative infinity (-1e9).
+            # When passed to log_softmax, these become 0 probability.
+            # This prevents the network from "learning" to push them down endlessly.
+            p_masked = torch.where(mask, p, torch.tensor(-1e9, device=device))
+
+            loss_policy = -torch.sum(tp * F.log_softmax(p_masked, dim=1), dim=1).mean()
             loss_value = F.mse_loss(v, tv)
             
             loss = loss_policy + 1.25 * loss_value
@@ -342,7 +353,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--save-dir", type=str, required=True)
     parser.add_argument("--data-dir", type=str, default="./training_data")
-    parser.add_argument("--max-buffer-size", type=int, default=1000000) # Increased default
+    parser.add_argument("--max-buffer-size", type=int, default=1000000)
     parser.add_argument("--new-samples", type=int, default=0)
     parser.add_argument("--sampling-rate", type=float, default=1.5)
     parser.add_argument("--batch-size", type=int, default=512)

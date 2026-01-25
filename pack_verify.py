@@ -36,7 +36,8 @@ def verify():
 
     # 3. Perform Unpacking
     print("Unpacking...")
-    unpacked_input, unpacked_policy, unpacked_value = unpack_batch_to_tensors(raw_packed)
+    # NOTE: Function now returns legal_mask as 4th value
+    unpacked_input, unpacked_policy, unpacked_value, _ = unpack_batch_to_tensors(raw_packed)
 
     # --- 4. PREPARE COMPARISON ---
     # The NN expects everything in RELATIVE order.
