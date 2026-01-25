@@ -238,7 +238,7 @@ void SelfPlay::run_game_simulation(
           // If the tree is REUSED, the root is not a leaf, so the batch processing noise logic
           // won't trigger. We must inject noise manually here.
           if (!current_root_ref.is_leaf()) {
-              current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, rng_);
+              current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, thread_rng);
               root_noise_applicable = false; 
           }
 
