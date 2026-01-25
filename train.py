@@ -331,7 +331,7 @@ def train_loop(args):
             loss_policy = -torch.sum(tp * F.log_softmax(p_masked, dim=1), dim=1).mean()
             loss_value = F.mse_loss(v, tv)
             
-            loss = loss_policy + 1.25 * loss_value
+            loss = loss_policy + 4 * loss_value
         
         scaler.scale(loss).backward()
         scaler.step(optimizer)
