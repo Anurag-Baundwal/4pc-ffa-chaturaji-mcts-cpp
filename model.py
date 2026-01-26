@@ -84,6 +84,12 @@ class ChaturajiNN(nn.Module):
         self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_MID_CHANNELS)
         self.value_fc2 = nn.Linear(VALUE_FC_MID_CHANNELS, VALUE_OUTPUT_SIZE)
 
+        # --- Uncertainty Weighting Parameters (Poor Man's GradNorm) ---
+        # These learnable scalars balance the Policy and Value losses dynamically.
+        # log_vars[0] -> Policy, log_vars[1] -> Value.
+        # Initial s_p = 0 (weight 1.0), Initial s_v = -2.0 (weight ~3.7)
+        self.log_vars = nn.Parameter(torch.tensor([0.0, -2.0]))
+
     def forward(self, x):
         # Backbone
         x = F.silu(self.bn1(self.conv1(x)))

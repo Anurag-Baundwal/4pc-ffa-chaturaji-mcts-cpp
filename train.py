@@ -322,7 +322,7 @@ def train_loop(args):
 
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
 
-    print(f"[Python] Optimizer: NadamW(lr={args.lr}, wd={args.wd})")
+    print(f"[Python] Optimizer: NadamW(lr={args.lr}, wd={args.wd}) | Uncertainty Weighting: Enabled")
 
     # --- 4. Load Weights ---
     if args.load_weights:
@@ -371,6 +371,9 @@ def train_loop(args):
     # --- 6. Training Loop ---
     model.train()
     
+    # Use a safe mask value for FP16 if AMP is active (max for fp16 is ~65k)
+    MASK_VALUE = -30000.0 if use_amp else -1e8
+    
     for step in range(num_steps):
         batch = buffer.sample_batch(args.batch_size)
         if batch is None: break
@@ -392,29 +395,58 @@ def train_loop(args):
             # Apply a large negative mask to illegal move logits. This ensures that the 
             # subsequent softmax operation assigns near-zero probability to these moves, 
             # concentrating the network's predictive mass on the legal action space.
-            mask_value = -1e8
-            p_masked = torch.where(mask, p, torch.tensor(mask_value, device=device, dtype=p.dtype))
+            p_masked = torch.where(mask, p, torch.full_like(p, MASK_VALUE))
             
             # Calculate the log-softmax of the masked logits.
             log_p = F.log_softmax(p_masked, dim=1)
 
             # Zero out the log-probabilities of illegal moves before the loss calculation.
             # This prevents numerical 'NaN' errors that occur when a zero target probability 
-            # is multiplied by a negative infinity log-probability (which results from the mask).
+            # is multiplied by a negative infinity log-probability.
             log_p_safe = torch.where(mask, log_p, torch.zeros_like(log_p))
             
-            loss_policy = -torch.sum(tp * log_p_safe, dim=1).mean()
+            # Policy uses Cross-Entropy (Negative Log Likelihood)
+            loss_policy_raw = -torch.sum(tp * log_p_safe, dim=1).mean()
+            # Value uses Mean Squared Error
+            loss_value_raw = F.mse_loss(v, tv)
 
-            loss_value = F.mse_loss(v, tv)
+            # --- DYNAMIC LOSS WEIGHTING (Uncertainty Weighting) ---
+            # Multi-Task Learning using Uncertainty (Kendall et al.)
+            # L = [ (1/sigma_p^2) * L_p + log(sigma_p) ] + [ (1/2*sigma_v^2) * L_v + log(sigma_v) ]
+            # We let s = log(sigma^2), so exp(-s) = 1/sigma^2.
             
-            loss = loss_policy + 4 * loss_value
+            s_p = model.log_vars[0] # Policy log-variance
+            s_v = model.log_vars[1] # Value log-variance
+
+            # Policy weighting (Classification formulation)
+            weighted_loss_p = torch.exp(-s_p) * loss_policy_raw + 0.5 * s_p
+            # Value weighting (Regression formulation)
+            weighted_loss_v = 0.5 * torch.exp(-s_v) * loss_value_raw + 0.5 * s_v
+
+            loss = weighted_loss_p + weighted_loss_v
         
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+
+        # --- PREVENT TASK NEGLECT ---
+        # Manually clamp the learnable log_vars to a reasonable range.
+        # This prevents the optimizer from "muting" a head by allowing its
+        # uncertainty to grow toward infinity.
+        with torch.no_grad():
+            model.log_vars.clamp_(-5.0, 5.0)
         
-        # Simple logging
-        print(f"  Step {step+1}/{num_steps} | Loss: {loss.item():.4f} (Pol: {loss_policy.item():.4f}, Val: {loss_value.item():.4f})")
+        # Calculate actual weights for logging
+        w_p = torch.exp(-s_p).item()
+        w_v = (0.5 * torch.exp(-s_v)).item()
+        
+        lp_val = loss_policy_raw.item()
+        lv_val = loss_value_raw.item()
+        
+        # Logging
+        print(f"  Step {step+1}/{num_steps} | Loss: {loss.item():.4f} "
+              f"| Raw (Pol: {lp_val:.4f}, Val: {lv_val:.4f}) "
+              f"| Weights (P_w: {w_p:.2f}, V_w: {w_v:.2f})")
 
     # --- 7. Save & Export ---
     print(f"[Python] Saving checkpoint to {model_pth}")
