@@ -8,6 +8,8 @@ namespace chaturaji_cpp {
 static constexpr size_t LOCAL_CACHE_BATCH_SIZE = 256; 
 static constexpr size_t LOCAL_CACHE_MAX_SIZE = 512;   
 
+static bool s_pool_destroyed = false;
+
 // --- Thread Local Cache Helper ---
 struct ThreadLocalNodeCache {
     std::vector<MCTSNode*> cache;
@@ -18,9 +20,14 @@ struct ThreadLocalNodeCache {
     }
 
     ~ThreadLocalNodeCache() {
-        // Safety check: Only return if we have a pool reference and items to return
-        if (pool_ref && !cache.empty()) {
-            pool_ref->batch_return_to_global(cache);
+        // Safety check: Check if the pool is alive before returning
+        if (pool_ref && !cache.empty() && !s_pool_destroyed) {
+            try {
+                pool_ref->batch_return_to_global(cache);
+            } catch (...) {
+                // Safety: if something goes wrong during teardown, 
+                // just let the memory leak; the OS is about to reclaim it anyway.
+            }
         }
     }
 };
@@ -45,6 +52,7 @@ MCTSNodePool::MCTSNodePool(size_t node_size, size_t initial_capacity)
 }
 
 MCTSNodePool::~MCTSNodePool() {
+    s_pool_destroyed = true; // Mark as destroyed
     std::cout << "MCTSNodePool destroyed. Global transfers - Alloc: " << allocated_count_
               << ", Free: " << freed_count_ 
               << ", Peak Global Usage: " << peak_allocated_count_ << std::endl;
