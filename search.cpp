@@ -357,17 +357,31 @@ std::optional<Move> get_best_move_mcts_sync(
     if (best_child && best_child->get_move()) {
         std::optional<Move> chosen_move = best_child->get_move();
         
+        // Safety: detach_child_and_clear_others already sets parent to nullptr
         MCTSNode* new_root_raw = current_mcts_root_shptr->detach_child_and_clear_others(best_child);
         current_mcts_root_shptr.reset(new_root_raw);
         return chosen_move;
     } else {
-        current_mcts_root_shptr = nullptr;
-        // Fallback: return move of first child if exists
-        MCTSNode* first = current_mcts_root_shptr ? current_mcts_root_shptr->get_first_child() : nullptr;
-        if (first && first->get_move()) {
-            return first->get_move();
+        // MCTS failed to find a move (likely 0 simulations or empty tree)
+        MoveList legal_moves;
+        board.get_pseudo_legal_moves(board.get_current_player(), legal_moves);
+
+        std::optional<Move> fallback = std::nullopt;
+        if (!legal_moves.empty()) {
+            // Pick the first move that is NOT a resignation
+            for (const auto& m : legal_moves) {
+                if (!m.is_resignation()) {
+                    fallback = m;
+                    break;
+                }
+            }
+            // If only resignation is possible, then take it
+            if (!fallback) fallback = legal_moves[0];
         }
-        return std::nullopt;
+
+        // Clean up the tree entirely since the search was inconclusive
+        current_mcts_root_shptr = nullptr; 
+        return fallback;
     }
 }
 

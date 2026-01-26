@@ -550,17 +550,18 @@ void Board::get_pseudo_legal_moves(Player player, MoveList& moves) const {
       return; 
   }
 
-  // --- Resignation is always a valid option ---
-  // Strategic reasons:
-  // 1. Claim Win: End game while ahead (in 2-player endgame).
-  // 2. Defensive: Prevent opponents from farming points from my pieces.
-  moves.push_back(Move::Resign());
-
   get_pawn_moves_bb(player, moves);
   get_knight_moves_bb(player, moves);
   get_bishop_moves_bb(player, moves);
   get_rook_moves_bb(player, moves);
   get_king_moves_bb(player, moves);
+
+  // --- Resignation is always a valid option ---
+  // Strategic reasons:
+  // 1. Claim Win: End game while ahead (in 2-player endgame).
+  // 2. Defensive: Prevent opponents from farming points from my pieces.
+  // However, it's usually not preferred, so we move to the end of the move list.
+  moves.push_back(Move::Resign());
 }
 
 // --- Bitboard-Based Move Generation Helpers ---
