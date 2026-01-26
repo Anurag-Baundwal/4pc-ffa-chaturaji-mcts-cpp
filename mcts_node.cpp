@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <vector>
 
 namespace chaturaji_cpp {
 
@@ -27,24 +28,65 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
     board_state_(std::move(board_state)), 
     parent_(parent),
     move_(move),
-    first_child_(nullptr),   // Init
-    next_sibling_(nullptr),  // Init
+    first_child_(nullptr),   
+    next_sibling_(nullptr),  
     visit_count_(0),
     total_player_values_({0.0, 0.0, 0.0, 0.0}),
     prior_(prior),
     pending_visits_(0) 
 {}
 
-// --- Destructor ---
+// --- Destructor (Iterative / Stack-Safe) ---
 MCTSNode::~MCTSNode() {
-    // Iteratively delete the linked list of children to prevent recursion depth issues
-    // though strict recursion on 'delete' happens here, the width is handled iteratively.
-    // For deep trees, a stack-based deletion might be safer, but for MCTS depth ~200 this is okay.
-    MCTSNode* current = first_child_;
-    while (current) {
-        MCTSNode* next = current->next_sibling_;
-        delete current;
-        current = next;
+    // Base case: If no children, nothing to do.
+    // NOTE: We do NOT handle siblings here. The parent is responsible for 
+    // iterating the sibling list and deleting them. This prevents double-frees.
+    if (!first_child_) return;
+
+    // Use a vector as a stack to iteratively delete the subtree.
+    // This prevents Stack Overflow on deep trees.
+    std::vector<MCTSNode*> stack;
+    stack.reserve(64); // Heuristic reserve
+    
+    // 1. Collect all immediate children of *this* node
+    MCTSNode* curr = first_child_;
+    while (curr) {
+        MCTSNode* next = curr->next_sibling_;
+        
+        // Critical: Break the sibling link so the nodes are isolated
+        curr->next_sibling_ = nullptr; 
+        
+        stack.push_back(curr);
+        curr = next;
+    }
+
+    // 2. Detach children from *this* node immediately
+    first_child_ = nullptr;
+
+    // 3. Process the stack
+    while (!stack.empty()) {
+        MCTSNode* n = stack.back();
+        stack.pop_back();
+
+        // Before we delete 'n', we must collect ITS children
+        MCTSNode* child = n->first_child_;
+        while (child) {
+            MCTSNode* next_child = child->next_sibling_;
+            
+            // Isolate child
+            child->next_sibling_ = nullptr; 
+            
+            stack.push_back(child);
+            child = next_child;
+        }
+
+        // Disarm 'n' so its destructor returns immediately when called below.
+        // This ensures the `delete n` call doesn't trigger recursion.
+        n->first_child_ = nullptr;
+        n->next_sibling_ = nullptr;
+
+        // Delete the node (returns memory to pool)
+        delete n; 
     }
 }
 
@@ -82,7 +124,7 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 
 void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
     if (!is_leaf()) {
-         std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
+         // std::cerr << "Warning: Attempting to expand a non-leaf node." << std::endl;
         return;
     }
     if (board_state_.is_game_over()) return;
@@ -157,27 +199,29 @@ void MCTSNode::inject_noise(double alpha, double epsilon, std::mt19937& rng) {
 MCTSNode* MCTSNode::detach_child_and_clear_others(MCTSNode* target_child) {
     MCTSNode* curr = first_child_;
     
-    // We iterate through all children.
-    // If it's the target, we detach it.
-    // If it's not, we delete it.
-    
+    // 1. Detach the list from *this* parent immediately.
+    // The parent is now clean.
+    first_child_ = nullptr; 
+
     while (curr) {
         MCTSNode* next = curr->next_sibling_;
         
         if (curr == target_child) {
-            // Unhook this child from the list structure
+            // Isolate the target child so we can return it safely
             curr->next_sibling_ = nullptr;
             curr->parent_ = nullptr;
         } else {
-            // Delete the unused sibling
-            delete curr;
+            // Delete the unused sibling.
+            // Because our new destructor DOES NOT iterate siblings, 
+            // we are safe to just break the link and delete.
+            curr->next_sibling_ = nullptr; 
+            
+            // This triggers the iterative subtree deletion for 'curr'
+            delete curr; 
         }
         curr = next;
     }
 
-    // Now this node (the parent) has no valid children
-    first_child_ = nullptr;
-    
     return target_child;
 }
 
