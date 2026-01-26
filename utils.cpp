@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <memory>
 #include <array>
-
+#include <cmath>
 namespace chaturaji_cpp {
 
 // --- RunStats Implementation ---
@@ -65,6 +65,63 @@ namespace {
             default: return {r, c};
         }
     }
+
+    // --- Heuristic Helpers ---
+
+    // Chebyshev distance (King/Pawn proximity calculation)
+    int dist_chebyshev(BoardLocation a, BoardLocation b) {
+        return std::max(std::abs(a.row - b.row), std::abs(a.col - b.col));
+    }
+
+    // BFS to check if all pawns on a bitboard form a single connected component
+    bool are_pawns_fully_connected(Bitboard pawns) {
+        int count = magic_utils::pop_count(pawns);
+        if (count <= 1) return false;
+
+        // 1. Pick a start pawn
+        int start_sq = magic_utils::get_lsb_index(pawns);
+        
+        // 2. BFS to find connected component
+        Bitboard visited = 0ULL;
+        magic_utils::set_bit(visited, start_sq);
+        
+        // Mark start as visited in the tracking set
+        // (We use 'pawns' as the set of unvisited nodes)
+        magic_utils::clear_bit(pawns, start_sq);
+
+        int q[10]; 
+        int q_size = 0;
+        
+        q[q_size++] = start_sq;
+        
+        int visited_count = 1; // Count start node
+
+        while(q_size > 0) {
+            int curr_sq = q[--q_size];
+            BoardLocation curr_loc = magic_utils::from_sq_idx(curr_sq);
+
+            // Check against remaining unvisited pawns
+            // Iterate a copy of the bitboard. 
+            // Only remove from 'pawns' (unvisited) if we actually add to queue.
+            Bitboard candidates = pawns; 
+            
+            while(candidates) {
+                int next_sq = magic_utils::pop_lsb(candidates);
+                BoardLocation next_loc = magic_utils::from_sq_idx(next_sq);
+                
+                // Adjacent if Chebyshev distance is 1
+                if (dist_chebyshev(curr_loc, next_loc) <= 1) {
+                    magic_utils::set_bit(visited, next_sq);
+                    magic_utils::clear_bit(pawns, next_sq); // Remove from global unvisited set
+                    q[q_size++] = next_sq;
+                    visited_count++;
+                }
+            }
+        }
+
+        // 3. Are all pawns in the same component?
+        return visited_count == count;
+    }
 }
 
 void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
@@ -78,76 +135,185 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 
-    // Capture tensor_data by reference
+    // Helper to fill an entire 8x8 channel with a scalar value
     auto fill_plane = [&](int channel_idx, float value) {
         if (value == 0.0f) return; 
         int offset = channel_idx * BOARD_AREA;
         std::fill_n(tensor_data.begin() + offset, BOARD_AREA, value);
     };
 
+    // Helper to set a specific pixel based on absolute board coordinates (rotates to relative internally)
     auto set_pixel = [&](int channel_idx, int r, int c, float value) {
         BoardLocation rel = get_rel_loc(r, c, current_p);
         int index = (channel_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
         tensor_data[index] = value;
     };
 
+    // Helper to splat a bitboard onto a channel
+    auto set_bitboard_plane = [&](int channel_idx, Bitboard bb) {
+        while(bb) {
+            int sq_idx = magic_utils::pop_lsb(bb);
+            BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
+            set_pixel(channel_idx, abs_loc.row, abs_loc.col, 1.0f);
+        }
+    };
+
     // --- Relative Feature Encoding ---
     // Inputs are rotated so that index 0 always represents the current player.
     // Mapping: Rel 0 = Current, Rel 1 = Next, Rel 2 = Opposite, Rel 3 = Previous.
-    // 1. Piece Placement (0-19)
+
+    // ----------------------------------------------------
+    // 1. Piece Placement (Channels 0-19)
+    // ----------------------------------------------------
     for (int rel_i = 0; rel_i < 4; ++rel_i) { 
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p_enum = static_cast<Player>(abs_p_idx);
         for (int pt_idx = 0; pt_idx < 5; ++pt_idx) { 
             PieceType pt_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; 
             Bitboard bb = board.get_piece_bitboard(p_enum, pt_enum);
-            int channel = (rel_i * 5) + pt_idx;
-            while(bb) {
-                int sq_idx = magic_utils::pop_lsb(bb);
-                BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
-                set_pixel(channel, abs_loc.row, abs_loc.col, 1.0f);
-            }
+            set_bitboard_plane((rel_i * 5) + pt_idx, bb);
         }
     }
 
-    // 2. Active Status (20-23)
+    // ----------------------------------------------------
+    // 2. Hand-Crafted Heuristics (Channels 20-43)
+    // ----------------------------------------------------
+    // Pre-calculate attack maps for safety checks
+    std::array<Bitboard, 4> all_attacks;
+    for(int i = 0; i < 4; ++i) {
+        all_attacks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+    }
+
+    int current_channel = 20;
+
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        int abs_p_idx = (cp_idx + rel_i) % 4;
+        Player p = static_cast<Player>(abs_p_idx);
+
+        Bitboard pawns = board.get_piece_bitboard(p, PieceType::PAWN);
+        Bitboard king = board.get_piece_bitboard(p, PieceType::KING);
+        int pawn_cnt = magic_utils::pop_count(pawns);
+
+        // A. Total Material (Scalar) -> Channel 20, 21, 22, 23
+        int mat = 0;
+        mat += pawn_cnt * 1;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KNIGHT)) * 3;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::BISHOP)) * 5;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::ROOK)) * 5;
+        mat += magic_utils::pop_count(king) * 3;
+        
+        // Normalize by 50 (max possible is actually 36 but we want the same scale as points)
+        fill_plane(current_channel + 0 + rel_i, static_cast<float>(mat) / 50.0f);
+
+        // B. Pawn Count (Scalar) -> Channel 24, 25, 26, 27
+        fill_plane(current_channel + 4 + rel_i, static_cast<float>(pawn_cnt) / 4.0f);
+
+        // C. Connected Pawns (Scalar) -> Channel 28, 29, 30, 31
+        bool connected = are_pawns_fully_connected(pawns);
+        fill_plane(current_channel + 8 + rel_i, connected ? 1.0f : 0.0f);
+
+        // D. Average Pawn Distance to King (Scalar) -> Channel 32, 33, 34, 35
+        float avg_dist = 0.0f;
+        if (king && pawn_cnt > 0) {
+            int k_sq = magic_utils::get_lsb_index(king);
+            BoardLocation k_loc = magic_utils::from_sq_idx(k_sq);
+            int total_dist = 0;
+            Bitboard temp_p = pawns;
+            while(temp_p) {
+                int p_sq = magic_utils::pop_lsb(temp_p);
+                total_dist += dist_chebyshev(k_loc, magic_utils::from_sq_idx(p_sq));
+            }
+            avg_dist = static_cast<float>(total_dist) / pawn_cnt;
+        }
+        fill_plane(current_channel + 12 + rel_i, avg_dist / 8.0f); // Max board dist is ~7
+
+        // E. King Safe Moves (Scalar) -> Channel 36, 37, 38, 39
+        int safe_moves = 0;
+        if (king) {
+            int k_sq = magic_utils::get_lsb_index(king);
+            BoardLocation k_loc = magic_utils::from_sq_idx(k_sq);
+            
+            // Combine all enemy attacks
+            Bitboard enemy_attacks = 0ULL;
+            for(int i = 0; i < 4; ++i) {
+                if(i != abs_p_idx) enemy_attacks |= all_attacks[i];
+            }
+            
+            // Check adjacent squares
+            for(int dr = -1; dr <= 1; ++dr) {
+                for(int dc = -1; dc <= 1; ++dc) {
+                    if (dr == 0 && dc == 0) continue;
+                    int nr = k_loc.row + dr;
+                    int nc = k_loc.col + dc;
+                    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                        int t_sq = magic_utils::to_sq_idx(nr, nc);
+                        // Safe if not occupied by self AND not attacked by enemy
+                        if (!magic_utils::get_bit(board.get_player_bitboard(p), t_sq) &&
+                            !magic_utils::get_bit(enemy_attacks, t_sq)) {
+                            safe_moves++;
+                        }
+                    }
+                }
+            }
+        }
+        fill_plane(current_channel + 16 + rel_i, static_cast<float>(safe_moves) / 8.0f);
+
+        // F. X-Ray Attacks (Bitboard) -> Channel 40, 41, 42, 43
+        Bitboard xray = 0ULL;
+        Bitboard rooks = board.get_piece_bitboard(p, PieceType::ROOK);
+        Bitboard bishops = board.get_piece_bitboard(p, PieceType::BISHOP);
+        // Generate attacks on an empty board (blocker mask 0ULL)
+        while(rooks) {
+            xray |= magic_utils::calculate_rook_attacks_on_the_fly(magic_utils::pop_lsb(rooks), 0ULL); 
+        }
+        while(bishops) {
+            xray |= magic_utils::calculate_bishop_attacks_on_the_fly(magic_utils::pop_lsb(bishops), 0ULL);
+        }
+        set_bitboard_plane(current_channel + 20 + rel_i, xray);
+    }
+    
+    // Update offset for next section
+    current_channel += 24; // (4 players * 6 features)
+
+    // ----------------------------------------------------
+    // 3. Game Metadata (Channels 44-60)
+    // ----------------------------------------------------
+
+    // Active Status (44-47)
     uint8_t mask = board.get_active_mask();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
-        fill_plane(20 + rel_i, (mask & (1 << abs_idx)) ? 1.0f : 0.0f);
+        fill_plane(current_channel + rel_i, (mask & (1 << abs_idx)) ? 1.0f : 0.0f);
     }
 
-    // 3. Points (24-27)
+    // Points (48-51)
     const auto& points = board.get_player_points();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
         float pts = static_cast<float>(points[abs_idx]);
-        fill_plane(24 + rel_i, pts / 100.0f);
+        fill_plane(current_channel + 4 + rel_i, pts / 50.0f);
     }
 
-    // 4. 50-Move Clock (28)
+    // 50-Move Clock (52)
     int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
-    fill_plane(28, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+    fill_plane(current_channel + 8, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
 
-    // 5. Attack Planes (29-32)
+    // Attack Planes (53-56)
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        Bitboard bb = board.get_squares_attacked_by(static_cast<Player>((cp_idx + rel_i) % 4));
-        while(bb) {
-            int sq_idx = magic_utils::pop_lsb(bb);
-            BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
-            set_pixel(29 + rel_i, abs_loc.row, abs_loc.col, 1.0f);
-        }
+        set_bitboard_plane(current_channel + 9 + rel_i, all_attacks[(cp_idx + rel_i) % 4]);
     }
 
-    // 6. In-Check Planes (33-36)
-    std::array<Bitboard, 4> all_atks;
-    for(int i=0; i<4; ++i) all_atks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+    // In-Check Planes (57-60)
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
         Bitboard king = board.get_piece_bitboard(static_cast<Player>(abs_idx), PieceType::KING);
         Bitboard stressors = 0;
-        for(int opp=0; opp<4; ++opp) if(opp != abs_idx) stressors |= all_atks[opp];
-        if (king & stressors) fill_plane(33 + rel_i, 1.0f);
+        for(int opp=0; opp<4; ++opp) {
+            if(opp != abs_idx) stressors |= all_attacks[opp];
+        }
+        if (king & stressors) {
+            fill_plane(current_channel + 13 + rel_i, 1.0f);
+        }
     }
 }
 
@@ -160,11 +326,10 @@ PackedSample create_packed_sample(
     // Clear memory to ensure padding bytes are 0 (avoids junk data)
     std::memset(&sample, 0, sizeof(PackedSample));
 
-    // 1. Pack Bitboards and Player Data
+    // 1. Pack Basic Bitboards and Points
     for(int p = 0; p < 4; ++p) {
         Player pl = static_cast<Player>(p);
         for(int t = 0; t < 5; ++t) {
-            // PieceType 1-5 (PAWN..KING) maps to index 0-4
             sample.piece_bitboards[p][t] = board.get_piece_bitboard(pl, static_cast<PieceType>(t + 1));
         }
         sample.attack_bitboards[p] = board.get_squares_attacked_by(pl);
@@ -172,13 +337,89 @@ PackedSample create_packed_sample(
         sample.values[p] = static_cast<float>(rewards[p]);
     }
 
-    // 2. Pack Game Scalars
+    // 2. Pack Game State Scalars
     sample.full_move_number = board.get_full_move_number();
     sample.move_number_last_reset = board.get_move_number_of_last_reset();
     sample.active_mask = board.get_active_mask();
     sample.current_player = static_cast<uint8_t>(board.get_current_player());
 
-    // 3. Pack Policy (Sparse)
+    // 3. Calculate and Pack New Features
+    // Note: We need attack maps for King Safety
+    std::array<Bitboard, 4> all_attacks;
+    for(int i = 0; i < 4; ++i) all_attacks[i] = sample.attack_bitboards[i];
+
+    for (int p = 0; p < 4; ++p) {
+        Player pl = static_cast<Player>(p);
+        
+        // F. X-Ray Attacks
+        Bitboard xray = 0ULL;
+        Bitboard rooks = board.get_piece_bitboard(pl, PieceType::ROOK);
+        Bitboard bishops = board.get_piece_bitboard(pl, PieceType::BISHOP);
+        while(rooks) {
+            xray |= magic_utils::calculate_rook_attacks_on_the_fly(magic_utils::pop_lsb(rooks), 0ULL); 
+        }
+        while(bishops) {
+            xray |= magic_utils::calculate_bishop_attacks_on_the_fly(magic_utils::pop_lsb(bishops), 0ULL);
+        }
+        sample.xray_attack_bitboards[p] = xray;
+
+        // A. Total Material
+        int mat = 0;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::PAWN)) * 1;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KNIGHT)) * 3;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::BISHOP)) * 5;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::ROOK)) * 5;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KING)) * 3;
+        sample.material_score[p] = static_cast<float>(mat) / 50.0f;
+
+        // B. Pawn Count
+        Bitboard pawns = board.get_piece_bitboard(pl, PieceType::PAWN);
+        int p_cnt = magic_utils::pop_count(pawns);
+        sample.pawn_count[p] = static_cast<float>(p_cnt) / 4.0f;
+
+        // C. Connected Pawns
+        sample.pawns_connected[p] = are_pawns_fully_connected(pawns) ? 1.0f : 0.0f;
+
+        // D. Average Pawn Distance
+        Bitboard kbb = board.get_piece_bitboard(pl, PieceType::KING);
+        float dist = 0.0f;
+        if(kbb && p_cnt > 0) {
+            BoardLocation kloc = magic_utils::from_sq_idx(magic_utils::get_lsb_index(kbb));
+            Bitboard temp_p = pawns;
+            int total = 0;
+            while(temp_p) {
+                total += dist_chebyshev(kloc, magic_utils::from_sq_idx(magic_utils::pop_lsb(temp_p)));
+            }
+            dist = static_cast<float>(total) / p_cnt;
+        }
+        sample.avg_pawn_dist[p] = dist / 8.0f;
+
+        // E. King Safe Moves
+        int safe = 0;
+        if(kbb) {
+            BoardLocation kloc = magic_utils::from_sq_idx(magic_utils::get_lsb_index(kbb));
+            Bitboard enemies = 0ULL;
+            for(int opp=0; opp<4; ++opp) {
+                if(opp != p) enemies |= all_attacks[opp];
+            }
+            for(int dr=-1; dr<=1; ++dr) {
+                for(int dc=-1; dc<=1; ++dc) {
+                    if(dr==0 && dc==0) continue;
+                    int nr=kloc.row+dr, nc=kloc.col+dc;
+                    if(nr>=0 && nr<8 && nc>=0 && nc<8) {
+                        int t = magic_utils::to_sq_idx(nr, nc);
+                        if(!magic_utils::get_bit(board.get_player_bitboard(pl), t) && 
+                           !magic_utils::get_bit(enemies, t)) {
+                            safe++;
+                        }
+                    }
+                }
+            }
+        }
+        sample.king_safe_moves[p] = static_cast<float>(safe) / 8.0f;
+    }
+
+    // 4. Pack Policy (Sparse)
     // Convert map to vector of pairs for sorting
     std::vector<std::pair<float, uint16_t>> sorted_policy;
     sorted_policy.reserve(policy.size());
@@ -193,7 +434,7 @@ PackedSample create_packed_sample(
     }
 
     // Sort descending by probability to keep the most important moves 
-    // if we exceed MAX_STORED_MOVES (though 64 legal moves is rare in Chaturaji)
+    // if we exceed MAX_STORED_MOVES (shouldn't happen normally)
     std::sort(sorted_policy.begin(), sorted_policy.end(), [](const auto& a, const auto& b){
         return a.first > b.first;
     });

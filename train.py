@@ -20,14 +20,28 @@ MAX_STORED_MOVES = 64
 
 # Define the numpy dtype that matches the C++ PackedSample struct exactly.
 PACKED_DTYPE = np.dtype([
-    ('piece_bbs',     np.uint64, (4, 5)), # [Player][PieceType]
-    ('attack_bbs',    np.uint64, (4,)),   # [Player]
-    ('points',        np.int32,  (4,)),   # [Player]
+    ('piece_bbs',     np.uint64, (4, 5)), 
+    ('attack_bbs',    np.uint64, (4,)),   
+    ('xray_attack_bbs', np.uint64, (4,)),
+    
+    # Hand-Crafted Heuristic Scalars 
+    ('material',      np.float32, (4,)),
+    ('pawn_count',    np.float32, (4,)),
+    ('avg_pawn_dist', np.float32, (4,)),
+    ('king_safe',     np.float32, (4,)),
+    ('pawns_conn',    np.float32, (4,)),
+
+    # Game State Scalars
+    ('points',        np.int32,  (4,)),   
     ('full_move',     np.int32),
     ('last_reset',    np.int32),
     ('active_mask',   np.uint8),
     ('current_player',np.uint8),
-    ('padding',       np.uint8,  (2,)),   # C++ struct padding for alignment
+    
+    # Padding for alignment
+    ('padding',       np.uint8,  (2,)),   
+
+    # Policy & Value
     ('num_policy',    np.int32),
     ('move_indices',  np.uint16, (MAX_STORED_MOVES,)),
     ('move_probs',    np.float32,(MAX_STORED_MOVES,)),
@@ -37,12 +51,26 @@ PACKED_DTYPE = np.dtype([
 def unpack_batch_to_tensors(raw_batch):
     """
     Decompresses a batch of PackedSamples into PyTorch tensors.
+    
+    Channel Map (Total 61):
+    0-19:  Piece Bitboards (5 types * 4 players)
+    20-23: Material Score (Scalar)
+    24-27: Pawn Count (Scalar)
+    28-31: Connected Pawns Flag (Scalar)
+    32-35: Avg Pawn Distance to King (Scalar)
+    36-39: King Safe Moves (Scalar)
+    40-43: X-Ray Attack Bitboards
+    44-47: Active Status
+    48-51: Points
+    52:    50-Move Clock
+    53-56: Standard Attack Bitboards
+    57-60: In-Check Flags
     """
     batch_size = len(raw_batch)
     
     # --- 1. Expand Policy (Sparse -> Dense) ---
     policy_target = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.float32)
-    legal_actions_mask = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.bool) # <--- NEW
+    legal_actions_mask = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.bool)
     
     num_entries = raw_batch['num_policy']
     move_indices = raw_batch['move_indices'].astype(np.int64)
@@ -57,7 +85,7 @@ def unpack_batch_to_tensors(raw_batch):
     policy_target[row_indices[mask], move_indices[mask]] = torch.from_numpy(move_probs[mask])
     
     # Fill Legal Mask (Any move present in MCTS data is considered legal)
-    legal_actions_mask[row_indices[mask], move_indices[mask]] = True # <--- NEW
+    legal_actions_mask[row_indices[mask], move_indices[mask]] = True
 
     # --- 2. Expand Values ---
     # The C++ struct stores Absolute values [Red, Blue, Yellow, Green].
@@ -67,77 +95,115 @@ def unpack_batch_to_tensors(raw_batch):
     cp_raw = raw_batch['current_player']   # Shape (Batch,)
 
     # Create indices: [[cp, cp+1, cp+2, cp+3], ...] % 4
-    # Example: If cp=1 (Blue), indices are [1, 2, 3, 0]
     rel_indices = (cp_raw[:, None] + np.arange(4)) % 4
 
     # Gather values in relative order
     rel_values = np.take_along_axis(abs_values, rel_indices, axis=1)
-    
     value_target = torch.from_numpy(rel_values)
 
     # --- 3. Expand Input State ---
-    # We construct it as [Batch, 37, 64] first to match bitboard unpacking layout
+    # Shape: [Batch, 61, 64]
     states_flat = torch.zeros((batch_size, NUM_INPUT_CHANNELS, BOARD_AREA), dtype=torch.float32)
-    
-    cp_raw = raw_batch['current_player']
     
     # Helper: Bitboard (Batch, N) -> Tensor (Batch, N, 64)
     def bbs_to_planes(bbs):
         view = bbs.view(np.uint8)
         bits = np.unpackbits(view, axis=-1, bitorder='little')
         t = torch.from_numpy(bits.astype(np.float32))
-        # FIX: Explicitly reshape to separate the 'N' bitboards from the '64' squares
         return t.view(*bbs.shape, 64)
 
     # -- 3a. Piece Planes (Channels 0-19) --
     piece_bbs = raw_batch['piece_bbs']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        # Fancy indexing to gather specific player's boards for each batch item
         p_bbs = piece_bbs[np.arange(batch_size), abs_p, :] 
         planes = bbs_to_planes(p_bbs) # [Batch, 5, 64]
         states_flat[:, rel_i*5 : (rel_i+1)*5, :] = planes
 
-    # -- 3b. Active Status (Channels 20-23) --
+    # -- 3b. New Hand-Crafted Heuristics (Channels 20-43) --
+    
+    # Material (20-23)
+    material = raw_batch['material']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        val = material[np.arange(batch_size), abs_p]
+        states_flat[:, 20 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
+
+    # Pawn Count (24-27)
+    pawn_cnt = raw_batch['pawn_count']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        val = pawn_cnt[np.arange(batch_size), abs_p]
+        states_flat[:, 24 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
+
+    # Connected Pawns Flag (28-31)
+    pawns_conn = raw_batch['pawns_conn']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        val = pawns_conn[np.arange(batch_size), abs_p]
+        states_flat[:, 28 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
+
+    # Avg Pawn Distance (32-35)
+    avg_dist = raw_batch['avg_pawn_dist']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        val = avg_dist[np.arange(batch_size), abs_p]
+        states_flat[:, 32 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
+
+    # King Safe Moves (36-39)
+    king_safe = raw_batch['king_safe']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        val = king_safe[np.arange(batch_size), abs_p]
+        states_flat[:, 36 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
+
+    # X-Ray Attacks (40-43)
+    xray_bbs = raw_batch['xray_attack_bbs']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        states_flat[:, 40 + rel_i, :] = bbs_to_planes(xray_bbs[np.arange(batch_size), abs_p])
+
+    # -- 3c. Original Metadata (Channels 44-60) --
+
+    # Active Status (44-47)
     active_mask = raw_batch['active_mask']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
         is_active = (active_mask >> abs_p) & 1
-        states_flat[:, 20 + rel_i, :] = torch.from_numpy(is_active[:, None].astype(np.float32))
+        states_flat[:, 44 + rel_i, :] = torch.from_numpy(is_active[:, None].astype(np.float32))
 
-    # -- 3c. Points (Channels 24-27) --
+    # Points (48-51)
     points = raw_batch['points']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        p_pts = points[np.arange(batch_size), abs_p] / 100.0
-        states_flat[:, 24 + rel_i, :] = torch.from_numpy(p_pts[:, None].astype(np.float32))
+        p_pts = points[np.arange(batch_size), abs_p] / 50.0
+        states_flat[:, 48 + rel_i, :] = torch.from_numpy(p_pts[:, None].astype(np.float32))
 
-    # -- 3d. 50-Move Rule (Channel 28) --
+    # 50-Move Rule (52)
     moves_since = raw_batch['full_move'] - raw_batch['last_reset']
     clock_val = np.clip(moves_since / 50.0, 0.0, 1.0)
-    states_flat[:, 28, :] = torch.from_numpy(clock_val[:, None].astype(np.float32))
+    states_flat[:, 52, :] = torch.from_numpy(clock_val[:, None].astype(np.float32))
 
-    # -- 3e. Attack Planes (Channels 29-32) --
+    # Standard Attack Planes (53-56)
     att_bbs = raw_batch['attack_bbs']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        p_att = att_bbs[np.arange(batch_size), abs_p][:, None]
-        planes = bbs_to_planes(p_att).squeeze(1)
-        states_flat[:, 29 + rel_i, :] = planes
+        states_flat[:, 53 + rel_i, :] = bbs_to_planes(att_bbs[np.arange(batch_size), abs_p])
 
-    # -- 3f. In-Check Planes (Channels 33-36) --
+    # In-Check Planes (57-60)
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
         king_bb = piece_bbs[np.arange(batch_size), abs_p, 4] 
         stressors = np.zeros(batch_size, dtype=np.uint64)
         for opp in range(4):
+            # Combined attacks of all enemies
             is_enemy = (opp != abs_p)
             stressors |= np.where(is_enemy, att_bbs[:, opp], 0)
         in_check = (king_bb & stressors) != 0
-        states_flat[:, 33 + rel_i, :] = torch.from_numpy(in_check[:, None].astype(np.float32))
+        states_flat[:, 57 + rel_i, :] = torch.from_numpy(in_check[:, None].astype(np.float32))
 
     # --- 4. Spatial Rotation ---
-    # Reshape to [Batch, 37, 8, 8]
+    # Reshape to [Batch, 61, 8, 8]
     states = states_flat.view(batch_size, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
     
     # Rotate based on Current Player to enforce relative perspective

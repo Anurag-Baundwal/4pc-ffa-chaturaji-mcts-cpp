@@ -15,8 +15,8 @@ namespace chaturaji_cpp {
 constexpr int BOARD_DIM = 8;
 constexpr int BOARD_AREA = 64; // 8 * 8
 
-// Input: 37 channels total (20 (Pieces) + 4 (Active) + 4 (Points) + 1 (50-move) + 4 (Attacks) + 4 (Check)) * 64 squares
-constexpr int NN_INPUT_CHANNELS = 37; 
+// Input: 61 channels total (20 (Pieces) + 4 (Active) + 4 (Points) + 1 (50-move) + 4 (Attacks) + 4 (Check) + 4 (Material) + 4 (PawnCnt) + 4 (ConnPawns) + 4 (PawnDist) + 4 (KingSafe) + 4 (XRay)) * 64 squares
+constexpr int NN_INPUT_CHANNELS = 61; 
 constexpr int NN_INPUT_SIZE = NN_INPUT_CHANNELS * BOARD_AREA; 
 
 // Output: Policy (Move probabilities) and Value (Win probabilities)
@@ -233,22 +233,32 @@ constexpr int MAX_STORED_MOVES = 64;
 // Ensure byte alignment is 1 (Compact binary storage)
 #pragma pack(push, 1)
 
-// A compact representation of a training sample ~600-700 bytes
+// A compact representation of a training sample
 struct PackedSample {
     // --- Board State (Bitboards & Scalars) ---
     // 20 Piece Bitboards (4 players * 5 types)
     uint64_t piece_bitboards[4][5]; 
     
-    // 4 Attack Bitboards (Pre-calculated in C++ to save Python CPU)
+    // 4 Attack Bitboards
     uint64_t attack_bitboards[4];
 
-    // Game state scalars
+    // 4 X-Ray Attack Bitboards
+    uint64_t xray_attack_bitboards[4];
+
+    // --- Hand-crafted Supplemental Features ---
+    float material_score[4];
+    float pawn_count[4];
+    float avg_pawn_dist[4];
+    float king_safe_moves[4];
+    float pawns_connected[4];
+
+    // --- Game state scalars ---
     int32_t player_points[4];
     int32_t full_move_number;
     int32_t move_number_last_reset;
     uint8_t active_mask;
     uint8_t current_player;
-    
+
     // Padding to align next section
     uint8_t _padding[2]; 
 

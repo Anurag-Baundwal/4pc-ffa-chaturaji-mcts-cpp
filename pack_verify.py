@@ -12,7 +12,7 @@ import sys
 from train import unpack_batch_to_tensors, PACKED_DTYPE
 
 # Constants
-NN_INPUT_CHANNELS = 37
+NN_INPUT_CHANNELS = 61 
 BOARD_AREA = 64
 POLICY_SIZE = 4096
 VALUE_SIZE = 4
@@ -25,6 +25,13 @@ def verify():
     truth_input = np.fromfile("test_truth_input.bin", dtype=np.float32)
     truth_policy = np.fromfile("test_truth_policy.bin", dtype=np.float32)
     truth_value_abs = np.fromfile("test_truth_value.bin", dtype=np.float32)
+
+    # Sanity check file size
+    expected_floats = NN_INPUT_CHANNELS * 8 * 8
+    if truth_input.size != expected_floats:
+        print(f"Error: test_truth_input.bin has {truth_input.size} floats, expected {expected_floats} (for {NN_INPUT_CHANNELS} channels).")
+        print("Did you forget to rebuild 'pack_test_gen' or update 'types.h'?")
+        sys.exit(1)
 
     # 2. Load Packed Data
     print("Loading Packed Binary...")
