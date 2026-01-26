@@ -1363,12 +1363,23 @@ bool Board::is_game_over() const {
 
   int moves_since_last_reset = full_move_number_ - move_number_of_last_reset_;
   if (moves_since_last_reset >= 50) {
+    // If we are in the middle of a real game (undo_stack exists)
     if (!undo_stack_.empty()) {
       Player player_who_just_moved = undo_stack_.back().original_player;
       if (player_who_just_moved == get_last_active_player()) {
         termination_reason_ = TerminationReason::FIFTY_MOVE_RULE; 
         return true;
       }
+    } 
+    // If we are in MCTS (no undo_stack)
+    else {
+      // In MCTS, we skip the undo stack for performance, so we cannot verify if 
+      // the 50-move cycle ended on exactly the last active player's turn.
+      // However, we MUST terminate the search here to ensure simulations do not 
+      // exceed the 256-ply capacity of position_history_, which would cause
+      // out-of-bounds memory access and crashes.
+      termination_reason_ = TerminationReason::FIFTY_MOVE_RULE;
+      return true;
     }
   }
 
