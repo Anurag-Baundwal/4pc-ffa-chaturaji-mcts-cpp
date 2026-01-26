@@ -323,12 +323,22 @@ def train_loop(args):
             # 2. Value: MSE
             
             # --- MASKING ILLEGAL MOVES ---
-            # Set logits for illegal moves to negative infinity (-1e9).
-            # When passed to log_softmax, these become 0 probability.
-            # This prevents the network from "learning" to push them down endlessly.
-            p_masked = torch.where(mask, p, torch.tensor(-1e9, device=device))
+            # Apply a large negative mask to illegal move logits. This ensures that the 
+            # subsequent softmax operation assigns near-zero probability to these moves, 
+            # concentrating the network's predictive mass on the legal action space.
+            mask_value = -1e8
+            p_masked = torch.where(mask, p, torch.tensor(mask_value, device=device, dtype=p.dtype))
+            
+            # Calculate the log-softmax of the masked logits.
+            log_p = F.log_softmax(p_masked, dim=1)
 
-            loss_policy = -torch.sum(tp * F.log_softmax(p_masked, dim=1), dim=1).mean()
+            # Zero out the log-probabilities of illegal moves before the loss calculation.
+            # This prevents numerical 'NaN' errors that occur when a zero target probability 
+            # is multiplied by a negative infinity log-probability (which results from the mask).
+            log_p_safe = torch.where(mask, log_p, torch.zeros_like(log_p))
+            
+            loss_policy = -torch.sum(tp * log_p_safe, dim=1).mean()
+
             loss_value = F.mse_loss(v, tv)
             
             loss = loss_policy + 4 * loss_value
