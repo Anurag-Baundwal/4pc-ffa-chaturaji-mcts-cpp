@@ -12,13 +12,10 @@
 
 namespace chaturaji_cpp {
 
-std::mutex buffer_mutex_self_play;
-
 SelfPlay::SelfPlay(
     Model* network,
     int num_workers,
     int simulations_per_move,
-    size_t max_buffer_size,
     int nn_batch_size,
     int worker_batch_size,
     double c_puct,
@@ -29,8 +26,6 @@ SelfPlay::SelfPlay(
     network_handle_(network), 
     num_workers_(num_workers),
     simulations_per_move_(simulations_per_move),
-    max_buffer_size_(max_buffer_size),
-    buffer_(),
     worker_batch_size_(worker_batch_size), 
     mcts_c_puct_(c_puct),
     temperature_decay_move_(temperature_decay_move),
@@ -49,15 +44,6 @@ SelfPlay::~SelfPlay() {
     if (evaluator_) {
         evaluator_->stop(); 
     }
-}
-
-const ReplayBuffer& SelfPlay::get_buffer() const {
-    return buffer_;
-}
-
-void SelfPlay::clear_buffer() {
-     std::lock_guard<std::mutex> lock(buffer_mutex_self_play); 
-    buffer_.clear();
 }
 
 void SelfPlay::process_worker_batch(

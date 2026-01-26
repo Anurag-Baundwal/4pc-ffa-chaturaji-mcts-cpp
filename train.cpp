@@ -132,7 +132,6 @@ void train(
               network.get(), 
               num_workers, 
               simulations_per_move, 
-              max_buffer_size, 
               nn_batch_size, 
               worker_batch_size,
               2.5,  // c_puct

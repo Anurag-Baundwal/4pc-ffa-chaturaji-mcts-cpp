@@ -31,7 +31,6 @@ public:
         Model* network, 
         int num_workers = 4,
         int simulations_per_move = 100,
-        size_t max_buffer_size = 1250000,
         int nn_batch_size = NN_POLICY_SIZE, // (4096)
         int worker_batch_size = 16,
         double c_puct = 2.5,
@@ -43,9 +42,6 @@ public:
     ~SelfPlay(); 
 
     size_t generate_data(int num_games);
-    
-    const ReplayBuffer& get_buffer() const;
-    void clear_buffer();
 
 private:
     void run_game_simulation(
@@ -80,8 +76,6 @@ private:
     Model* network_handle_; // Non-owning pointer
     int num_workers_;
     int simulations_per_move_;
-    size_t max_buffer_size_;
-    ReplayBuffer buffer_; 
     double mcts_c_puct_;
     int temperature_decay_move_;
     int worker_batch_size_; 
