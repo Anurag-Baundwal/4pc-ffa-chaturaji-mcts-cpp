@@ -201,8 +201,8 @@ void train(
           fs::path info_file = model_dir / "run_info.txt";
           stats.save(info_file.string());
 
-          // 2. Periodic Archiving (every 25 global iterations)     
-          const int archive_interval = 25; 
+          // 2. Periodic Archiving (every 5 global iterations)     
+          const int archive_interval = 5; 
           if (stats.global_iteration % archive_interval == 0) {
               std::string suffix = "iter_" + std::to_string(stats.global_iteration);
               fs::path arch_onnx = model_dir / (suffix + ".onnx");
