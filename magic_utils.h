@@ -109,5 +109,14 @@ extern const std::array<Bitboard, NUM_SQUARES> BishopMagics;
 extern const std::array<int, NUM_SQUARES> RookShifts;
 extern const std::array<int, NUM_SQUARES> BishopShifts;
 
+// --- Static Lookups for Optimization ---
+// These are initialized before main() by magic_utils.cpp
+extern std::array<Bitboard, NUM_SQUARES> STATIC_ROOK_ATTACKS_EMPTY;
+extern std::array<Bitboard, NUM_SQUARES> STATIC_BISHOP_ATTACKS_EMPTY;
+extern std::array<Bitboard, NUM_SQUARES> STATIC_KING_ATTACKS;
+extern int CHEBYSHEV_DIST[NUM_SQUARES][NUM_SQUARES];
+
+void init_static_lookups();
+
 } // namespace magic_utils
 } // namespace chaturaji_cpp

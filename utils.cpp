@@ -68,59 +68,48 @@ namespace {
 
     // --- Heuristic Helpers ---
 
-    // Chebyshev distance (King/Pawn proximity calculation)
-    int dist_chebyshev(BoardLocation a, BoardLocation b) {
-        return std::max(std::abs(a.row - b.row), std::abs(a.col - b.col));
-    }
+    // Constants for connectivity bit-flood
+    const Bitboard FILE_A = 0x0101010101010101ULL;
+    const Bitboard FILE_H = 0x8080808080808080ULL;
+    const Bitboard NOT_FILE_A = ~FILE_A;
+    const Bitboard NOT_FILE_H = ~FILE_H;
 
-    // BFS to check if all pawns on a bitboard form a single connected component
+    // Fast bitwise check if all pawns form a single connected component
+    // Replaces BFS with iterative flood fill
     bool are_pawns_fully_connected(Bitboard pawns) {
+        if (pawns == 0) return false;
         int count = magic_utils::pop_count(pawns);
-        if (count <= 1) return false;
+        if (count <= 1) return true; // Single pawn (or zero) is technically "connected" or trivial
 
-        // 1. Pick a start pawn
-        int start_sq = magic_utils::get_lsb_index(pawns);
-        
-        // 2. BFS to find connected component
-        Bitboard visited = 0ULL;
-        magic_utils::set_bit(visited, start_sq);
-        
-        // Mark start as visited in the tracking set
-        // (We use 'pawns' as the set of unvisited nodes)
-        magic_utils::clear_bit(pawns, start_sq);
+        // 1. Pick a start pawn (LSB)
+        Bitboard flood = (pawns & -static_cast<int64_t>(pawns)); 
+        Bitboard temp = 0;
 
-        int q[10]; 
-        int q_size = 0;
-        
-        q[q_size++] = start_sq;
-        
-        int visited_count = 1; // Count start node
-
-        while(q_size > 0) {
-            int curr_sq = q[--q_size];
-            BoardLocation curr_loc = magic_utils::from_sq_idx(curr_sq);
-
-            // Check against remaining unvisited pawns
-            // Iterate a copy of the bitboard. 
-            // Only remove from 'pawns' (unvisited) if we actually add to queue.
-            Bitboard candidates = pawns; 
+        // 2. Flood fill iteratively until stable
+        while (flood != temp) {
+            temp = flood;
+            // Expand in all 8 directions masked by actual pawns
+            // Shifts: +1 (East), -1 (West), +8 (South), -8 (North)
             
-            while(candidates) {
-                int next_sq = magic_utils::pop_lsb(candidates);
-                BoardLocation next_loc = magic_utils::from_sq_idx(next_sq);
-                
-                // Adjacent if Chebyshev distance is 1
-                if (dist_chebyshev(curr_loc, next_loc) <= 1) {
-                    magic_utils::set_bit(visited, next_sq);
-                    magic_utils::clear_bit(pawns, next_sq); // Remove from global unvisited set
-                    q[q_size++] = next_sq;
-                    visited_count++;
-                }
-            }
+            // East (+1): Check wrapping H->A (mask NOT_FILE_A)
+            Bitboard east = (flood << 1) & NOT_FILE_A;
+            // West (-1): Check wrapping A->H (mask NOT_FILE_H)
+            Bitboard west = (flood >> 1) & NOT_FILE_H;
+            
+            Bitboard south = (flood << 8);
+            Bitboard north = (flood >> 8);
+
+            // Diagonals
+            Bitboard ne = (north << 1) & NOT_FILE_A;
+            Bitboard nw = (north >> 1) & NOT_FILE_H;
+            Bitboard se = (south << 1) & NOT_FILE_A;
+            Bitboard sw = (south >> 1) & NOT_FILE_H;
+
+            flood |= (east | west | north | south | ne | nw | se | sw);
+            flood &= pawns; // Constrain to pawns
         }
 
-        // 3. Are all pawns in the same component?
-        return visited_count == count;
+        return flood == pawns;
     }
 }
 
@@ -200,7 +189,7 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KNIGHT)) * 3;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::BISHOP)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::ROOK)) * 5;
-        mat += magic_utils::pop_count(king) * 3;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KING)) * 3;
         
         // Normalize by 50 (max possible is actually 36 but we want the same scale as points)
         fill_plane(current_channel + 0 + rel_i, static_cast<float>(mat) / 50.0f);
@@ -216,12 +205,12 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         float avg_dist = 0.0f;
         if (king && pawn_cnt > 0) {
             int k_sq = magic_utils::get_lsb_index(king);
-            BoardLocation k_loc = magic_utils::from_sq_idx(k_sq);
             int total_dist = 0;
             Bitboard temp_p = pawns;
             while(temp_p) {
                 int p_sq = magic_utils::pop_lsb(temp_p);
-                total_dist += dist_chebyshev(k_loc, magic_utils::from_sq_idx(p_sq));
+                // Optimized: Use Static Lookup for Chebyshev distance
+                total_dist += magic_utils::CHEBYSHEV_DIST[k_sq][p_sq];
             }
             avg_dist = static_cast<float>(total_dist) / pawn_cnt;
         }
@@ -231,7 +220,10 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         int safe_moves = 0;
         if (king) {
             int k_sq = magic_utils::get_lsb_index(king);
-            BoardLocation k_loc = magic_utils::from_sq_idx(k_sq);
+            
+            // Optimized: Use Static Lookup + Bitmasks
+            Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
+            Bitboard own_pieces = board.get_player_bitboard(p);
             
             // Combine all enemy attacks
             Bitboard enemy_attacks = 0ULL;
@@ -239,22 +231,8 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
                 if(i != abs_p_idx) enemy_attacks |= all_attacks[i];
             }
             
-            // Check adjacent squares
-            for(int dr = -1; dr <= 1; ++dr) {
-                for(int dc = -1; dc <= 1; ++dc) {
-                    if (dr == 0 && dc == 0) continue;
-                    int nr = k_loc.row + dr;
-                    int nc = k_loc.col + dc;
-                    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
-                        int t_sq = magic_utils::to_sq_idx(nr, nc);
-                        // Safe if not occupied by self AND not attacked by enemy
-                        if (!magic_utils::get_bit(board.get_player_bitboard(p), t_sq) &&
-                            !magic_utils::get_bit(enemy_attacks, t_sq)) {
-                            safe_moves++;
-                        }
-                    }
-                }
-            }
+            Bitboard safe_squares = neighborhood & ~own_pieces & ~enemy_attacks;
+            safe_moves = magic_utils::pop_count(safe_squares);
         }
         fill_plane(current_channel + 16 + rel_i, static_cast<float>(safe_moves) / 8.0f);
 
@@ -262,12 +240,12 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         Bitboard xray = 0ULL;
         Bitboard rooks = board.get_piece_bitboard(p, PieceType::ROOK);
         Bitboard bishops = board.get_piece_bitboard(p, PieceType::BISHOP);
-        // Generate attacks on an empty board (blocker mask 0ULL)
+        // Optimized: Use Static Lookups
         while(rooks) {
-            xray |= magic_utils::calculate_rook_attacks_on_the_fly(magic_utils::pop_lsb(rooks), 0ULL); 
+            xray |= magic_utils::STATIC_ROOK_ATTACKS_EMPTY[magic_utils::pop_lsb(rooks)];
         }
         while(bishops) {
-            xray |= magic_utils::calculate_bishop_attacks_on_the_fly(magic_utils::pop_lsb(bishops), 0ULL);
+            xray |= magic_utils::STATIC_BISHOP_ATTACKS_EMPTY[magic_utils::pop_lsb(bishops)];
         }
         set_bitboard_plane(current_channel + 20 + rel_i, xray);
     }
@@ -355,11 +333,12 @@ PackedSample create_packed_sample(
         Bitboard xray = 0ULL;
         Bitboard rooks = board.get_piece_bitboard(pl, PieceType::ROOK);
         Bitboard bishops = board.get_piece_bitboard(pl, PieceType::BISHOP);
+        
         while(rooks) {
-            xray |= magic_utils::calculate_rook_attacks_on_the_fly(magic_utils::pop_lsb(rooks), 0ULL); 
+            xray |= magic_utils::STATIC_ROOK_ATTACKS_EMPTY[magic_utils::pop_lsb(rooks)];
         }
         while(bishops) {
-            xray |= magic_utils::calculate_bishop_attacks_on_the_fly(magic_utils::pop_lsb(bishops), 0ULL);
+            xray |= magic_utils::STATIC_BISHOP_ATTACKS_EMPTY[magic_utils::pop_lsb(bishops)];
         }
         sample.xray_attack_bitboards[p] = xray;
 
@@ -384,11 +363,12 @@ PackedSample create_packed_sample(
         Bitboard kbb = board.get_piece_bitboard(pl, PieceType::KING);
         float dist = 0.0f;
         if(kbb && p_cnt > 0) {
-            BoardLocation kloc = magic_utils::from_sq_idx(magic_utils::get_lsb_index(kbb));
-            Bitboard temp_p = pawns;
+            int k_sq = magic_utils::get_lsb_index(kbb);
             int total = 0;
+            Bitboard temp_p = pawns;
             while(temp_p) {
-                total += dist_chebyshev(kloc, magic_utils::from_sq_idx(magic_utils::pop_lsb(temp_p)));
+                // Optimized: Use Static Lookup for distance
+                total += magic_utils::CHEBYSHEV_DIST[k_sq][magic_utils::pop_lsb(temp_p)];
             }
             dist = static_cast<float>(total) / p_cnt;
         }
@@ -397,24 +377,16 @@ PackedSample create_packed_sample(
         // E. King Safe Moves
         int safe = 0;
         if(kbb) {
-            BoardLocation kloc = magic_utils::from_sq_idx(magic_utils::get_lsb_index(kbb));
-            Bitboard enemies = 0ULL;
+            int k_sq = magic_utils::get_lsb_index(kbb);
+            Bitboard enemy_attacks = 0ULL;
             for(int opp=0; opp<4; ++opp) {
-                if(opp != p) enemies |= all_attacks[opp];
+                if(opp != p) enemy_attacks |= all_attacks[opp];
             }
-            for(int dr=-1; dr<=1; ++dr) {
-                for(int dc=-1; dc<=1; ++dc) {
-                    if(dr==0 && dc==0) continue;
-                    int nr=kloc.row+dr, nc=kloc.col+dc;
-                    if(nr>=0 && nr<8 && nc>=0 && nc<8) {
-                        int t = magic_utils::to_sq_idx(nr, nc);
-                        if(!magic_utils::get_bit(board.get_player_bitboard(pl), t) && 
-                           !magic_utils::get_bit(enemies, t)) {
-                            safe++;
-                        }
-                    }
-                }
-            }
+            // Optimized: Use Static Lookup + Bitmasks
+            Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
+            Bitboard own_pieces = board.get_player_bitboard(pl);
+            Bitboard safe_mask = neighborhood & ~own_pieces & ~enemy_attacks;
+            safe = magic_utils::pop_count(safe_mask);
         }
         sample.king_safe_moves[p] = static_cast<float>(safe) / 8.0f;
     }

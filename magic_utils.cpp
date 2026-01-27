@@ -1,13 +1,60 @@
 #include "magic_utils.h"
-#include <stdexcept> // For std::out_of_range (though not directly used in these specific functions)
+#include <stdexcept> 
+#include <cmath>     
+#include <algorithm> 
 
 namespace chaturaji_cpp {
 namespace magic_utils {
 
+// --- Optimization Lookup Tables ---
+std::array<Bitboard, NUM_SQUARES> STATIC_ROOK_ATTACKS_EMPTY;
+std::array<Bitboard, NUM_SQUARES> STATIC_BISHOP_ATTACKS_EMPTY;
+std::array<Bitboard, NUM_SQUARES> STATIC_KING_ATTACKS;
+int CHEBYSHEV_DIST[NUM_SQUARES][NUM_SQUARES];
+
+void init_static_lookups() {
+    // 1. Sliding Attacks on Empty Board (X-Ray)
+    for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+        STATIC_ROOK_ATTACKS_EMPTY[sq] = calculate_rook_attacks_on_the_fly(sq, 0ULL);
+        STATIC_BISHOP_ATTACKS_EMPTY[sq] = calculate_bishop_attacks_on_the_fly(sq, 0ULL);
+    }
+
+    // 2. King Attacks
+    for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+        STATIC_KING_ATTACKS[sq] = 0ULL;
+        BoardLocation loc = from_sq_idx(sq);
+        for (int dr = -1; dr <= 1; ++dr) {
+            for (int dc = -1; dc <= 1; ++dc) {
+                if (dr == 0 && dc == 0) continue;
+                int nr = loc.row + dr;
+                int nc = loc.col + dc;
+                if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+                    set_bit(STATIC_KING_ATTACKS[sq], to_sq_idx(nr, nc));
+                }
+            }
+        }
+    }
+
+    // 3. Chebyshev Distances
+    for (int sq1 = 0; sq1 < NUM_SQUARES; ++sq1) {
+        BoardLocation loc1 = from_sq_idx(sq1);
+        for (int sq2 = 0; sq2 < NUM_SQUARES; ++sq2) {
+            BoardLocation loc2 = from_sq_idx(sq2);
+            CHEBYSHEV_DIST[sq1][sq2] = std::max(std::abs(loc1.row - loc2.row), std::abs(loc1.col - loc2.col));
+        }
+    }
+}
+
+// Static Initializer to ensure lookups are ready before main/Board usage
+struct MagicStaticInitializer { 
+    MagicStaticInitializer() { init_static_lookups(); } 
+};
+static MagicStaticInitializer magic_init_;
+
 // --- Mask Generation Definitions ---
 Bitboard generate_rook_mask(int sq) {
     Bitboard mask = 0ULL;
-    BoardLocation loc = from_sq_idx(sq); // Uses magic_utils::from_sq_idx
+    BoardLocation loc = from_sq_idx(sq); 
     int r0 = loc.row; int c0 = loc.col;
 
     // Corrected Mask Generation (simpler approach):
@@ -23,7 +70,7 @@ Bitboard generate_rook_mask(int sq) {
 
 Bitboard generate_bishop_mask(int sq) {
     Bitboard mask = 0ULL;
-    BoardLocation loc = from_sq_idx(sq); // Uses magic_utils::from_sq_idx
+    BoardLocation loc = from_sq_idx(sq); 
     int r0 = loc.row; int c0 = loc.col;
     
     const int bishop_dr[] = {-1, 1, 1, -1}; 
@@ -49,7 +96,7 @@ Bitboard generate_bishop_mask(int sq) {
 // --- On-the-fly Attack Calculation Definitions ---
 Bitboard calculate_rook_attacks_on_the_fly(int sq, Bitboard occupied) {
     Bitboard attacks = 0ULL;
-    BoardLocation loc = from_sq_idx(sq); // Uses magic_utils::from_sq_idx
+    BoardLocation loc = from_sq_idx(sq); 
     int r0 = loc.row;
     int c0 = loc.col;
     // N, S, E, W
@@ -61,8 +108,8 @@ Bitboard calculate_rook_attacks_on_the_fly(int sq, Bitboard occupied) {
             int r = r0 + dr[i] * k;
             int c = c0 + dc[i] * k;
             if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) break; // Off board
-            int target_sq = to_sq_idx(r,c); // Uses magic_utils::to_sq_idx
-            set_bit(attacks, target_sq);    // Uses magic_utils::set_bit
+            int target_sq = to_sq_idx(r,c); 
+            set_bit(attacks, target_sq);    
             if (get_bit(occupied, target_sq)) break; // Blocked by a piece in 'occupied'
         }
     }
@@ -71,7 +118,7 @@ Bitboard calculate_rook_attacks_on_the_fly(int sq, Bitboard occupied) {
 
 Bitboard calculate_bishop_attacks_on_the_fly(int sq, Bitboard occupied) {
     Bitboard attacks = 0ULL;
-    BoardLocation loc = from_sq_idx(sq); // Uses magic_utils::from_sq_idx
+    BoardLocation loc = from_sq_idx(sq); 
     int r0 = loc.row;
     int c0 = loc.col;
     // NE, SE, SW, NW
@@ -83,8 +130,8 @@ Bitboard calculate_bishop_attacks_on_the_fly(int sq, Bitboard occupied) {
             int r = r0 + dr[i] * k;
             int c = c0 + dc[i] * k;
             if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) break; // Off board
-            int target_sq = to_sq_idx(r,c); // Uses magic_utils::to_sq_idx
-            set_bit(attacks, target_sq);    // Uses magic_utils::set_bit
+            int target_sq = to_sq_idx(r,c); 
+            set_bit(attacks, target_sq);    
             if (get_bit(occupied, target_sq)) break; // Blocked
         }
     }
@@ -96,10 +143,10 @@ Bitboard get_occupancy_subset(int index, int bits_in_mask, Bitboard mask) {
     Bitboard occupancy = 0ULL;
     Bitboard temp_mask = mask; // Iterate over bits in the mask
     for (int i = 0; i < bits_in_mask; ++i) {
-        int lsb_sq = pop_lsb(temp_mask); // Uses magic_utils::pop_lsb
+        int lsb_sq = pop_lsb(temp_mask); 
         if (lsb_sq == -1) break; // Should not happen if bits_in_mask is correct
         if ((index >> i) & 1) {    // If the i-th bit of `index` is set
-            set_bit(occupancy, lsb_sq); // Uses magic_utils::set_bit
+            set_bit(occupancy, lsb_sq); 
         }
     }
     return occupancy;
