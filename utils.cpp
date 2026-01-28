@@ -293,6 +293,12 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
             fill_plane(current_channel + 13 + rel_i, 1.0f);
         }
     }
+
+    // Active Opponent Count (Scalar) -> Channel 61
+    // Formula: (Total active players - 1) / 3.0
+    int total_active = magic_utils::pop_count(static_cast<Bitboard>(board.get_active_mask()));
+    float active_opponents_val = static_cast<float>(total_active - 1) / 3.0f;
+    fill_plane(current_channel + 14, active_opponents_val);
 }
 
 PackedSample create_packed_sample(

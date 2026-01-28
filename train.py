@@ -52,7 +52,7 @@ def unpack_batch_to_tensors(raw_batch):
     """
     Decompresses a batch of PackedSamples into PyTorch tensors.
     
-    Channel Map (Total 61):
+    Channel Map (Total 62):
     0-19:  Piece Bitboards (5 types * 4 players)
     20-23: Material Score (Scalar)
     24-27: Pawn Count (Scalar)
@@ -65,6 +65,7 @@ def unpack_batch_to_tensors(raw_batch):
     52:    50-Move Clock
     53-56: Standard Attack Bitboards
     57-60: In-Check Flags
+    61:    Active Opponent Count (Scalar)
     """
     batch_size = len(raw_batch)
     
@@ -102,7 +103,7 @@ def unpack_batch_to_tensors(raw_batch):
     value_target = torch.from_numpy(rel_values)
 
     # --- 3. Expand Input State ---
-    # Shape: [Batch, 61, 64]
+    # Shape: [Batch, 62, 64]
     states_flat = torch.zeros((batch_size, NUM_INPUT_CHANNELS, BOARD_AREA), dtype=torch.float32)
     
     # Helper: Bitboard (Batch, N) -> Tensor (Batch, N, 64)
@@ -202,8 +203,14 @@ def unpack_batch_to_tensors(raw_batch):
         in_check = (king_bb & stressors) != 0
         states_flat[:, 57 + rel_i, :] = torch.from_numpy(in_check[:, None].astype(np.float32))
 
+    # Active Opponent Count (61)
+    # Count bits in active_mask using vectorized popcount
+    total_active = np.array([bin(m).count('1') for m in active_mask])
+    opp_count_val = (total_active - 1) / 3.0
+    states_flat[:, 61, :] = torch.from_numpy(opp_count_val[:, None].astype(np.float32))
+    
     # --- 4. Spatial Rotation ---
-    # Reshape to [Batch, 61, 8, 8]
+    # Reshape to [Batch, 62, 8, 8]
     states = states_flat.view(batch_size, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
     
     # Rotate based on Current Player to enforce relative perspective

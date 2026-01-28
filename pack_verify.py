@@ -12,7 +12,7 @@ import sys
 from train import unpack_batch_to_tensors, PACKED_DTYPE
 
 # Constants
-NN_INPUT_CHANNELS = 61 
+NN_INPUT_CHANNELS = 62 
 BOARD_AREA = 64
 POLICY_SIZE = 4096
 VALUE_SIZE = 4
