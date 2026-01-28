@@ -18,6 +18,11 @@
 #include "strength_test.h" 
 #include "mcts_node.h" 
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 // Helper to parse args
@@ -34,6 +39,12 @@ bool cmd_option_exists(char** begin, char** end, const std::string& option) {
 }
 
 int main(int argc, char* argv[]) {
+    #ifdef _WIN32
+    // Programmatically set the console output and input to UTF-8
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    #endif
+    
     // --- Mode Selection ---
     if (cmd_option_exists(argv, argv + argc, "--interactive")) {
         // --- Interactive / UCI-like Mode ---

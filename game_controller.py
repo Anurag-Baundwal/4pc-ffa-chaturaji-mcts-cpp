@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import time
@@ -9,6 +10,10 @@ import shlex
 import platform
 import numpy as np
 import pyautogui
+
+# Force the standard output to use UTF-8 regardless of environment
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Win32 imports for robust window switching on Windows
 try:
@@ -130,6 +135,7 @@ class EngineHandler:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
             bufsize=1
         )
 
@@ -192,19 +198,23 @@ class EngineHandler:
 
         # Read output until bestmove
         while True:
+            # Read line-by-line. Do NOT strip() immediately to preserve formatting.
             line = self.process.stdout.readline()
             if not line: break
-            line = line.strip()
             
-            # Optional: Print info lines to see search progress
-            if line.startswith("info") or line.startswith("root"):
-                print(f"[ENGINE] {line}")
+            # Create a stripped version just for checking logic
+            line_clean = line.strip()
             
-            if line.startswith("bestmove"):
-                parts = line.split()
+            if line_clean.startswith("bestmove"):
+                parts = line_clean.split()
                 if len(parts) >= 2:
                     return parts[1]
                 return None
+            
+            # Print everything else (Board, Stats, Info) exactly as received.
+            # end='' is used because 'line' already contains the newline character.
+            print(line, end='')
+            
         return None
 
     def _send(self, cmd):
