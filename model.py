@@ -30,6 +30,7 @@ VALUE_OUTPUT_SIZE = 4
 # Network Architecture
 NUM_RES_BLOCKS = 8
 NUM_CHANNELS = 64
+SE_REDUCTION = 4 # Squeeze ratio for SE blocks
 
 # Policy Head Configuration
 POLICY_HEAD_CONV_CHANNELS = 32 
@@ -42,21 +43,58 @@ VALUE_FC_HIDDEN_CHANNELS = 384
 VALUE_FC_MID_CHANNELS = 256
 NUM_VALUE_OUTPUTS = 4
 
+class GlobalSEBlock(nn.Module):
+    """
+    Global-Context Squeeze-and-Excitation Block.
+    Uses global scalars + spatial average pooling to scale convolutional channels.
+    """
+    def __init__(self, channels, global_channels):
+        super().__init__()
+        self.input_dim = channels + global_channels
+        self.squeeze_dim = channels // SE_REDUCTION
+        
+        self.fc1 = nn.Linear(self.input_dim, self.squeeze_dim)
+        self.fc2 = nn.Linear(self.squeeze_dim, channels)
+
+    def forward(self, x, global_context):
+        # x: [Batch, C, H, W], global_context: [Batch, GlobalC]
+        batch, c, _, _ = x.size()
+        
+        # Squeeze: Global Average Pooling [Batch, C]
+        w = x.mean(dim=(2, 3))
+        
+        # Concatenate spatial summary with encoded global scalars
+        w = torch.cat([w, global_context], dim=1)
+        
+        # Excitation: MLP to find channel weights
+        w = F.silu(self.fc1(w))
+        w = torch.sigmoid(self.fc2(w))
+        
+        # Scale original feature map
+        return x * w.view(batch, c, 1, 1)
+
 class ResBlock(nn.Module):
     """
-    Standard Residual Block using SiLU (Swish) activation.
+    Standard Residual Block using SiLU (Swish) activation and Global SE.
     """
-    def __init__(self, channels):
+    def __init__(self, channels, global_channels):
         super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=True)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=True)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(channels)
+        
+        # Global-Context Squeeze-and-Excitation
+        self.se = GlobalSEBlock(channels, global_channels)
 
-    def forward(self, x):
+    def forward(self, x, global_context):
         residual = x
         out = F.silu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
+        
+        # Apply context-aware scaling
+        out = self.se(out, global_context)
+        
         out += residual
         out = F.silu(out)
         return out
@@ -67,9 +105,12 @@ class ChaturajiNN(nn.Module):
     
     Architecture:
     - Input 1 (Spatial): [Batch, 28, 8, 8] -> Processed by ResNet Backbone
-    - Input 2 (Scalars): [Batch, 34]       -> Injected into Heads
+    - Input 2 (Scalars): [Batch, 34]       -> Injected into SE Blocks and Heads
     
-    - Trunk: Conv + BatchNorm + SiLU -> 8 Residual Blocks (processes spatial only)
+    - Global Encoder: Linear projects 34 scalars to 64 context features.
+    
+    - Trunk: Conv + BatchNorm + SiLU -> 8 Residual Blocks.
+      Each block uses the Global context to perform Channel Attention (SE).
     
     - Policy Head: 
       1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
@@ -84,13 +125,21 @@ class ChaturajiNN(nn.Module):
     """
     def __init__(self):
         super().__init__()
+        
+        # --- Global Context Encoder ---
+        # Projects scalars into an embedding space used by SE blocks in the backbone
+        self.global_encoder = nn.Sequential(
+            nn.Linear(NUM_INPUT_SCALARS, NUM_CHANNELS),
+            nn.SiLU()
+        )
+
         # --- Backbone (Trunk) ---
         # Takes spatial planes only
         self.conv1 = nn.Conv2d(NUM_INPUT_PLANES, NUM_CHANNELS, kernel_size=3, padding=1, bias=True)
         self.bn1 = nn.BatchNorm2d(NUM_CHANNELS)
 
         self.resblocks = nn.ModuleList([
-            ResBlock(NUM_CHANNELS) for _ in range(NUM_RES_BLOCKS)
+            ResBlock(NUM_CHANNELS, global_channels=NUM_CHANNELS) for _ in range(NUM_RES_BLOCKS)
         ])
 
         # --- Policy Head ---
@@ -126,10 +175,13 @@ class ChaturajiNN(nn.Module):
         self.log_vars = nn.Parameter(torch.tensor([0.0, -2.0]))
 
     def forward(self, x_planes, x_scalars):
+        # --- Global Encoding ---
+        global_embed = self.global_encoder(x_scalars)
+
         # --- Backbone (Spatial) ---
         x = F.silu(self.bn1(self.conv1(x_planes)))
         for block in self.resblocks:
-            x = block(x)
+            x = block(x, global_embed)
 
         # --- Policy Head Forward ---
         p = self.policy_conv(x)
@@ -213,7 +265,7 @@ def export_to_onnx(model_path, output_path, random_init=False):
     
     model.eval()
 
-    # Dummy input for tracing
+    # Dummy inputs for tracing
     dummy_planes = torch.randn(1, NUM_INPUT_PLANES, BOARD_DIM, BOARD_DIM).to(device)
     dummy_scalars = torch.randn(1, NUM_INPUT_SCALARS).to(device)
 
