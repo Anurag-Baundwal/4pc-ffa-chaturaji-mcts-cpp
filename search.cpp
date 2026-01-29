@@ -107,7 +107,7 @@ void evaluate_and_expand_batch_sync(
   for (size_t i = 0; i < pending_eval.size(); ++i) {
       EvaluationRequest req;
       req.request_id = static_cast<RequestId>(i); 
-      board_to_floats_into(pending_eval[i].current_node->get_board(), req.state_floats);
+      board_to_tensors(pending_eval[i].current_node->get_board(), req.input_planes, req.input_scalars);
       requests.push_back(std::move(req));
   }
 

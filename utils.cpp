@@ -113,67 +113,80 @@ namespace {
     }
 }
 
-void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
-    // 1. Ensure capacity and clear old data
-    if (tensor_data.size() != NN_INPUT_SIZE) {
-        tensor_data.resize(NN_INPUT_SIZE);
-    }
-    // Faster than reallocation: just fill with 0
-    std::fill(tensor_data.begin(), tensor_data.end(), 0.0f);
+void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars) {
+    // 1. Prepare Buffers
+    if (out_planes.size() != NN_INPUT_PLANES_SIZE) out_planes.resize(NN_INPUT_PLANES_SIZE);
+    if (out_scalars.size() != NN_INPUT_SCALARS) out_scalars.resize(NN_INPUT_SCALARS);
+    
+    std::fill(out_planes.begin(), out_planes.end(), 0.0f);
+    std::fill(out_scalars.begin(), out_scalars.end(), 0.0f);
 
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 
-    // Helper to fill an entire 8x8 channel with a scalar value
-    auto fill_plane = [&](int channel_idx, float value) {
-        if (value == 0.0f) return; 
-        int offset = channel_idx * BOARD_AREA;
-        std::fill_n(tensor_data.begin() + offset, BOARD_AREA, value);
-    };
-
-    // Helper to set a specific pixel based on absolute board coordinates (rotates to relative internally)
-    auto set_pixel = [&](int channel_idx, int r, int c, float value) {
+    // --- Helpers ---
+    auto set_pixel = [&](int plane_idx, int r, int c, float value) {
         BoardLocation rel = get_rel_loc(r, c, current_p);
-        int index = (channel_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
-        tensor_data[index] = value;
+        int index = (plane_idx * BOARD_AREA) + (rel.row * 8 + rel.col);
+        out_planes[index] = value;
     };
 
-    // Helper to splat a bitboard onto a channel
-    auto set_bitboard_plane = [&](int channel_idx, Bitboard bb) {
+    auto set_bitboard_plane = [&](int plane_idx, Bitboard bb) {
         while(bb) {
             int sq_idx = magic_utils::pop_lsb(bb);
             BoardLocation abs_loc = magic_utils::from_sq_idx(sq_idx);
-            set_pixel(channel_idx, abs_loc.row, abs_loc.col, 1.0f);
+            set_pixel(plane_idx, abs_loc.row, abs_loc.col, 1.0f);
         }
     };
 
-    // --- Relative Feature Encoding ---
-    // Inputs are rotated so that index 0 always represents the current player.
-    // Mapping: Rel 0 = Current, Rel 1 = Next, Rel 2 = Opposite, Rel 3 = Previous.
+    // ==========================================
+    // PART A: SPATIAL PLANES (28 Total)
+    // ==========================================
+    int current_plane = 0;
 
-    // ----------------------------------------------------
-    // 1. Piece Placement (Channels 0-19)
-    // ----------------------------------------------------
+    // 1. Piece Placement (20 planes)
     for (int rel_i = 0; rel_i < 4; ++rel_i) { 
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p_enum = static_cast<Player>(abs_p_idx);
         for (int pt_idx = 0; pt_idx < 5; ++pt_idx) { 
             PieceType pt_enum = UTIL_PIECE_TYPE_ORDER[pt_idx]; 
             Bitboard bb = board.get_piece_bitboard(p_enum, pt_enum);
-            set_bitboard_plane((rel_i * 5) + pt_idx, bb);
+            set_bitboard_plane(current_plane++, bb);
         }
     }
 
-    // ----------------------------------------------------
-    // 2. Hand-Crafted Heuristics (Channels 20-43)
-    // ----------------------------------------------------
-    // Pre-calculate attack maps for safety checks
-    std::array<Bitboard, 4> all_attacks;
-    for(int i = 0; i < 4; ++i) {
-        all_attacks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+    // 2. X-Ray Attacks (4 planes)
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        int abs_p_idx = (cp_idx + rel_i) % 4;
+        Player p = static_cast<Player>(abs_p_idx);
+        
+        Bitboard xray = 0ULL;
+        Bitboard rooks = board.get_piece_bitboard(p, PieceType::ROOK);
+        Bitboard bishops = board.get_piece_bitboard(p, PieceType::BISHOP);
+        while(rooks) xray |= magic_utils::STATIC_ROOK_ATTACKS_EMPTY[magic_utils::pop_lsb(rooks)];
+        while(bishops) xray |= magic_utils::STATIC_BISHOP_ATTACKS_EMPTY[magic_utils::pop_lsb(bishops)];
+        
+        set_bitboard_plane(current_plane++, xray);
     }
 
-    int current_channel = 20;
+    // 3. Standard Attacks (4 planes)
+    // Pre-calculate attack maps
+    std::array<Bitboard, 4> all_attacks;
+    for(int i = 0; i < 4; ++i) all_attacks[i] = board.get_squares_attacked_by(static_cast<Player>(i));
+
+    for (int rel_i = 0; rel_i < 4; ++rel_i) {
+        set_bitboard_plane(current_plane++, all_attacks[(cp_idx + rel_i) % 4]);
+    }
+    
+    // Check plane count
+    if (current_plane != NN_INPUT_PLANES) {
+        throw std::runtime_error("Implementation Error: Plane count mismatch.");
+    }
+
+    // ==========================================
+    // PART B: SCALARS (34 Total)
+    // ==========================================
+    int current_scalar = 0;
 
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_p_idx = (cp_idx + rel_i) % 4;
@@ -183,105 +196,72 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         Bitboard king = board.get_piece_bitboard(p, PieceType::KING);
         int pawn_cnt = magic_utils::pop_count(pawns);
 
-        // A. Total Material (Scalar) -> Channel 20, 21, 22, 23
+        // A. Material (4 scalars)
         int mat = 0;
         mat += pawn_cnt * 1;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KNIGHT)) * 3;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::BISHOP)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::ROOK)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KING)) * 3;
-        
-        // Normalize by 50 (max possible is actually 36 but we want the same scale as points)
-        fill_plane(current_channel + 0 + rel_i, static_cast<float>(mat) / 50.0f);
+        out_scalars[current_scalar + 0 + rel_i] = static_cast<float>(mat) / 50.0f;
 
-        // B. Pawn Count (Scalar) -> Channel 24, 25, 26, 27
-        fill_plane(current_channel + 4 + rel_i, static_cast<float>(pawn_cnt) / 4.0f);
+        // B. Pawn Count (4 scalars)
+        out_scalars[current_scalar + 4 + rel_i] = static_cast<float>(pawn_cnt) / 4.0f;
 
-        // C. Connected Pawns (Scalar) -> Channel 28, 29, 30, 31
-        bool connected = are_pawns_fully_connected(pawns);
-        fill_plane(current_channel + 8 + rel_i, connected ? 1.0f : 0.0f);
+        // C. Connected Pawns (4 scalars)
+        out_scalars[current_scalar + 8 + rel_i] = are_pawns_fully_connected(pawns) ? 1.0f : 0.0f;
 
-        // D. Average Pawn Distance to King (Scalar) -> Channel 32, 33, 34, 35
+        // D. Avg Pawn Dist (4 scalars)
         float avg_dist = 0.0f;
         if (king && pawn_cnt > 0) {
             int k_sq = magic_utils::get_lsb_index(king);
             int total_dist = 0;
             Bitboard temp_p = pawns;
             while(temp_p) {
-                int p_sq = magic_utils::pop_lsb(temp_p);
-                // Optimized: Use Static Lookup for Chebyshev distance
-                total_dist += magic_utils::CHEBYSHEV_DIST[k_sq][p_sq];
+                total_dist += magic_utils::CHEBYSHEV_DIST[k_sq][magic_utils::pop_lsb(temp_p)];
             }
             avg_dist = static_cast<float>(total_dist) / pawn_cnt;
         }
-        fill_plane(current_channel + 12 + rel_i, avg_dist / 8.0f); // Max board dist is ~7
+        out_scalars[current_scalar + 12 + rel_i] = avg_dist / 8.0f;
 
-        // E. King Safe Moves (Scalar) -> Channel 36, 37, 38, 39
+        // E. King Safe Moves (4 scalars)
         int safe_moves = 0;
         if (king) {
             int k_sq = magic_utils::get_lsb_index(king);
-            
-            // Optimized: Use Static Lookup + Bitmasks
             Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
             Bitboard own_pieces = board.get_player_bitboard(p);
-            
-            // Combine all enemy attacks
             Bitboard enemy_attacks = 0ULL;
             for(int i = 0; i < 4; ++i) {
                 if(i != abs_p_idx) enemy_attacks |= all_attacks[i];
             }
-            
             Bitboard safe_squares = neighborhood & ~own_pieces & ~enemy_attacks;
             safe_moves = magic_utils::pop_count(safe_squares);
         }
-        fill_plane(current_channel + 16 + rel_i, static_cast<float>(safe_moves) / 8.0f);
-
-        // F. X-Ray Attacks (Bitboard) -> Channel 40, 41, 42, 43
-        Bitboard xray = 0ULL;
-        Bitboard rooks = board.get_piece_bitboard(p, PieceType::ROOK);
-        Bitboard bishops = board.get_piece_bitboard(p, PieceType::BISHOP);
-        // Optimized: Use Static Lookups
-        while(rooks) {
-            xray |= magic_utils::STATIC_ROOK_ATTACKS_EMPTY[magic_utils::pop_lsb(rooks)];
-        }
-        while(bishops) {
-            xray |= magic_utils::STATIC_BISHOP_ATTACKS_EMPTY[magic_utils::pop_lsb(bishops)];
-        }
-        set_bitboard_plane(current_channel + 20 + rel_i, xray);
+        out_scalars[current_scalar + 16 + rel_i] = static_cast<float>(safe_moves) / 8.0f;
     }
-    
-    // Update offset for next section
-    current_channel += 24; // (4 players * 6 features)
+    current_scalar += 20;
 
-    // ----------------------------------------------------
-    // 3. Game Metadata (Channels 44-60)
-    // ----------------------------------------------------
-
-    // Active Status (44-47)
+    // F. Active Status (4 scalars)
     uint8_t mask = board.get_active_mask();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
-        fill_plane(current_channel + rel_i, (mask & (1 << abs_idx)) ? 1.0f : 0.0f);
+        out_scalars[current_scalar + rel_i] = (mask & (1 << abs_idx)) ? 1.0f : 0.0f;
     }
+    current_scalar += 4;
 
-    // Points (48-51)
+    // G. Points (4 scalars)
     const auto& points = board.get_player_points();
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
-        float pts = static_cast<float>(points[abs_idx]);
-        fill_plane(current_channel + 4 + rel_i, pts / 50.0f);
+        out_scalars[current_scalar + rel_i] = static_cast<float>(points[abs_idx]) / 50.0f;
     }
+    current_scalar += 4;
 
-    // 50-Move Clock (52)
+    // H. 50-Move Clock (1 scalar)
     int moves_since_reset = board.get_full_move_number() - board.get_move_number_of_last_reset();
-    fill_plane(current_channel + 8, std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f));
+    out_scalars[current_scalar++] = std::min(1.0f, static_cast<float>(moves_since_reset) / 50.0f);
 
-    // Attack Planes (53-56)
-    for (int rel_i = 0; rel_i < 4; ++rel_i) {
-        set_bitboard_plane(current_channel + 9 + rel_i, all_attacks[(cp_idx + rel_i) % 4]);
-    }
-
-    // In-Check Planes (57-60)
+    // I. In-Check (4 scalars)
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
         Bitboard king = board.get_piece_bitboard(static_cast<Player>(abs_idx), PieceType::KING);
@@ -289,16 +269,18 @@ void board_to_floats_into(const Board& board, std::vector<float>& tensor_data) {
         for(int opp=0; opp<4; ++opp) {
             if(opp != abs_idx) stressors |= all_attacks[opp];
         }
-        if (king & stressors) {
-            fill_plane(current_channel + 13 + rel_i, 1.0f);
-        }
+        out_scalars[current_scalar + rel_i] = (king & stressors) ? 1.0f : 0.0f;
     }
+    current_scalar += 4;
 
-    // Active Opponent Count (Scalar) -> Channel 61
-    // Formula: (Total active players - 1) / 3.0
+    // J. Active Opponent Count (1 scalar)
     int total_active = magic_utils::pop_count(static_cast<Bitboard>(board.get_active_mask()));
-    float active_opponents_val = static_cast<float>(total_active - 1) / 3.0f;
-    fill_plane(current_channel + 14, active_opponents_val);
+    out_scalars[current_scalar++] = static_cast<float>(total_active - 1) / 3.0f;
+
+    // Validation
+    if (current_scalar != NN_INPUT_SCALARS) {
+        throw std::runtime_error("Implementation Error: Scalar count mismatch.");
+    }
 }
 
 PackedSample create_packed_sample(

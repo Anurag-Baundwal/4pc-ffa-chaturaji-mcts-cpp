@@ -25,7 +25,7 @@ private:
     Ort::MemoryInfo memory_info_;
 
     // Input/Output names for the ONNX graph
-    const char* input_name_ = "input";
+    std::array<const char*, 2> input_names_ = {"input_planes", "input_scalars"};
     std::array<const char*, 2> output_names_ = {"policy", "value"};
 };
 

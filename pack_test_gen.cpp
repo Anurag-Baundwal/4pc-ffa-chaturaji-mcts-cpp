@@ -3,8 +3,8 @@
  * @brief Verification Tool: Generates Ground Truth Data.
  * 
  * This program sets up a specific board state, creates a fake policy and reward,
- * and exports two versions of the data:
- * 1. Raw Floats (Ground Truth): The state unpacked into floats directly by C++.
+ * and exports three versions of the data:
+ * 1. Raw Floats (Ground Truth): separate files for spatial planes and scalars.
  * 2. Packed Binary: The struct format used for training data storage.
  * 
  * These files are consumed by `pack_verify.py` to ensure the Python-side
@@ -63,20 +63,24 @@ int main() {
         // --- 3. CREATE FAKE REWARDS ---
         std::array<double, 4> rewards = {0.5, -0.5, 1.0, 0.0};
 
-        // --- 4. GROUND TRUTH (Old Way) ---
-        std::vector<float> ground_truth_input(NN_INPUT_SIZE);
-        board_to_floats_into(board, ground_truth_input);
+        // --- 4. GROUND TRUTH (Planes & Scalars) ---
+        std::vector<float> ground_truth_planes(NN_INPUT_PLANES_SIZE);
+        std::vector<float> ground_truth_scalars(NN_INPUT_SCALARS);
+        
+        // Populates the two separate vectors
+        board_to_tensors(board, ground_truth_planes, ground_truth_scalars);
 
         std::vector<float> ground_truth_policy(NN_POLICY_SIZE, 0.0f);
         Player p = board.get_current_player();
         int idx = move_to_policy_index(m1, p);
         ground_truth_policy[idx] = 1.0f;
 
-        // --- 5. PACKED SAMPLE (New Way) ---
+        // --- 5. PACKED SAMPLE ---
         PackedSample packed = create_packed_sample(board, policy, rewards);
 
         // --- 6. SAVE ---
-        write_raw_floats("test_truth_input.bin", ground_truth_input);
+        write_raw_floats("test_truth_planes.bin", ground_truth_planes);
+        write_raw_floats("test_truth_scalars.bin", ground_truth_scalars);
         write_raw_floats("test_truth_policy.bin", ground_truth_policy);
         write_raw_floats("test_truth_value.bin", { (float)rewards[0], (float)rewards[1], (float)rewards[2], (float)rewards[3] });
         write_packed_struct("test_packed.bin", packed);

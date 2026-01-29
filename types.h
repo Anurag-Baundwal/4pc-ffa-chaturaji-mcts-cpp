@@ -3,25 +3,36 @@
 #include <array>
 #include <algorithm>
 #include <cassert>
-#include <cstdint>
+#include <stdint.h>
 #include <cstring>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
+
 namespace chaturaji_cpp {
 
 // --- Board Dimensions & NN Configuration ---
 constexpr int BOARD_DIM = 8;
 constexpr int BOARD_AREA = 64; // 8 * 8
 
-// Input: 62 channels total
-constexpr int NN_INPUT_CHANNELS = 62; 
-constexpr int NN_INPUT_SIZE = NN_INPUT_CHANNELS * BOARD_AREA; 
+// --- Architectural Configuration ---
+// Input is split into two distinct parts:
+// 1. Spatial Planes: 28 planes total
+//    - 20 (Pieces: 5 types * 4 players)
+//    - 4 (X-Ray Attacks: 1 * 4 players)
+//    - 4 (Standard Attacks: 1 * 4 players)
+constexpr int NN_INPUT_PLANES = 28; 
+constexpr int NN_INPUT_PLANES_SIZE = NN_INPUT_PLANES * BOARD_AREA;
+
+// 2. Scalar Input: 34 global features total
+//    - 4(Material) + 4(PawnCount) + 4(ConnectedPawns) + 4(AvgDist) + 4(SafeSquares)
+//    - 4(ActiveStatus) + 4(Points) + 1(50MoveClock) + 4(InCheck) + 1(OpponentCount)
+constexpr int NN_INPUT_SCALARS = 34;
 
 // Output: Policy (Move probabilities) and Value (Win probabilities)
 constexpr int NN_POLICY_SIZE = 4096; // 64 from_sq * 64 to_sq
-constexpr int NN_VALUE_SIZE = 4;     // One value per player
+constexpr int NN_VALUE_SIZE = 4;     // One value per player (Relative order)
 
 using Bitboard = uint64_t;
 
@@ -215,7 +226,8 @@ using RequestId = uint64_t;
  */
 struct EvaluationRequest {
     RequestId request_id;
-    std::vector<float> state_floats; // Size: NN_INPUT_SIZE (34 * 8 * 8 = 2176)
+    std::vector<float> input_planes;  // Size: 28 * 8 * 8
+    std::vector<float> input_scalars; // Size: 34
 };
 
 /**
@@ -233,17 +245,14 @@ constexpr int MAX_STORED_MOVES = 64;
 // Ensure byte alignment is 1 (Compact binary storage)
 #pragma pack(push, 1)
 
-// A compact representation of a training sample
+/**
+ * @brief A compact representation of a training sample.
+ */
 struct PackedSample {
-    // --- Board State (Bitboards & Scalars) ---
-    // 20 Piece Bitboards (4 players * 5 types)
-    uint64_t piece_bitboards[4][5]; 
-    
-    // 4 Attack Bitboards
-    uint64_t attack_bitboards[4];
-
-    // 4 X-Ray Attack Bitboards
-    uint64_t xray_attack_bitboards[4];
+    // --- Board State (Bitboards) ---
+    uint64_t piece_bitboards[4][5];    // 20 Piece Bitboards (4 players * 5 types)
+    uint64_t attack_bitboards[4];      // 4 Attack Bitboards
+    uint64_t xray_attack_bitboards[4]; // 4 X-Ray Attack Bitboards
 
     // --- Hand-crafted Supplemental Features ---
     float material_score[4];

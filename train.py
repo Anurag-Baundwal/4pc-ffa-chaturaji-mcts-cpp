@@ -10,7 +10,8 @@ import numpy as np
 # Import model definitions
 from model import (
     ChaturajiNN, export_to_onnx,
-    NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_AREA,
+    NUM_INPUT_PLANES, NUM_INPUT_SCALARS,
+    BOARD_DIM, BOARD_AREA,
     POLICY_OUTPUT_SIZE, VALUE_OUTPUT_SIZE
 )
 
@@ -52,22 +53,27 @@ def unpack_batch_to_tensors(raw_batch):
     """
     Decompresses a batch of PackedSamples into PyTorch tensors.
     
-    Channel Map (Total 62):
+    Channel Map (28 Planes and 34 Scalars):
+    
+    Planes (28 x 8x8):
     0-19:  Piece Bitboards (5 types * 4 players)
-    20-23: Material Score (Scalar)
-    24-27: Pawn Count (Scalar)
-    28-31: Connected Pawns Flag (Scalar)
-    32-35: Avg Pawn Distance to King (Scalar)
-    36-39: King Safe Moves (Scalar)
-    40-43: X-Ray Attack Bitboards
-    44-47: Active Status
-    48-51: Points
-    52:    50-Move Clock
-    53-56: Standard Attack Bitboards
-    57-60: In-Check Flags
-    61:    Active Opponent Count (Scalar)
+    20-23: X-Ray Attack Bitboards
+    24-27: Standard Attack Bitboards
+    
+    Scalars (34):
+    0-3:   Material Score
+    4-7:   Pawn Count
+    8-11:  Connected Pawns
+    12-15: Avg Pawn Distance
+    16-19: King Safe Moves
+    20-23: Active Status
+    24-27: Points
+    28:    50-Move Clock
+    29-32: In-Check Flags
+    33:    Active Opponent Count
     """
     batch_size = len(raw_batch)
+    cp_raw = raw_batch['current_player']
     
     # --- 1. Expand Policy (Sparse -> Dense) ---
     policy_target = torch.zeros((batch_size, POLICY_OUTPUT_SIZE), dtype=torch.float32)
@@ -93,7 +99,6 @@ def unpack_batch_to_tensors(raw_batch):
     # The Network expects Relative values [Current, Next, Partner, Prev].
     
     abs_values = raw_batch['values']       # Shape (Batch, 4)
-    cp_raw = raw_batch['current_player']   # Shape (Batch,)
 
     # Create indices: [[cp, cp+1, cp+2, cp+3], ...] % 4
     rel_indices = (cp_raw[:, None] + np.arange(4)) % 4
@@ -102,116 +107,44 @@ def unpack_batch_to_tensors(raw_batch):
     rel_values = np.take_along_axis(abs_values, rel_indices, axis=1)
     value_target = torch.from_numpy(rel_values)
 
-    # --- 3. Expand Input State ---
-    # Shape: [Batch, 62, 64]
-    states_flat = torch.zeros((batch_size, NUM_INPUT_CHANNELS, BOARD_AREA), dtype=torch.float32)
+    # --- 3. Construct PLANES (Batch, 28, 64) ---
+    # We construct flattened planes first, then reshape.
+    planes_flat = torch.zeros((batch_size, NUM_INPUT_PLANES, 64), dtype=torch.float32)
     
     # Helper: Bitboard (Batch, N) -> Tensor (Batch, N, 64)
     def bbs_to_planes(bbs):
         view = bbs.view(np.uint8)
+        # unpackbits returns bits in big-endian bit order for 'uint8' unless specified.
+        # But we filled bits in C++ LSB to MSB.
         bits = np.unpackbits(view, axis=-1, bitorder='little')
-        t = torch.from_numpy(bits.astype(np.float32))
-        return t.view(*bbs.shape, 64)
+        return torch.from_numpy(bits.astype(np.float32)).view(*bbs.shape, 64)
 
-    # -- 3a. Piece Planes (Channels 0-19) --
+    cur_plane = 0
+    
+    # 3a. Pieces (0-19)
     piece_bbs = raw_batch['piece_bbs']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
         p_bbs = piece_bbs[np.arange(batch_size), abs_p, :] 
-        planes = bbs_to_planes(p_bbs) # [Batch, 5, 64]
-        states_flat[:, rel_i*5 : (rel_i+1)*5, :] = planes
+        planes_flat[:, cur_plane : cur_plane+5, :] = bbs_to_planes(p_bbs)
+        cur_plane += 5
 
-    # -- 3b. New Hand-Crafted Heuristics (Channels 20-43) --
-    
-    # Material (20-23)
-    material = raw_batch['material']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        val = material[np.arange(batch_size), abs_p]
-        states_flat[:, 20 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
-
-    # Pawn Count (24-27)
-    pawn_cnt = raw_batch['pawn_count']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        val = pawn_cnt[np.arange(batch_size), abs_p]
-        states_flat[:, 24 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
-
-    # Connected Pawns Flag (28-31)
-    pawns_conn = raw_batch['pawns_conn']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        val = pawns_conn[np.arange(batch_size), abs_p]
-        states_flat[:, 28 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
-
-    # Avg Pawn Distance (32-35)
-    avg_dist = raw_batch['avg_pawn_dist']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        val = avg_dist[np.arange(batch_size), abs_p]
-        states_flat[:, 32 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
-
-    # King Safe Moves (36-39)
-    king_safe = raw_batch['king_safe']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        val = king_safe[np.arange(batch_size), abs_p]
-        states_flat[:, 36 + rel_i, :] = torch.from_numpy(val[:, None].astype(np.float32))
-
-    # X-Ray Attacks (40-43)
+    # 3b. X-Ray Attacks (20-23)
     xray_bbs = raw_batch['xray_attack_bbs']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        states_flat[:, 40 + rel_i, :] = bbs_to_planes(xray_bbs[np.arange(batch_size), abs_p])
+        planes_flat[:, cur_plane, :] = bbs_to_planes(xray_bbs[np.arange(batch_size), abs_p])
+        cur_plane += 1
 
-    # -- 3c. Original Metadata (Channels 44-60) --
-
-    # Active Status (44-47)
-    active_mask = raw_batch['active_mask']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        is_active = (active_mask >> abs_p) & 1
-        states_flat[:, 44 + rel_i, :] = torch.from_numpy(is_active[:, None].astype(np.float32))
-
-    # Points (48-51)
-    points = raw_batch['points']
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        p_pts = points[np.arange(batch_size), abs_p] / 50.0
-        states_flat[:, 48 + rel_i, :] = torch.from_numpy(p_pts[:, None].astype(np.float32))
-
-    # 50-Move Rule (52)
-    moves_since = raw_batch['full_move'] - raw_batch['last_reset']
-    clock_val = np.clip(moves_since / 50.0, 0.0, 1.0)
-    states_flat[:, 52, :] = torch.from_numpy(clock_val[:, None].astype(np.float32))
-
-    # Standard Attack Planes (53-56)
+    # 3c. Standard Attacks (24-27)
     att_bbs = raw_batch['attack_bbs']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        states_flat[:, 53 + rel_i, :] = bbs_to_planes(att_bbs[np.arange(batch_size), abs_p])
+        planes_flat[:, cur_plane, :] = bbs_to_planes(att_bbs[np.arange(batch_size), abs_p])
+        cur_plane += 1
 
-    # In-Check Planes (57-60)
-    for rel_i in range(4):
-        abs_p = (cp_raw + rel_i) % 4
-        king_bb = piece_bbs[np.arange(batch_size), abs_p, 4] 
-        stressors = np.zeros(batch_size, dtype=np.uint64)
-        for opp in range(4):
-            # Combined attacks of all enemies
-            is_enemy = (opp != abs_p)
-            stressors |= np.where(is_enemy, att_bbs[:, opp], 0)
-        in_check = (king_bb & stressors) != 0
-        states_flat[:, 57 + rel_i, :] = torch.from_numpy(in_check[:, None].astype(np.float32))
-
-    # Active Opponent Count (61)
-    # Count bits in active_mask using vectorized popcount
-    total_active = np.array([bin(m).count('1') for m in active_mask])
-    opp_count_val = (total_active - 1) / 3.0
-    states_flat[:, 61, :] = torch.from_numpy(opp_count_val[:, None].astype(np.float32))
-    
-    # --- 4. Spatial Rotation ---
-    # Reshape to [Batch, 62, 8, 8]
-    states = states_flat.view(batch_size, NUM_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM)
+    # Reshape and Rotate Planes
+    planes = planes_flat.view(batch_size, NUM_INPUT_PLANES, BOARD_DIM, BOARD_DIM)
     
     # Rotate based on Current Player to enforce relative perspective
     # Red (0): 0 deg, Blue (1): 90 CCW, Yellow (2): 180, Green (3): 270 CCW
@@ -221,10 +154,65 @@ def unpack_batch_to_tensors(raw_batch):
         # Find indices in batch where rotation k is needed
         idx = (cp_torch == k).nonzero(as_tuple=True)[0]
         if len(idx) > 0:
-            states[idx] = torch.rot90(states[idx], k=k, dims=[-2, -1])
+            planes[idx] = torch.rot90(planes[idx], k=k, dims=[-2, -1])
 
-    # Return the mask as the 4th value
-    return states, policy_target, value_target, legal_actions_mask
+    # --- 4. Construct SCALARS (Batch, 34) ---
+    scalars = torch.zeros((batch_size, NUM_INPUT_SCALARS), dtype=torch.float32)
+    cur_scalar = 0
+
+    # 4a. Heuristics [Material, PawnCnt, Conn, Dist, Safe] (0-19)
+    # The order MUST match utils.cpp C++ logic!
+    heuristic_keys = ['material', 'pawn_count', 'pawns_conn', 'avg_pawn_dist', 'king_safe']
+    
+    for key in heuristic_keys:
+        data = raw_batch[key]
+        for rel_i in range(4):
+            abs_p = (cp_raw + rel_i) % 4
+            scalars[:, cur_scalar] = torch.from_numpy(data[np.arange(batch_size), abs_p])
+            cur_scalar += 1
+
+    # 4b. Active Status (20-23)
+    active_mask = raw_batch['active_mask']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        is_active = (active_mask >> abs_p) & 1
+        scalars[:, cur_scalar] = torch.from_numpy(is_active.astype(np.float32))
+        cur_scalar += 1
+
+    # 4c. Points (24-27)
+    points = raw_batch['points']
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        scalars[:, cur_scalar] = torch.from_numpy(points[np.arange(batch_size), abs_p] / 50.0)
+        cur_scalar += 1
+
+    # 4d. 50-Move Clock (28)
+    moves_since = raw_batch['full_move'] - raw_batch['last_reset']
+    clock_val = np.clip(moves_since / 50.0, 0.0, 1.0)
+    scalars[:, cur_scalar] = torch.from_numpy(clock_val.astype(np.float32))
+    cur_scalar += 1
+
+    # 4e. In-Check Flags (29-32)
+    for rel_i in range(4):
+        abs_p = (cp_raw + rel_i) % 4
+        # Need King Bitboard (Type index 4)
+        king_bb = piece_bbs[np.arange(batch_size), abs_p, 4] 
+        stressors = np.zeros(batch_size, dtype=np.uint64)
+        for opp in range(4):
+            # Combined attacks of all enemies
+            is_enemy = (opp != abs_p)
+            stressors |= np.where(is_enemy, att_bbs[:, opp], 0)
+        in_check = (king_bb & stressors) != 0
+        scalars[:, cur_scalar] = torch.from_numpy(in_check.astype(np.float32))
+        cur_scalar += 1
+
+    # 4f. Active Opponent Count (33)
+    total_active = np.array([bin(m).count('1') for m in active_mask])
+    opp_count_val = (total_active - 1) / 3.0
+    scalars[:, cur_scalar] = torch.from_numpy(opp_count_val.astype(np.float32))
+    
+    # Return 5 items
+    return planes, scalars, policy_target, value_target, legal_actions_mask
 
 class ReplayBuffer:
     def __init__(self, data_dir, max_size):
@@ -385,14 +373,16 @@ def train_loop(args):
         batch = buffer.sample_batch(args.batch_size)
         if batch is None: break
         
-        # Unpack the mask as well
-        s, tp, tv, mask = batch
-        s, tp, tv, mask = s.to(device), tp.to(device), tv.to(device), mask.to(device)
+        # Unpack
+        s_planes, s_scalars, tp, tv, mask = batch
+        s_planes = s_planes.to(device)
+        s_scalars = s_scalars.to(device)
+        tp, tv, mask = tp.to(device), tv.to(device), mask.to(device)
         
         optimizer.zero_grad()
         
         with torch.amp.autocast('cuda', enabled=use_amp):
-            p, v = model(s)
+            p, v = model(s_planes, s_scalars)
 
             # AlphaZero Loss:
             # 1. Policy: Cross Entropy (maximize log prob of target)

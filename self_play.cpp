@@ -66,7 +66,7 @@ void SelfPlay::process_worker_batch(
            continue;
       }
       EvaluationRequest req;
-      board_to_floats_into(leaf_node->get_board(), req.state_floats);
+      board_to_tensors(leaf_node->get_board(), req.input_planes, req.input_scalars);
       futures.push_back(evaluator_->submit_request(std::move(req)));
       pending_batch[i].pending_request_id = req.request_id; 
   }

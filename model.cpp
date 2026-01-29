@@ -83,29 +83,40 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
 
     size_t batch_size = requests.size();
     
-    // 1. Flatten all requests into one contiguous buffer
-    std::vector<float> input_tensor_values(batch_size * NN_INPUT_SIZE);
+    // 1. Flatten requests into contiguous buffers
+    std::vector<float> planes_buffer(batch_size * NN_INPUT_PLANES_SIZE);
+    std::vector<float> scalars_buffer(batch_size * NN_INPUT_SCALARS);
     
     for (size_t i = 0; i < batch_size; ++i) {
-        if (requests[i].state_floats.size() != NN_INPUT_SIZE) {
-             throw std::runtime_error("Input state float size mismatch in Model::evaluate_batch");
-        }
-        std::copy(requests[i].state_floats.begin(), requests[i].state_floats.end(), 
-                  input_tensor_values.begin() + (i * NN_INPUT_SIZE));
+        // Copy Planes
+        std::copy(requests[i].input_planes.begin(), requests[i].input_planes.end(), 
+                  planes_buffer.begin() + (i * NN_INPUT_PLANES_SIZE));
+        
+        // Copy Scalars
+        std::copy(requests[i].input_scalars.begin(), requests[i].input_scalars.end(),
+                  scalars_buffer.begin() + (i * NN_INPUT_SCALARS));
     }
 
-    // 2. Wrap buffer in ORT Tensor
-    // Shape: [Batch, 37, 8, 8]
-    std::array<int64_t, 4> input_shape = { (int64_t)batch_size, NN_INPUT_CHANNELS, BOARD_DIM, BOARD_DIM };
+    // 2. Create ORT Tensors
+    std::array<int64_t, 4> planes_shape = { (int64_t)batch_size, NN_INPUT_PLANES, BOARD_DIM, BOARD_DIM };
+    std::array<int64_t, 2> scalars_shape = { (int64_t)batch_size, NN_INPUT_SCALARS };
     
-    Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-        memory_info_, input_tensor_values.data(), input_tensor_values.size(), 
-        input_shape.data(), input_shape.size());
+    Ort::Value planes_tensor = Ort::Value::CreateTensor<float>(
+        memory_info_, planes_buffer.data(), planes_buffer.size(), 
+        planes_shape.data(), planes_shape.size());
 
-    // 3. Run Inference
+    Ort::Value scalars_tensor = Ort::Value::CreateTensor<float>(
+        memory_info_, scalars_buffer.data(), scalars_buffer.size(), 
+        scalars_shape.data(), scalars_shape.size());
+
+    // 3. Run Inference (with 2 inputs)
+    std::vector<Ort::Value> input_tensors;
+    input_tensors.push_back(std::move(planes_tensor));
+    input_tensors.push_back(std::move(scalars_tensor));
+
     auto output_tensors = session_.Run(
         Ort::RunOptions{nullptr}, 
-        &input_name_, &input_tensor, 1, 
+        input_names_.data(), input_tensors.data(), 2, 
         output_names_.data(), output_names_.size());
 
     // 4. Extract Results
