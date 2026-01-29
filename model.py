@@ -30,15 +30,15 @@ VALUE_OUTPUT_SIZE = 4
 # Network Architecture
 NUM_RES_BLOCKS = 8
 NUM_CHANNELS = 64
-SE_REDUCTION = 4 # Squeeze ratio for SE blocks
+SE_REDUCTION = 2 # Squeeze ratio for SE blocks
 
 # Policy Head Configuration
 POLICY_HEAD_CONV_CHANNELS = 32 
 # We use an intermediate mixing layer to allow scalars to modulate spatial features
-POLICY_MIXING_DIM = 2048 
+POLICY_MIXING_DIM = 2560 
 
 # Value Head Configuration
-VALUE_HEAD_CONV_CHANNELS = 24
+VALUE_HEAD_CONV_CHANNELS = 32
 VALUE_FC_HIDDEN_CHANNELS = 384
 VALUE_FC_MID_CHANNELS = 256
 NUM_VALUE_OUTPUTS = 4
@@ -107,7 +107,7 @@ class ChaturajiNN(nn.Module):
     - Input 1 (Spatial): [Batch, 28, 8, 8] -> Processed by ResNet Backbone
     - Input 2 (Scalars): [Batch, 34]       -> Injected into SE Blocks and Heads
     
-    - Global Encoder: Linear projects 34 scalars to 64 context features.
+    - Global Encoder: Linear projects 34 scalars to 64 context features (2 layer MLP).
     
     - Trunk: Conv + BatchNorm + SiLU -> 8 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
@@ -115,13 +115,13 @@ class ChaturajiNN(nn.Module):
     - Policy Head: 
       1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
       2. Concatenate Scalars (Size 2048 + 34 = 2082)
-      3. Mixing Layer: Linear(2082 -> 2048) -> SiLU
+      3. Mixing Layer: Linear(2082 -> 2560) -> SiLU (Size 2560)
       4. Linear -> Logits(4096)
       
     - Value Head: 
-      1. Spatial Features -> Conv(24) -> BN -> SiLU -> Flatten (Size 1536)
-      2. Concatenate Scalars (Size 1536 + 34 = 1570)
-      3. Linear(1570 -> 384) -> SiLU -> Linear(256) -> SiLU -> Linear(4) -> Tanh
+      1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
+      2. Concatenate Scalars (Size 2048 + 34 = 2082)
+      3. Linear(2082 -> 384) -> SiLU -> Linear(256) -> SiLU -> Linear(4) -> Tanh
     """
     def __init__(self):
         super().__init__()
@@ -130,6 +130,8 @@ class ChaturajiNN(nn.Module):
         # Projects scalars into an embedding space used by SE blocks in the backbone
         self.global_encoder = nn.Sequential(
             nn.Linear(NUM_INPUT_SCALARS, NUM_CHANNELS),
+            nn.SiLU(),
+            nn.Linear(NUM_CHANNELS, NUM_CHANNELS),
             nn.SiLU()
         )
 
@@ -160,10 +162,10 @@ class ChaturajiNN(nn.Module):
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
         
         # Calculate sizes
-        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_AREA # 24 * 64 = 1536
+        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_AREA # 32 * 64 = 2048
         self.value_combined_size = self.value_spatial_flat_size + NUM_INPUT_SCALARS
         
-        # Value head already has depth, so we inject into the first FC layer
+        # Value MLP
         self.value_fc1 = nn.Linear(self.value_combined_size, VALUE_FC_HIDDEN_CHANNELS)
         self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_MID_CHANNELS)
         self.value_fc2 = nn.Linear(VALUE_FC_MID_CHANNELS, VALUE_OUTPUT_SIZE)
