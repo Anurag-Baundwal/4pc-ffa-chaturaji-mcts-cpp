@@ -21,7 +21,8 @@ SelfPlay::SelfPlay(
     double c_puct,
     int temperature_decay_move,
     double dirichlet_alpha,
-    double dirichlet_epsilon
+    double dirichlet_epsilon,
+    double pessimism_factor
 ) :
     network_handle_(network), 
     num_workers_(num_workers),
@@ -31,6 +32,7 @@ SelfPlay::SelfPlay(
     temperature_decay_move_(temperature_decay_move),
     dirichlet_alpha_(dirichlet_alpha),
     dirichlet_epsilon_(dirichlet_epsilon),
+    pessimism_factor_(pessimism_factor),
     rng_(std::random_device{}()) 
 {
     if (!network) { 
@@ -104,7 +106,13 @@ void SelfPlay::process_worker_batch(
               int abs_p_idx = (cp_idx + rel_i) % 4;
               player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
           }
-
+          if (pessimism_factor_ != 1.0) {
+              for (int i = 0; i < 4; ++i) {
+                  if (player_values_absolute[i] < 0.0) {
+                      player_values_absolute[i] *= pessimism_factor_;
+                  }
+              }
+          }
           backpropagate_mcts_value(path, player_values_absolute); 
 
       } catch (const std::future_error& e) {
@@ -252,6 +260,13 @@ void SelfPlay::run_game_simulation(
               if (leaf_node->get_board().is_game_over()) {
                   PlayerPointMap final_scores = leaf_node->get_board().get_game_result();
                   std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
+                  if (pessimism_factor_ != 1.0) {
+                      for (int i = 0; i < 4; ++i) {
+                          if (terminal_player_values[i] < 0.0) {
+                              terminal_player_values[i] *= pessimism_factor_;
+                          }
+                      }
+                  }
                   backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
               } else {
                   leaf_node->increment_pending_visits();
