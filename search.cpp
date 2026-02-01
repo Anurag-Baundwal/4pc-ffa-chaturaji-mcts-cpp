@@ -83,20 +83,9 @@ void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::arr
     }
 }
 
-// --- Helper for Pessimism ---
-void apply_pessimism(std::array<double, 4>& values, double factor) {
-    if (factor == 1.0) return; // Optimization for default case
-    for (int i = 0; i < 4; ++i) {
-        if (values[i] < 0.0) {
-            values[i] *= factor;
-        }
-    }
-}
-
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
-  Model* network,
-  double pessimism_factor)
+  Model* network)
 {
   if (pending_eval.empty()) return;
 
@@ -145,9 +134,6 @@ void evaluate_and_expand_batch_sync(
           player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
       }
 
-      // --- APPLY PESSIMISM TO NN OUTPUT ---
-      apply_pessimism(player_values_absolute, pessimism_factor);
-
       backpropagate_mcts_value(path, player_values_absolute);
   }
   pending_eval.clear();
@@ -158,8 +144,7 @@ void run_mcts_simulations_sync(
   Model* network,
   int simulations,
   double c_puct,
-  int batch_size,
-  double pessimism_factor)
+  int batch_size)
 {
   if (simulations == 0 && root.is_leaf() && !root.get_board().is_game_over()) {
       std::vector<SimulationState> initial_eval;
@@ -167,7 +152,7 @@ void run_mcts_simulations_sync(
       root_state.current_node = &root;
       root_state.path.push_back(&root);
       initial_eval.push_back(std::move(root_state));
-      evaluate_and_expand_batch_sync(initial_eval, network, pessimism_factor);
+      evaluate_and_expand_batch_sync(initial_eval, network);
       return; 
   }
 
@@ -187,9 +172,6 @@ void run_mcts_simulations_sync(
                     MCTSNode* terminal_leaf = current_sim.current_node; 
                     std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
                     std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-                    
-                    // --- APPLY PESSIMISM TO TERMINAL STATE ---
-                    apply_pessimism(terminal_player_values, pessimism_factor);
 
                     backpropagate_mcts_value(current_sim.path, terminal_player_values);
                  } else {
@@ -207,19 +189,16 @@ void run_mcts_simulations_sync(
           std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();         
           std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
           
-          // --- APPLY PESSIMISM TO TERMINAL STATE ---
-          apply_pessimism(terminal_player_values, pessimism_factor);
-          
           backpropagate_mcts_value(current_sim.path, terminal_player_values);
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
           if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
-              evaluate_and_expand_batch_sync(pending_evaluation, network, pessimism_factor);
+              evaluate_and_expand_batch_sync(pending_evaluation, network);
           }
       }
       next_simulation_sync:; 
   } 
-  evaluate_and_expand_batch_sync(pending_evaluation, network, pessimism_factor);
+  evaluate_and_expand_batch_sync(pending_evaluation, network);
 }
 
 
@@ -230,8 +209,7 @@ std::optional<Move> get_best_move_mcts_sync(
     std::shared_ptr<MCTSNode>& current_mcts_root_shptr,
     double c_puct,
     int mcts_batch_size,
-    bool verbose,
-    double pessimism_factor) 
+    bool verbose) 
 {
     if (board.is_game_over()) {
       current_mcts_root_shptr = nullptr;
@@ -245,11 +223,11 @@ std::optional<Move> get_best_move_mcts_sync(
     }
     
     // Run MCTS
-    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size, pessimism_factor); 
+    run_mcts_simulations_sync(*current_mcts_root_shptr, network, simulations, c_puct, mcts_batch_size); 
 
     // --- VERBOSE OUTPUT ---
     if (verbose) {
-        std::cout << "--- Search Statistics (Pessimism: " << pessimism_factor << "x) ---" << std::endl;
+        std::cout << "--- Search Statistics ---" << std::endl;
         int root_visits = current_mcts_root_shptr->get_visit_count();
         auto root_values = current_mcts_root_shptr->get_total_player_values();
 
@@ -404,7 +382,6 @@ std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_point
     std::array<double, 4> result_rewards; 
     
     // Base rewards: 1st=+1, 2nd=+0.33, 3rd=-0.33, 4th=-1
-    // Note: Pessimism is applied inside run_mcts_simulations_sync, not here
     const double rank_rewards[] = {+1.0, +0.333, -0.333, -1.0};
 
     size_t i = 0;

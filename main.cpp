@@ -61,14 +61,6 @@ int main(int argc, char* argv[]) {
             mcts_batch_size = std::stoi(batch_str);
         }
 
-        double pessimism_factor = 1.0;
-        std::string pess_str = get_cmd_option(argv, argv + argc, "--pessimism");
-        if (!pess_str.empty()) pessimism_factor = std::stod(pess_str);
-
-        if(pessimism_factor != 1.0) {
-            std::cout << "info string Pessimism Factor set to: " << pessimism_factor << std::endl;
-        }
-
         std::unique_ptr<chaturaji_cpp::Model> network;
         try {
             if (fs::exists(model_path)) {
@@ -138,8 +130,7 @@ int main(int argc, char* argv[]) {
 
                 // Run Search
                 auto best_move_opt = chaturaji_cpp::get_best_move_mcts_sync(
-                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true, 
-                    pessimism_factor // <--- Added
+                    board, network.get(), sims, mcts_root, 2.5, mcts_batch_size, true
                 );
 
                 if (best_move_opt) {
