@@ -45,6 +45,7 @@ void train(
   int temp_decay_move,
   double dirichlet_alpha,
   double dirichlet_epsilon,
+  double risk_alpha,
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
@@ -137,7 +138,8 @@ void train(
               2.5,  // c_puct
               temp_decay_move,
               dirichlet_alpha,
-              dirichlet_epsilon
+              dirichlet_epsilon,
+              risk_alpha
           );
           
           std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;

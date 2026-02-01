@@ -32,6 +32,7 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
     next_sibling_(nullptr),  
     visit_count_(0),
     total_player_values_({0.0, 0.0, 0.0, 0.0}),
+    total_sq_values_({0.0, 0.0, 0.0, 0.0}), 
     prior_(prior),
     pending_visits_(0) 
 {}
@@ -104,7 +105,7 @@ const std::optional<Move>& MCTSNode::get_move() const { return move_; }
 
 // --- MCTS Operations ---
 
-MCTSNode* MCTSNode::select_child(double c_puct) const {
+MCTSNode* MCTSNode::select_child(double c_puct, double risk_alpha) const {
     if (is_leaf()) return nullptr; 
 
     MCTSNode* best_child = nullptr;
@@ -112,7 +113,7 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 
     MCTSNode* child = first_child_;
     while (child) {
-        double score = calculate_uct_score(child, c_puct);
+        double score = calculate_uct_score(child, c_puct, risk_alpha);
         if (score > best_score) {
             best_score = score;
             best_child = child;
@@ -152,7 +153,9 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
 void MCTSNode::update_stats(const std::array<double, 4>& values_for_players) { 
     visit_count_++;
     for (size_t i = 0; i < 4; ++i) {
-        total_player_values_[i] += values_for_players[i];
+        double val = values_for_players[i];
+        total_player_values_[i] += val;
+        total_sq_values_[i] += (val * val);
     }
 }
 
@@ -231,28 +234,65 @@ const std::array<double, 4>& MCTSNode::get_total_player_values() const { return 
 double MCTSNode::get_prior() const { return prior_; }
 int MCTSNode::get_pending_visits() const { return pending_visits_; }
 
-double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
+double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct, double risk_alpha) const {
     const double epsilon = 1e-8; 
     const double cpuct_base = 6144.0;
     
-    double parent_visits = static_cast<double>(this->visit_count_) + static_cast<double>(this->pending_visits_);
-    double child_visits = static_cast<double>(child->visit_count_) + static_cast<double>(child->pending_visits_);
+    // 1. Setup Visits
+    // Real visits (for stats)
+    double real_child_visits = static_cast<double>(child->visit_count_);
+    
+    // Effective visits (for UCT flow control)
+    double parent_visits_total = static_cast<double>(this->visit_count_) + static_cast<double>(this->pending_visits_);
+    double child_visits_total = real_child_visits + static_cast<double>(child->pending_visits_);
 
-    double pb_c = std::log((parent_visits + cpuct_base + 1.0) / cpuct_base) + c_puct;
+    // 2. Calculate PUCT Term (U)
+    double pb_c = std::log((parent_visits_total + cpuct_base + 1.0) / cpuct_base) + c_puct;
+    double u_value = pb_c * child->prior_ * std::sqrt(parent_visits_total + epsilon) / (1.0 + child_visits_total);
 
+    // 3. Calculate Q Value (Mean) - INCLUDES Virtual Loss
+    // This is necessary to prevent threads from swarming this node while it's being evaluated.
     Player parent_player_enum = this->board_state_.get_current_player();
-    int parent_player_idx = static_cast<int>(parent_player_enum);
+    int p_idx = static_cast<int>(parent_player_enum);
 
-    double child_total_value_for_parent = child->total_player_values_[parent_player_idx];
-    double effective_value = child_total_value_for_parent - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
+    double child_total_value = child->total_player_values_[p_idx];
+    
+    // Apply Virtual Loss to the SUM, not the average.
+    // Logic: subtract 1.0 (or VIRTUAL_LOSS_VALUE) for every pending visit.
+    double effective_value_sum = child_total_value - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
 
     double q_value = 0.0;
-    if (child_visits > epsilon) { 
-       q_value = effective_value / child_visits;
+    if (child_visits_total > epsilon) { 
+       q_value = effective_value_sum / child_visits_total;
     }
 
-    double u_value = pb_c * child->prior_ * std::sqrt(parent_visits + epsilon) / (1.0 + child_visits);
-    return q_value + u_value;
+    // 4. Calculate Risk Penalty - EXCLUDES Virtual Loss
+    // We only want to penalize based on REAL statistical data.
+    double risk_penalty = 0.0;
+
+    // Only calculate risk if enabled AND we have actual data points
+    if (risk_alpha > 0.0 && real_child_visits > 0.0) {
+        // A. Calculate Real Mean (E[x])
+        double real_mean = child_total_value / real_child_visits;
+
+        // B. Calculate Real Mean of Squares (E[x^2])
+        double sum_sq = child->total_sq_values_[p_idx];
+        double real_mean_sq = sum_sq / real_child_visits;
+
+        // C. Calculate Variance: E[x^2] - (E[x])^2
+        // Use max(0, ...) to handle tiny floating point errors yielding -0.000001
+        double variance = std::max(0.0, real_mean_sq - (real_mean * real_mean));
+        double std_dev = std::sqrt(variance);
+
+        // D. Calculate Dynamic Beta
+        double beta = std::sqrt((real_mean + 1.0) * 0.5);
+
+        // E. Final Penalty
+        risk_penalty = risk_alpha * beta * std_dev;
+    }
+
+    // Final UCT Formula: Q + U - Penalty
+    return q_value + u_value - risk_penalty;
 }
 
 } // namespace chaturaji_cpp

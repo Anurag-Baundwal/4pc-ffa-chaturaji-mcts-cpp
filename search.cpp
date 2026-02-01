@@ -166,7 +166,7 @@ void run_mcts_simulations_sync(
 
       // Traversal using select_child
       while (!current_sim.current_node->is_leaf()) {
-           MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
+          MCTSNode* next_node = current_sim.current_node->select_child(c_puct, 0.0);
           if (next_node == nullptr || next_node == current_sim.current_node) {
                  if (current_sim.current_node->get_board().is_game_over()){
                     MCTSNode* terminal_leaf = current_sim.current_node; 

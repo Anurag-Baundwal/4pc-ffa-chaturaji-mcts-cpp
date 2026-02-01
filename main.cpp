@@ -177,6 +177,7 @@ int main(int argc, char* argv[]) {
         int temp_decay_move = 20;
         double d_alpha = 0.4;
         double d_epsilon = 0.25;
+        double risk_alpha = 0.0; // Default 0 (disabled)
         std::string save_dir = "models";
         std::string load_path = "";
 
@@ -246,6 +247,7 @@ int main(int argc, char* argv[]) {
                 temp_decay_move,
                 d_alpha,
                 d_epsilon,
+                risk_alpha,
                 save_dir,
                 load_path
             );

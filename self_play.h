@@ -36,7 +36,8 @@ public:
         double c_puct = 2.5,
         int temperature_decay_move = 4,
         double dirichlet_alpha = 0.3,
-        double dirichlet_epsilon = 0.25
+        double dirichlet_epsilon = 0.25,
+        double risk_alpha = 0.0
     );
 
     ~SelfPlay(); 
@@ -81,7 +82,8 @@ private:
     int worker_batch_size_; 
     double dirichlet_alpha_;
     double dirichlet_epsilon_;
-
+    double risk_alpha_;
+    
     std::mt19937 rng_; 
 
     std::unique_ptr<Evaluator> evaluator_; 

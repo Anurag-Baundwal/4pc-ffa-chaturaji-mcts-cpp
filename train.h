@@ -26,6 +26,7 @@ void train(
     int temp_decay_move = 20,
     double dirichlet_alpha = 0.4,
     double dirichlet_epsilon = 0.25,
+    double risk_alpha = 0.0,
     const std::string& model_save_dir = "/content/drive/MyDrive/models", 
     const std::string& initial_model_path = ""
 );

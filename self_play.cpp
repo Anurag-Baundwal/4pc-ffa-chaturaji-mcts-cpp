@@ -21,7 +21,8 @@ SelfPlay::SelfPlay(
     double c_puct,
     int temperature_decay_move,
     double dirichlet_alpha,
-    double dirichlet_epsilon
+    double dirichlet_epsilon,
+    double risk_alpha
 ) :
     network_handle_(network), 
     num_workers_(num_workers),
@@ -31,6 +32,7 @@ SelfPlay::SelfPlay(
     temperature_decay_move_(temperature_decay_move),
     dirichlet_alpha_(dirichlet_alpha),
     dirichlet_epsilon_(dirichlet_epsilon),
+    risk_alpha_(risk_alpha),
     rng_(std::random_device{}()) 
 {
     if (!network) { 
@@ -235,7 +237,7 @@ void SelfPlay::run_game_simulation(
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
-                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
+                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_, risk_alpha_);
                   if (next_node == nullptr || next_node == current_mcts_path.current_node) {
                        selection_failed = true; 
                        break; 
