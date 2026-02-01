@@ -4,6 +4,7 @@
 #include <iostream>
 #include <random>
 #include <vector>
+#include <cmath>
 
 namespace chaturaji_cpp {
 
@@ -271,7 +272,7 @@ double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct, doubl
     double risk_penalty = 0.0;
 
     // Only calculate risk if enabled AND we have actual data points
-    if (risk_alpha > 0.0 && real_child_visits > 0.0) {
+    if (std::abs(risk_alpha) > 1e-9 && real_child_visits > 0.0) {
         // A. Calculate Real Mean (E[x])
         double real_mean = child_total_value / real_child_visits;
 
