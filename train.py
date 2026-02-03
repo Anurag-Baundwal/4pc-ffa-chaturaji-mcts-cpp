@@ -165,11 +165,24 @@ def unpack_batch_to_tensors(raw_batch):
     heuristic_keys = ['material', 'pawn_count', 'pawns_conn', 'avg_pawn_dist', 'king_safe']
     
     for key in heuristic_keys:
-        data = raw_batch[key]
-        for rel_i in range(4):
-            abs_p = (cp_raw + rel_i) % 4
-            scalars[:, cur_scalar] = torch.from_numpy(data[np.arange(batch_size), abs_p])
-            cur_scalar += 1
+        data = raw_batch[key] # Shape (Batch, 4) absolute values
+        
+        if key == 'material':
+            # --- RELATIVE MATERIAL LOGIC ---
+            # 1. Get My Material (Batch,)
+            my_mat = data[np.arange(batch_size), cp_raw]
+            
+            for rel_i in range(4):
+                abs_p = (cp_raw + rel_i) % 4
+                # 2. Calculate Difference: My - Theirs
+                diff = my_mat - data[np.arange(batch_size), abs_p]
+                scalars[:, cur_scalar] = torch.from_numpy(diff)
+                cur_scalar += 1
+        else:
+            for rel_i in range(4):
+                abs_p = (cp_raw + rel_i) % 4
+                scalars[:, cur_scalar] = torch.from_numpy(data[np.arange(batch_size), abs_p])
+                cur_scalar += 1
 
     # 4b. Active Status (20-23)
     active_mask = raw_batch['active_mask']
@@ -180,10 +193,18 @@ def unpack_batch_to_tensors(raw_batch):
         cur_scalar += 1
 
     # 4c. Points (24-27)
-    points = raw_batch['points']
+    points = raw_batch['points'] # Shape (Batch, 4) absolute
+    
+    # --- RELATIVE POINTS LOGIC ---
+    # 1. Get My Points
+    my_points = points[np.arange(batch_size), cp_raw]
+    
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
-        scalars[:, cur_scalar] = torch.from_numpy(points[np.arange(batch_size), abs_p] / 50.0)
+        # 2. Calculate Difference: My - Theirs
+        # 3. Normalize by Divding by 20.0 (float division)
+        diff = (my_points - points[np.arange(batch_size), abs_p]) / 20.0
+        scalars[:, cur_scalar] = torch.from_numpy(diff.astype(np.float32))
         cur_scalar += 1
 
     # 4d. 50-Move Clock (28)

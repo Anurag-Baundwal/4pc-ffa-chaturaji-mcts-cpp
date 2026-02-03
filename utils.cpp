@@ -188,6 +188,24 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
     // ==========================================
     int current_scalar = 0;
 
+    // --- Pre-calculate Material for all 4 players to allow relative comparison ---
+    std::array<int, 4> mat_scores_abs;
+    for(int p = 0; p < 4; ++p) {
+        Player pl = static_cast<Player>(p);
+        int mat = 0;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::PAWN)) * 1;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KNIGHT)) * 3;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::BISHOP)) * 5;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::ROOK)) * 5;
+        mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KING)) * 3;
+        mat_scores_abs[p] = mat;
+    }
+    int my_mat = mat_scores_abs[cp_idx]; // Current player's material
+
+    // --- Pre-fetch Points for all 4 players ---
+    const auto& points_abs = board.get_player_points_array();
+    int my_points = points_abs[cp_idx]; // Current player's points
+
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p = static_cast<Player>(abs_p_idx);
@@ -196,14 +214,10 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
         Bitboard king = board.get_piece_bitboard(p, PieceType::KING);
         int pawn_cnt = magic_utils::pop_count(pawns);
 
-        // A. Material (4 scalars)
-        int mat = 0;
-        mat += pawn_cnt * 1;
-        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KNIGHT)) * 3;
-        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::BISHOP)) * 5;
-        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::ROOK)) * 5;
-        mat += magic_utils::pop_count(board.get_piece_bitboard(p, PieceType::KING)) * 3;
-        out_scalars[current_scalar + 0 + rel_i] = static_cast<float>(mat) / 50.0f;
+        // A. Material (4 scalars) -> RELATIVE (My - Theirs) / 20.0
+        // Index 0 will always be 0.
+        // Index 1 will be (My Material - Next Player's Material) / 20.0
+        out_scalars[current_scalar + 0 + rel_i] = static_cast<float>(my_mat - mat_scores_abs[abs_p_idx]) / 20.0f;
 
         // B. Pawn Count (4 scalars)
         out_scalars[current_scalar + 4 + rel_i] = static_cast<float>(pawn_cnt) / 4.0f;
@@ -249,11 +263,10 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
     }
     current_scalar += 4;
 
-    // G. Points (4 scalars)
-    const auto& points = board.get_player_points();
+    // G. Points (4 scalars) -> RELATIVE (My - Theirs) / 20.0
     for (int rel_i = 0; rel_i < 4; ++rel_i) {
         int abs_idx = (cp_idx + rel_i) % 4;
-        out_scalars[current_scalar + rel_i] = static_cast<float>(points[abs_idx]) / 50.0f;
+        out_scalars[current_scalar + rel_i] = static_cast<float>(my_points - points_abs[abs_idx]) / 20.0f;
     }
     current_scalar += 4;
 
@@ -337,7 +350,7 @@ PackedSample create_packed_sample(
         mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::BISHOP)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::ROOK)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KING)) * 3;
-        sample.material_score[p] = static_cast<float>(mat) / 50.0f;
+        sample.material_score[p] = static_cast<float>(mat) / 20.0f;
 
         // B. Pawn Count
         Bitboard pawns = board.get_piece_bitboard(pl, PieceType::PAWN);
