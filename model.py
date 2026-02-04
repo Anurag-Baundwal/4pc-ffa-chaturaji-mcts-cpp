@@ -28,7 +28,7 @@ POLICY_OUTPUT_SIZE = 4096
 VALUE_OUTPUT_SIZE = 4     
 
 # Network Architecture
-NUM_RES_BLOCKS = 8
+NUM_RES_BLOCKS = 4
 NUM_CHANNELS = 64
 SE_REDUCTION = 2 # Squeeze ratio for SE blocks
 
