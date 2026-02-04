@@ -978,9 +978,9 @@ std::optional<Piece> Board::make_move_for_mcts(const Move &move) {
     move_number_of_last_reset_ = full_move_number_;
     position_history_.clear();
   }
-  position_history_.push_back(current_hash_);
 
   advance_turn();
+  position_history_.push_back(current_hash_);
   is_game_over();
   return captured_piece_opt;
 }
