@@ -45,6 +45,7 @@ void train(
   int temp_decay_move,
   double dirichlet_alpha,
   double dirichlet_epsilon,
+  double risk_alpha,
   const std::string& model_save_dir_base,
   const std::string& initial_model_path)
 {
@@ -137,13 +138,26 @@ void train(
               2.5,  // c_puct
               temp_decay_move,
               dirichlet_alpha,
-              dirichlet_epsilon
+              dirichlet_epsilon,
+              risk_alpha
           );
           
           std::cout << "[C++] Generating " << num_games_per_iteration << " games..." << std::endl;
           auto start_gen = std::chrono::high_resolution_clock::now();
           
+          fs::path bandit_path = model_dir / "bandit_stats.txt";
+          // copy old bandit stats if they exist
+          if (!fs::exists(bandit_path) && !initial_model_path.empty()) {
+              fs::path old_bandit = fs::path(initial_model_path).parent_path() / "bandit_stats.txt";
+              if (fs::exists(old_bandit)) {
+                  fs::copy(old_bandit, bandit_path);
+              }
+          }
+          self_play_generator.load_bandit_stats(bandit_path.string());
+
           points_generated = self_play_generator.generate_data(num_games_per_iteration);
+
+          self_play_generator.save_bandit_stats(bandit_path.string());
 
           auto end_gen = std::chrono::high_resolution_clock::now();
           duration_sec = std::chrono::duration<double>(end_gen - start_gen).count();

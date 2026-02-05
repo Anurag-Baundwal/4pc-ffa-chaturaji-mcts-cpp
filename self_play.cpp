@@ -9,6 +9,10 @@
 #include <future>   
 #include <mutex>    
 #include <memory>
+#include <iomanip>
+#include <fstream>
+#include <filesystem>
+#include <system_error> 
 
 namespace chaturaji_cpp {
 
@@ -21,7 +25,8 @@ SelfPlay::SelfPlay(
     double c_puct,
     int temperature_decay_move,
     double dirichlet_alpha,
-    double dirichlet_epsilon
+    double dirichlet_epsilon,
+    double risk_alpha // Kept in signature for compatibility, but ignored by bandit logic
 ) :
     network_handle_(network), 
     num_workers_(num_workers),
@@ -36,6 +41,14 @@ SelfPlay::SelfPlay(
     if (!network) { 
         throw std::runtime_error("SelfPlay received a null network pointer.");
     }
+
+    // --- Initialize Bandit Arms (Candidate Alphas) ---
+    // We test a range from Risk-Neutral (0.0) to highly Risk-Averse (3.0)
+    std::vector<double> candidates = {-1.0, -0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 5.0};
+    for (double val : candidates) {
+        alpha_arms_.push_back(std::make_unique<AlphaArm>(val));
+    }
+
     evaluator_ = std::make_unique<Evaluator>(network, nn_batch_size);
     evaluator_->start();
 }
@@ -45,6 +58,67 @@ SelfPlay::~SelfPlay() {
         evaluator_->stop(); 
     }
 }
+
+// --- Bandit Implementation (UCB1) ---
+
+double SelfPlay::calculate_ucb_score(int arm_idx, int total_plays) const {
+    const AlphaArm& arm = *alpha_arms_[arm_idx];
+    int n = arm.selections.load(std::memory_order_relaxed);
+    
+    // If unexplored, return infinity to ensure it gets picked
+    if (n == 0) return 1e9; 
+
+    double r = arm.total_score.load(std::memory_order_relaxed);
+    double mean_reward = r / static_cast<double>(n);
+    
+    // Exploration parameter C = sqrt(2) approx 1.41
+    // higher = more exploration, lower = faster convergence
+    double exploration = 1.414 * std::sqrt(std::log(static_cast<double>(total_plays)) / static_cast<double>(n));
+
+    return mean_reward + exploration;
+}
+
+int SelfPlay::select_arm_index_ucb1() {
+    int total_plays = 0;
+    for (const auto& arm : alpha_arms_) {
+        total_plays += arm->selections.load(std::memory_order_relaxed);
+    }
+    
+    // Avoid log(0)
+    if (total_plays == 0) total_plays = 1;
+
+    int best_idx = -1;
+    double best_score = -1.0;
+
+    for (size_t i = 0; i < alpha_arms_.size(); ++i) {
+        double score = calculate_ucb_score(i, total_plays);
+        if (score > best_score) {
+            best_score = score;
+            best_idx = static_cast<int>(i);
+        }
+    }
+    return best_idx;
+}
+
+void SelfPlay::register_arm_selection(int arm_idx) {
+    if (arm_idx < 0 || arm_idx >= static_cast<int>(alpha_arms_.size())) return;
+    alpha_arms_[arm_idx]->selections.fetch_add(1);
+}
+
+void SelfPlay::update_arm_stats(int arm_idx, double reward) {
+    if (arm_idx < 0 || arm_idx >= static_cast<int>(alpha_arms_.size())) return;
+    
+    // Atomically update stats
+    // Note: We simply add the normalized reward [0,1]
+    auto& arm = *alpha_arms_[arm_idx];
+    
+    // Compare-and-Swap (CAS) loop to perform atomic addition on the double total_score.
+    double current_score = arm.total_score.load();
+    while (!arm.total_score.compare_exchange_weak(current_score, current_score + reward));
+    bandit_stats_updated_.store(true, std::memory_order_relaxed); // we have new data to save
+}
+
+// ------------------------------------
 
 void SelfPlay::process_worker_batch(
   std::vector<SimulationState>& pending_batch,
@@ -153,6 +227,54 @@ std::map<Move, double> SelfPlay::add_dirichlet_noise(
   return noisy_policy;
 }
 
+void SelfPlay::save_bandit_stats(const std::string& path) {
+    if (!bandit_stats_updated_ || path.empty()) return;
+
+    std::string temp_path = path + ".tmp";
+    std::ofstream out(temp_path);
+    
+    if (!out.is_open()) {
+        std::cerr << "[Bandit] Failed to open temp file for saving: " << temp_path << std::endl;
+        return;
+    }
+
+    for (const auto& arm : alpha_arms_) {
+        out << arm->value << " " 
+            << arm->selections.load() << " " 
+            << arm->total_score.load() << "\n";
+    }
+    out.close();
+
+    std::error_code ec;
+    
+    std::filesystem::rename(
+        std::filesystem::path(temp_path), 
+        std::filesystem::path(path), 
+        ec
+    );
+
+    if (ec) {
+        std::cerr << "[Bandit] Error persisting stats: " << ec.message() << std::endl;
+    } else {
+        bandit_stats_updated_.store(false, std::memory_order_relaxed); // reset flag after successful save
+    }
+}
+
+void SelfPlay::load_bandit_stats(const std::string& path) {
+    std::ifstream in(path);
+    if (!in.is_open()) return;
+    double val, score;
+    int sel;
+    while (in >> val >> sel >> score) {
+        for (auto& arm : alpha_arms_) {
+            if (std::abs(arm->value - val) < 1e-5) {
+                arm->selections.store(sel);
+                arm->total_score.store(score);
+            }
+        }
+    }
+}
+
 size_t SelfPlay::generate_data(int num_games) {
     worker_threads_.clear(); 
     std::atomic<int> games_started_counter(0);
@@ -177,6 +299,27 @@ size_t SelfPlay::generate_data(int num_games) {
     for (auto& thread : worker_threads_) {
         if (thread.joinable()) thread.join();
     }
+    
+    // --- Logging Bandit Results ---
+    std::cout << "\n[Bandit] Risk Alpha Auto-Tuning Stats:" << std::endl;
+    int best_arm = 0; 
+    double best_mean = -1.0;
+    
+    for(size_t i=0; i<alpha_arms_.size(); ++i) {
+        int n = alpha_arms_[i]->selections.load();
+        double total = alpha_arms_[i]->total_score.load();
+        double mean = (n > 0) ? (total / n) : 0.0;
+        
+        if (mean > best_mean && n > 0) { best_mean = mean; best_arm = i; }
+        
+        if (n > 0) {
+            std::cout << "  Alpha=" << alpha_arms_[i]->value 
+                      << " | Plays=" << n 
+                      << " | MeanReward=" << std::fixed << std::setprecision(4) << mean 
+                      << " (UCB=" << calculate_ucb_score(i, games_completed_counter.load() * 4) << ")" << std::endl;
+        }
+    }
+    std::cout << "  => Current Best: Alpha=" << alpha_arms_[best_arm]->value << std::endl;
 
     size_t total_points = 0;
     for (auto& local_buf : local_buffers) {
@@ -207,6 +350,17 @@ void SelfPlay::run_game_simulation(
       std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_history_for_rewards;
       int move_count = 0;
 
+      // --- BANDIT: Assign Arms to Players ---
+      std::array<int, 4> player_arm_indices;
+      std::array<double, 4> player_alphas;
+      
+      for(int p = 0; p < 4; ++p) {
+          int arm = select_arm_index_ucb1();
+          register_arm_selection(arm);
+          player_arm_indices[p] = arm;
+          player_alphas[p] = alpha_arms_[arm]->value;
+      }
+
       while (!board.is_game_over()) {
           // Check for tree reuse
           if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
@@ -215,6 +369,9 @@ void SelfPlay::run_game_simulation(
           MCTSNode& current_root_ref = *mcts_root_uptr; 
 
           Player root_player = board.get_current_player(); 
+          
+          // --- Retrieve current player's assigned Alpha ---
+          double current_risk_alpha = player_alphas[static_cast<int>(root_player)];
 
           std::vector<SimulationState> pending_worker_batch;
           pending_worker_batch.reserve(worker_batch_size_);
@@ -235,7 +392,9 @@ void SelfPlay::run_game_simulation(
               bool selection_failed = false; 
 
               while (!current_mcts_path.current_node->is_leaf()) {
-                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
+                  // --- USE PLAYER SPECIFIC ALPHA HERE ---
+                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_, current_risk_alpha);
+                  
                   if (next_node == nullptr || next_node == current_mcts_path.current_node) {
                        selection_failed = true; 
                        break; 
@@ -278,7 +437,7 @@ void SelfPlay::run_game_simulation(
           Move chosen_move = choose_move(current_root_ref, current_temperature);
           board.make_move(chosen_move); 
 
-          // --- Tree Reuse Logic (Linked List) ---
+          // --- Tree Reuse Logic ---
           MCTSNode* chosen_child_raw_ptr = nullptr;
           MCTSNode* curr = current_root_ref.get_first_child();
           while (curr) {
@@ -297,6 +456,20 @@ void SelfPlay::run_game_simulation(
           }
           move_count++;
       } 
+
+      // --- BANDIT: UPDATE STATS ---
+      // Game ended. Reward the arms based on player performance.
+      std::array<int, 4> final_scores = board.get_game_result();
+      std::array<double, 4> raw_rewards = get_reward_map_array(final_scores);
+
+      for (int p = 0; p < 4; ++p) {
+          int arm = player_arm_indices[p];
+          // Normalize reward from [-1.0, 1.0] to [0.0, 1.0] for standard UCB1 behavior
+          // +1.0 (win) -> 1.0
+          // -1.0 (loss) -> 0.0
+          double normalized_reward = (raw_rewards[p] + 1.0) / 2.0;
+          update_arm_stats(arm, normalized_reward);
+      }
 
       int completed_count = games_completed_counter.fetch_add(1) + 1;
       
@@ -351,7 +524,6 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
     }
     return probs;
 }
-
 
 Move SelfPlay::choose_move(const MCTSNode& root, double temperature) {
     std::map<Move, double> action_probs = get_action_probs(root, temperature);

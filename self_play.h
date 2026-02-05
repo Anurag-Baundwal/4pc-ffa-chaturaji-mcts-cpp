@@ -25,6 +25,15 @@ class DataWriter;
 using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 4>>;
 using ReplayBuffer = std::deque<GameDataStep>;
 
+// --- Bandit Structure for Auto-Tuning Risk Alpha ---
+struct AlphaArm {
+    double value;
+    std::atomic<int> selections{0};
+    std::atomic<double> total_score{0.0};
+    
+    AlphaArm(double v) : value(v) {}
+};
+
 class SelfPlay {
 public:
     SelfPlay(
@@ -36,12 +45,16 @@ public:
         double c_puct = 2.5,
         int temperature_decay_move = 4,
         double dirichlet_alpha = 0.3,
-        double dirichlet_epsilon = 0.25
+        double dirichlet_epsilon = 0.25,
+        double risk_alpha = 0.0 
     );
 
     ~SelfPlay(); 
 
     size_t generate_data(int num_games);
+
+    void save_bandit_stats(const std::string& path);
+    void load_bandit_stats(const std::string& path);
 
 private:
     void run_game_simulation(
@@ -73,6 +86,12 @@ private:
       bool& apply_root_noise 
     );
 
+    // --- Bandit / Auto-Tuning Helpers ---
+    int select_arm_index_ucb1();
+    double calculate_ucb_score(int arm_idx, int total_plays) const;
+    void update_arm_stats(int arm_idx, double reward);
+    void register_arm_selection(int arm_idx);
+
     Model* network_handle_; // Non-owning pointer
     int num_workers_;
     int simulations_per_move_;
@@ -81,6 +100,11 @@ private:
     int worker_batch_size_; 
     double dirichlet_alpha_;
     double dirichlet_epsilon_;
+
+    std::atomic<bool> bandit_stats_updated_{false};
+    
+    // NOTE: risk_alpha_ member is removed/ignored in favor of alpha_arms_ below
+    std::vector<std::unique_ptr<AlphaArm>> alpha_arms_; 
 
     std::mt19937 rng_; 
 

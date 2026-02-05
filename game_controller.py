@@ -105,12 +105,11 @@ class EngineHandler:
     Manages the C++ Engine process.
     Assumes the engine accepts commands via stdin line-by-line.
     """
-    def __init__(self, binary_path, model_path, sims, batch_size, pessimism):
+    def __init__(self, binary_path, model_path, sims, batch_size):
         self.binary_path = binary_path
         self.model_path = model_path
         self.sims = sims
         self.batch_size = batch_size
-        self.pessimism = pessimism
         self.process = None
         self._start_process()
 
@@ -124,8 +123,7 @@ class EngineHandler:
             self.binary_path, 
             "--model", self.model_path, 
             "--interactive",
-            "--mcts-batch", str(self.batch_size),
-            "--pessimism", str(self.pessimism)
+            "--mcts-batch", str(self.batch_size)
         ]  
         
         print(f"[ENGINE] Starting: {' '.join(cmd)}")
@@ -229,13 +227,13 @@ class EngineHandler:
 # --- CONTROLLER ---
 
 class GameController:
-    def __init__(self, my_color: str, model_path: str, sims: int, batch_size: int, pessimism: float):
+    def __init__(self, my_color: str, model_path: str, sims: int, batch_size: int):
         self.my_color = my_color.upper() # R, B, Y, or G
         self.board_moves = []
         self.geometry = None
         
         # Initialize engine
-        self.engine = EngineHandler(ENGINE_BINARY, model_path, sims, batch_size, pessimism)
+        self.engine = EngineHandler(ENGINE_BINARY, model_path, sims, batch_size)
 
         
         # Calibrate Board
@@ -371,8 +369,6 @@ if __name__ == "__main__":
     parser.add_argument('--model', required=True, help="Path to ONNX model")
     parser.add_argument('--sims', type=int, default=35000, help="Simulations per move")
     parser.add_argument('--batch', type=int, default=64, help="MCTS Batch Size")
-    parser.add_argument('--pessimism', type=float, default=5.0, help="Pessimism factor for losses (default 5.0)")
-
     
     args = parser.parse_args()
 
@@ -387,7 +383,7 @@ if __name__ == "__main__":
     time.sleep(3)
 
     # Start Controller
-    controller = GameController(args.color, args.model, args.sims, args.batch, args.pessimism)
+    controller = GameController(args.color, args.model, args.sims, args.batch)
     
     try:
         while True:
