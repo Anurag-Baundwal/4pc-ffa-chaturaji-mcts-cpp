@@ -32,11 +32,6 @@ NUM_RES_BLOCKS = 8
 NUM_CHANNELS = 64
 SE_REDUCTION = 2 # Squeeze ratio for SE blocks
 
-# Policy Head Configuration
-POLICY_HEAD_CONV_CHANNELS = 32 
-# We use an intermediate mixing layer to allow scalars to modulate spatial features
-POLICY_MIXING_DIM = 2560 
-
 # Value Head Configuration
 VALUE_HEAD_CONV_CHANNELS = 32
 VALUE_FC_HIDDEN_CHANNELS = 384
@@ -109,14 +104,18 @@ class ChaturajiNN(nn.Module):
     
     - Global Encoder: Linear projects 34 scalars to 64 context features (2 layer MLP).
     
-    - Trunk: Conv + BatchNorm + SiLU -> 8 Residual Blocks.
+    - Trunk: Conv + BatchNorm + SiLU -> 4 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
     
-    - Policy Head: 
-      1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
-      2. Concatenate Scalars (Size 2048 + 34 = 2082)
-      3. Mixing Layer: Linear(2082 -> 2560) -> SiLU (Size 2560)
-      4. Linear -> Logits(4096)
+    - Policy Head (Hybrid Spatial-Dense): 
+      1. Spatial Features -> 3x3 Conv(32) -> BN -> SiLU.
+         * The 3x3 kernel ensures the head sees neighboring context (captures, safety)
+           before flattening, fixing the receptive field limitation of 1x1 heads.
+      2. Flatten -> Concatenate Scalars.
+      3. Linear Projection -> Logits(4096).
+         * A dense layer is required here because the engine uses an absolute move encoding
+           (Index = FromSq * 64 + ToSq). A pure convolutional output cannot map
+           translation-invariant features to absolute indices effectively.
       
     - Value Head: 
       1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
@@ -145,17 +144,17 @@ class ChaturajiNN(nn.Module):
         ])
 
         # --- Policy Head ---
-        self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
-        self.policy_bn = nn.BatchNorm2d(POLICY_HEAD_CONV_CHANNELS)
+        # Using 3x3 Conv to expand receptive field (seeing neighbors)
+        self.policy_conv = nn.Conv2d(NUM_CHANNELS, 32, kernel_size=3, padding=1, bias=False)
+        self.policy_bn = nn.BatchNorm2d(32)
         
-        # Calculate sizes
-        self.policy_spatial_flat_size = POLICY_HEAD_CONV_CHANNELS * BOARD_AREA # 32 * 64 = 2048
-        self.policy_combined_size = self.policy_spatial_flat_size + NUM_INPUT_SCALARS
+        # Calculate sizes: 32 channels * 64 squares = 2048
+        self.policy_flat_size = 32 * BOARD_AREA 
         
-        # Mixing Layer: Allows scalars to non-linearly interact with spatial features
-        self.policy_mixing = nn.Linear(self.policy_combined_size, POLICY_MIXING_DIM)
-        # Final projection
-        self.policy_fc = nn.Linear(POLICY_MIXING_DIM, POLICY_OUTPUT_SIZE)
+        # Projection Layer: Maps spatial features + scalars to absolute move indices.
+        # We removed the intermediate mixing layer to reduce parameters while keeping
+        # the essential dense mapping capability.
+        self.policy_fc = nn.Linear(self.policy_flat_size + NUM_INPUT_SCALARS, POLICY_OUTPUT_SIZE)
 
         # --- Value Head ---
         self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
@@ -173,7 +172,6 @@ class ChaturajiNN(nn.Module):
         # --- Uncertainty Weighting Parameters (Poor Man's GradNorm) ---
         # These learnable scalars balance the Policy and Value losses dynamically.
         # log_vars[0] -> Policy, log_vars[1] -> Value.
-        # Initial s_p = 0 (weight 1.0), Initial s_v = -2.0 (weight ~3.7)
         self.log_vars = nn.Parameter(torch.tensor([0.0, -2.0]))
 
     def forward(self, x_planes, x_scalars):
@@ -186,18 +184,18 @@ class ChaturajiNN(nn.Module):
             x = block(x, global_embed)
 
         # --- Policy Head Forward ---
+        # 1. Spatial Processing with 3x3 Conv
         p = self.policy_conv(x)
         p = self.policy_bn(p)
         p = F.silu(p)
         p = p.flatten(1) 
         
-        # Concatenate Global Scalars
+        # 2. Context Injection
+        # Concatenate global scalars to allow game-state (points, active players)
+        # to influence move selection.
         p = torch.cat([p, x_scalars], dim=1)
         
-        # Non-linear mixing
-        p = F.silu(self.policy_mixing(p))
-        
-        # Final Logits
+        # 3. Final Projection to Logits
         p = self.policy_fc(p)
 
         # --- Value Head Forward ---
