@@ -117,10 +117,16 @@ class ChaturajiNN(nn.Module):
            (Index = FromSq * 64 + ToSq). A pure convolutional output cannot map
            translation-invariant features to absolute indices effectively.
       
-    - Value Head: 
-      1. Spatial Features -> Conv(32) -> BN -> SiLU -> Flatten (Size 2048)
-      2. Concatenate Scalars (Size 2048 + 34 = 2082)
-      3. Linear(2082 -> 384) -> SiLU -> Linear(256) -> SiLU -> Linear(4) -> Tanh
+    - Value Head (Strided-Hybrid with Residual MLP): 
+      1. Spatial Features -> 3x3 Conv(32) with Stride 2 -> BN -> SiLU.
+         * Distills the 8x8 grid into a 4x4 representation, capturing wider context.
+      2. Scalar Gating: Projecting 34 scalars to match 32 channels, gating spatial
+         features via sigmoid multiplication.
+      3. Flatten (Size 512) -> Concatenate Scalars (Size 546 total).
+      4. Residual MLP: 
+         - Linear(546 -> 512)
+         - Residual Block: Linear(512 -> 512) with skip connection (Identity + Layer).
+         - Final Output: Linear(512 -> 4) -> Tanh.
     """
     def __init__(self):
         super().__init__()
@@ -156,18 +162,22 @@ class ChaturajiNN(nn.Module):
         # the essential dense mapping capability.
         self.policy_fc = nn.Linear(self.policy_flat_size + NUM_INPUT_SCALARS, POLICY_OUTPUT_SIZE)
 
-        # --- Value Head ---
-        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, bias=True)
-        self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
+        # --- Value Head   ---
+        # 1. Spatial Distillation (Stride 2)
+        self.value_conv = nn.Conv2d(NUM_CHANNELS, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        self.value_bn = nn.BatchNorm2d(32)
         
-        # Calculate sizes
-        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_AREA # 32 * 64 = 2048
+        # 2. Scalar Gating Projector
+        self.value_context_projector = nn.Linear(NUM_INPUT_SCALARS, 32)
+
+        # Sizes: (32 channels * 4 * 4) + 34 scalars = 546
+        self.value_spatial_flat_size = 32 * 4 * 4 
         self.value_combined_size = self.value_spatial_flat_size + NUM_INPUT_SCALARS
         
-        # Value MLP
-        self.value_fc1 = nn.Linear(self.value_combined_size, VALUE_FC_HIDDEN_CHANNELS)
-        self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_MID_CHANNELS)
-        self.value_fc2 = nn.Linear(VALUE_FC_MID_CHANNELS, VALUE_OUTPUT_SIZE)
+        # 3. Residual MLP Head
+        self.value_fc1 = nn.Linear(self.value_combined_size, 512)
+        self.value_res_block = nn.Linear(512, 512) # Hidden residual layer
+        self.value_fc_out = nn.Linear(512, VALUE_OUTPUT_SIZE)
 
         # --- Uncertainty Weighting Parameters (Poor Man's GradNorm) ---
         # These learnable scalars balance the Policy and Value losses dynamically.
@@ -199,18 +209,25 @@ class ChaturajiNN(nn.Module):
         p = self.policy_fc(p)
 
         # --- Value Head Forward ---
+        # 1. Distillation (8x8 -> 4x4)
         v = self.value_conv(x)
         v = self.value_bn(v)
         v = F.silu(v)
+        
+        # 2. Scalar Gating (Context-Aware Modulation)
+        context_gate = torch.sigmoid(self.value_context_projector(x_scalars))
+        v = v * context_gate.view(-1, 32, 1, 1)
+
+        # 3. Flatten and Concat
         v = v.flatten(1)
         
         # Concatenate Global Scalars
         v = torch.cat([v, x_scalars], dim=1)
         
-        # Value MLP
+        # 4. Residual MLP (Bottleneck)
         v = F.silu(self.value_fc1(v))
-        v = F.silu(self.value_fc_mid(v))
-        v = self.value_fc2(v)
+        v = F.silu(self.value_res_block(v) + v) # Skip connection
+        v = self.value_fc_out(v)
         v = torch.tanh(v)
 
         return p, v
