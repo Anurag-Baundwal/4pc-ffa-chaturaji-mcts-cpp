@@ -11,6 +11,7 @@
 #include <memory>
 #include <array>
 #include <cmath>
+
 namespace chaturaji_cpp {
 
 // --- RunStats Implementation ---
@@ -46,6 +47,11 @@ namespace {
         PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::KING
     };
 
+    /**
+     * @brief Transforms absolute board coordinates to player-relative coordinates.
+     * Perspective is rotated so that the active player's "forward" is always 
+     * toward row 0 in the relative grid.
+     */
     BoardLocation get_rel_loc(int r, int c, Player p) {
         switch (p) {
             case Player::RED:    return {r, c};
@@ -56,6 +62,9 @@ namespace {
         }
     }
 
+    /**
+     * @brief Transforms player-relative coordinates back to absolute board coordinates.
+     */
     BoardLocation get_abs_loc(int r, int c, Player p) {
         switch (p) {
             case Player::RED:    return {r, c};
@@ -111,6 +120,14 @@ namespace {
 
         return flood == pawns;
     }
+
+    // --- Spatial Move Plane Constants ---
+    // Directions for Queen-like moves: N, S, E, W, NE, NW, SE, SW
+    const int DR[] = {-1, 1, 0, 0, -1, -1, 1, 1};
+    const int DC[] = {0, 0, 1, -1, 1, -1, 1, -1};
+    // Offsets for Knight jumps
+    const int KNIGHT_DR[] = {-2, -2, -1, -1, 1, 1, 2, 2};
+    const int KNIGHT_DC[] = {1, -1, 2, -2, 2, -2, 1, -1};
 }
 
 void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars) {
@@ -215,8 +232,6 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
         int pawn_cnt = magic_utils::pop_count(pawns);
 
         // A. Material (4 scalars) -> RELATIVE (My - Theirs) / 20.0
-        // Index 0 will always be 0.
-        // Index 1 will be (My Material - Next Player's Material) / 20.0
         out_scalars[current_scalar + 0 + rel_i] = static_cast<float>(my_mat - mat_scores_abs[abs_p_idx]) / 20.0f;
 
         // B. Pawn Count (4 scalars)
@@ -322,8 +337,7 @@ PackedSample create_packed_sample(
     sample.active_mask = board.get_active_mask();
     sample.current_player = static_cast<uint8_t>(board.get_current_player());
 
-    // 3. Calculate and Pack New Features
-    // Note: We need attack maps for King Safety
+    // 3. Calculate and Pack Supplemental Features
     std::array<Bitboard, 4> all_attacks;
     for(int i = 0; i < 4; ++i) all_attacks[i] = sample.attack_bitboards[i];
 
@@ -368,7 +382,6 @@ PackedSample create_packed_sample(
             int total = 0;
             Bitboard temp_p = pawns;
             while(temp_p) {
-                // Optimized: Use Static Lookup for distance
                 total += magic_utils::CHEBYSHEV_DIST[k_sq][magic_utils::pop_lsb(temp_p)];
             }
             dist = static_cast<float>(total) / p_cnt;
@@ -383,7 +396,6 @@ PackedSample create_packed_sample(
             for(int opp=0; opp<4; ++opp) {
                 if(opp != p) enemy_attacks |= all_attacks[opp];
             }
-            // Optimized: Use Static Lookup + Bitmasks
             Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
             Bitboard own_pieces = board.get_player_bitboard(pl);
             Bitboard safe_mask = neighborhood & ~own_pieces & ~enemy_attacks;
@@ -401,7 +413,7 @@ PackedSample create_packed_sample(
     for(const auto& item : policy) {
         int idx = move_to_policy_index(item.first, cp);
         // Ensure index is valid for our neural net size (4096)
-        if(idx >= 0 && idx < 4096) {
+        if(idx >= 0 && idx < NN_POLICY_SIZE) {
             sorted_policy.push_back({static_cast<float>(item.second), static_cast<uint16_t>(idx)});
         }
     }
@@ -422,6 +434,126 @@ PackedSample create_packed_sample(
 
     return sample;
 }
+
+// --- Move Indexing (Spatial / Convolutional Strategy) ---
+
+/**
+ * @brief Encodes a move into a single integer index [0, 4095].
+ * 
+ * Strategy:
+ * The policy head is viewed as a stack of 64 planes, each 8x8.
+ * Index = (Plane_Index * 64) + Relative_From_Square_Index.
+ * 
+ * Planes 0-55: Queen-like slides (8 directions * 7 distances).
+ * Planes 56-63: Knight jumps (8 possible jumps).
+ */
+int move_to_policy_index(const Move& move, Player p) {
+    if (move.is_resignation()) return NN_POLICY_INDEX_RESIGN;
+
+    // 1. Perspective Transformation
+    BoardLocation rel_from = get_rel_loc(move.from_loc.row, move.from_loc.col, p);
+    BoardLocation rel_to   = get_rel_loc(move.to_loc.row, move.to_loc.col, p);
+
+    int dr = rel_to.row - rel_from.row;
+    int dc = rel_to.col - rel_from.col;
+
+    int plane_idx = -1;
+
+    // 2. Check Knight Jumps (8 planes: 56-63)
+    for (int k = 0; k < 8; ++k) {
+        if (dr == KNIGHT_DR[k] && dc == KNIGHT_DC[k]) {
+            plane_idx = 56 + k;
+            break;
+        }
+    }
+
+    // 3. Check Sliding Moves (56 planes: 8 dirs * 7 distances)
+    if (plane_idx == -1) {
+        for (int dir = 0; dir < 8; ++dir) {
+            for (int dist = 1; dist <= 7; ++dist) {
+                if (dr == DR[dir] * dist && dc == DC[dir] * dist) {
+                    plane_idx = (dir * 7) + (dist - 1);
+                    goto found;
+                }
+            }
+        }
+    }
+
+found:
+    if (plane_idx == -1) return 4096; // Fallback
+
+    // Index = (Plane * 64) + (Row * 8 + Col)
+    return (plane_idx * 64) + (rel_from.row * 8 + rel_from.col);
+}
+
+/**
+ * @brief Decodes a spatial policy index back into a Move object.
+ */
+Move policy_index_to_move(int index, const Board& board) {
+    // 1. Handle Resignation escape hatch
+    if (index == 4096) return Move::Resign();
+
+    // 2. Safety check for out-of-bounds indices
+    if (index < 0 || index > 4096) return Move::Resign();
+
+    Player p = board.get_current_player();
+
+    int plane_idx = index / 64;
+    int from_sq_idx = index % 64;
+
+    int rel_from_r = from_sq_idx / 8;
+    int rel_from_c = from_sq_idx % 8;
+    int dr = 0, dc = 0;
+
+    // 3. Decode Plane to relative displacement
+    if (plane_idx < 56) {
+        int dir = plane_idx / 7;
+        int dist = (plane_idx % 7) + 1;
+        dr = DR[dir] * dist;
+        dc = DC[dir] * dist;
+    } else {
+        int k = plane_idx - 56;
+        dr = KNIGHT_DR[k];
+        dc = KNIGHT_DC[k];
+    }
+
+    int rel_to_r = rel_from_r + dr;
+    int rel_to_c = rel_from_c + dc;
+
+    // 4. Bound check relative coordinates
+    if (rel_to_r < 0 || rel_to_r > 7 || rel_to_c < 0 || rel_to_c > 7) {
+        return Move::Resign(); // Or a specific "IllegalMove" constant
+    }
+
+    // 5. Convert to Absolute coordinates
+    BoardLocation abs_from = get_abs_loc(rel_from_r, rel_from_c, p);
+    BoardLocation abs_to   = get_abs_loc(rel_to_r, rel_to_c, p);
+
+    Move m(abs_from, abs_to);
+
+    // 6. PAWN PROMOTION DETECTION
+    int abs_from_idx = magic_utils::to_sq_idx(abs_from.row, abs_from.col);
+    std::optional<Piece> piece_opt = board.get_piece_at_sq(abs_from_idx);
+
+    // Safety: Only check promotion if there is actually a piece there
+    if (piece_opt && piece_opt->piece_type == PieceType::PAWN) {
+        bool is_promo = false;
+        switch (p) {
+            case Player::RED:    if (abs_to.row == 0) is_promo = true; break;
+            case Player::BLUE:   if (abs_to.col == 7) is_promo = true; break;
+            case Player::YELLOW: if (abs_to.row == 7) is_promo = true; break;
+            case Player::GREEN:  if (abs_to.col == 0) is_promo = true; break;
+        }
+        
+        if (is_promo) {
+            m.promotion_piece_type = PieceType::ROOK;
+        }
+    }
+
+    return m;
+}
+
+// --- Notation Utilities ---
 
 Move parse_string_to_move(const Board& board, const std::string& move_str) {
     if (move_str == "R" || move_str == "T" || move_str == "RESIGN") {
@@ -452,22 +584,6 @@ Move parse_string_to_move(const Board& board, const std::string& move_str) {
         }
     }
     throw std::invalid_argument("Illegal or malformed move string: " + move_str);
-}
-
-int move_to_policy_index(const Move& move, Player p) {
-    if (move.is_resignation()) return 0;
-    BoardLocation rel_from = get_rel_loc(move.from_loc.row, move.from_loc.col, p);
-    BoardLocation rel_to   = get_rel_loc(move.to_loc.row, move.to_loc.col, p);
-    return (rel_from.row * 8 + rel_from.col) * 64 + (rel_to.row * 8 + rel_to.col);
-}
-
-Move policy_index_to_move(int index, Player p) {
-    if (index == 0) return Move::Resign();
-    int to_rel_idx = index % 64;
-    int from_rel_idx = index / 64;
-    BoardLocation abs_from = get_abs_loc(from_rel_idx / 8, from_rel_idx % 8, p);
-    BoardLocation abs_to   = get_abs_loc(to_rel_idx / 8, to_rel_idx % 8, p);
-    return Move(abs_from, abs_to, std::nullopt);
 }
 
 std::string get_san_string(const Move& move, const Board& board) {

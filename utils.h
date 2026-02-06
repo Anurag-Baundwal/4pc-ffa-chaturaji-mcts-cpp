@@ -43,7 +43,7 @@ PackedSample create_packed_sample(
 // --- Move Indexing ---
 
 int move_to_policy_index(const Move& move, Player p);
-Move policy_index_to_move(int index, Player p);
+Move policy_index_to_move(int index, const Board& board);
 
 // --- Notation Utilities ---
 

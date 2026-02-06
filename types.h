@@ -30,8 +30,19 @@ constexpr int NN_INPUT_PLANES_SIZE = NN_INPUT_PLANES * BOARD_AREA;
 //    - 4(ActiveStatus) + 4(Points) + 1(50MoveClock) + 4(InCheck) + 1(OpponentCount)
 constexpr int NN_INPUT_SCALARS = 34;
 
+// --- Spatial Policy Output Configuration ---
 // Output: Policy (Move probabilities) and Value (Win probabilities)
-constexpr int NN_POLICY_SIZE = 4096; // 64 from_sq * 64 to_sq
+// We use a Spatial representation similar to AlphaZero: 64 Planes * 8x8 Board.
+// Planes breakdown:
+//  - 56 "Queen" planes (8 directions * 7 distances)
+//  - 8 Knight planes
+// Total spatial index [0-4095] = (PlaneIndex * 64) + FromSquareIndex (Relative)
+//
+// Additionally, we append one extra index for the Resignation option.
+// Index 4096 = Resign
+constexpr int NN_POLICY_PLANES = 64;
+constexpr int NN_POLICY_INDEX_RESIGN = 4096;
+constexpr int NN_POLICY_SIZE = (NN_POLICY_PLANES * BOARD_AREA) + 1; // 4097 total indices
 constexpr int NN_VALUE_SIZE = 4;     // One value per player (Relative order)
 
 using Bitboard = uint64_t;

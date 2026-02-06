@@ -24,18 +24,24 @@ NUM_INPUT_PLANES = 28
 # 4(Active) + 4(Points) + 1(50mv) + 4(Check) + 1(OppCnt)
 NUM_INPUT_SCALARS = 34
 
-POLICY_OUTPUT_SIZE = 4096 
+# Policy Output: 64 Spatial Planes
+# 56 Queen-like moves (8 directions * 7 distances) + 8 Knight moves
+NUM_POLICY_PLANES = 64
+POLICY_OUTPUT_SIZE = NUM_POLICY_PLANES * BOARD_AREA + 1 # Index 4096 is for resignation
 VALUE_OUTPUT_SIZE = 4     
 
 # Network Architecture
-NUM_RES_BLOCKS = 8
-NUM_CHANNELS = 64
-SE_REDUCTION = 2 # Squeeze ratio for SE blocks
+NUM_RES_BLOCKS = 6      # How many residual blocks in the trunk
+NUM_CHANNELS = 64       # Width of the main trunk (Backbone)
+SE_REDUCTION = 2        # Squeeze ratio for SE blocks
+
+# Policy Head Configuration
+POLICY_HEAD_CONV_CHANNELS = 64 # Depth of the hidden layer in policy head
 
 # Value Head Configuration
-VALUE_HEAD_CONV_CHANNELS = 32
-VALUE_FC_HIDDEN_CHANNELS = 384
-VALUE_FC_MID_CHANNELS = 256
+VALUE_HEAD_CONV_CHANNELS = 32  # Spatial distillation depth
+VALUE_FC_HIDDEN_CHANNELS = 192 # First dense layer width
+VALUE_FC_MID_CHANNELS = 128    # Width of the intermediate dense layer
 NUM_VALUE_OUTPUTS = 4
 
 class GlobalSEBlock(nn.Module):
@@ -104,22 +110,20 @@ class ChaturajiNN(nn.Module):
     
     - Global Encoder: Linear projects 34 scalars to 64 context features (2 layer MLP).
     
-    - Trunk: Conv + BatchNorm + SiLU -> 4 Residual Blocks.
+    - Trunk: Conv + BatchNorm + SiLU -> 6 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
     
-    - Policy Head (Hybrid Spatial-Dense): 
-      1. Spatial Features -> 3x3 Conv(32) -> BN -> SiLU.
-         * The 3x3 kernel ensures the head sees neighboring context (captures, safety)
-           before flattening, fixing the receptive field limitation of 1x1 heads.
-      2. Flatten -> Concatenate Scalars.
-      3. Linear Projection -> Logits(4096).
-         * A dense layer is required here because the engine uses an absolute move encoding
-           (Index = FromSq * 64 + ToSq). A pure convolutional output cannot map
-           translation-invariant features to absolute indices effectively.
+    - Policy Head (Fully Convolutional / Spatial): 
+      1. Spatial Features -> 3x3 Conv(64) -> BN -> SiLU.
+         * Maintains spatial awareness across the board.
+      2. 1x1 Conv(64 planes).
+         * This creates a translational-invariant mapping. If a move pattern is 
+           learned in one corner, it is automatically applied to all squares.
+         * 64 Planes * 64 Squares = 4096 outputs.
       
     - Value Head (Strided-Hybrid with Residual MLP): 
       1. Spatial Features -> 3x3 Conv(32) with Stride 2 -> BN -> SiLU.
-         * Distills the 8x8 grid into a 4x4 representation, capturing wider context.
+         * Distills the 8x8 grid into a 4x4 representation.
       2. Scalar Gating: Projecting 34 scalars to match 32 channels, gating spatial
          features via sigmoid multiplication.
       3. Flatten (Size 512) -> Concatenate Scalars (Size 546 total).
@@ -149,35 +153,38 @@ class ChaturajiNN(nn.Module):
             ResBlock(NUM_CHANNELS, global_channels=NUM_CHANNELS) for _ in range(NUM_RES_BLOCKS)
         ])
 
-        # --- Policy Head ---
-        # Using 3x3 Conv to expand receptive field (seeing neighbors)
-        self.policy_conv = nn.Conv2d(NUM_CHANNELS, 32, kernel_size=3, padding=1, bias=False)
-        self.policy_bn = nn.BatchNorm2d(32)
+        # --- Policy Head (Spatial) ---
+        # Uses 3x3 Conv to refine features from trunk to prepare for move mapping
+        self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=3, padding=1, bias=False)
+        self.policy_bn = nn.BatchNorm2d(POLICY_HEAD_CONV_CHANNELS)
         
-        # Calculate sizes: 32 channels * 64 squares = 2048
-        self.policy_flat_size = 32 * BOARD_AREA 
-        
-        # Projection Layer: Maps spatial features + scalars to absolute move indices.
-        # We removed the intermediate mixing layer to reduce parameters while keeping
-        # the essential dense mapping capability.
-        self.policy_fc = nn.Linear(self.policy_flat_size + NUM_INPUT_SCALARS, POLICY_OUTPUT_SIZE)
+        # Project Scalars to match spatial channels (34 -> 64)
+        self.policy_context_projector = nn.Linear(NUM_INPUT_SCALARS, POLICY_HEAD_CONV_CHANNELS)
 
-        # --- Value Head   ---
-        # 1. Spatial Distillation (Stride 2)
-        self.value_conv = nn.Conv2d(NUM_CHANNELS, 32, kernel_size=3, stride=2, padding=1, bias=False)
-        self.value_bn = nn.BatchNorm2d(32)
+        # Final Projection: Maps hidden features to 64 "move type" planes.
+        self.policy_out = nn.Conv2d(POLICY_HEAD_CONV_CHANNELS, NUM_POLICY_PLANES, kernel_size=1, bias=True)
+
+        # A separate tiny head just for the Resignation logit
+        # Takes the 34 global scalars + 64 pooled spatial features -> 1 logit
+        self.policy_resign_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS + NUM_INPUT_SCALARS, 1)
+
+        # --- Value Head ---
+        # 1. Spatial Distillation (8x8 -> 4x4)
+        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=3, stride=2, padding=1, bias=False)
+        self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
         
         # 2. Scalar Gating Projector
-        self.value_context_projector = nn.Linear(NUM_INPUT_SCALARS, 32)
+        self.value_context_projector = nn.Linear(NUM_INPUT_SCALARS, VALUE_HEAD_CONV_CHANNELS)
 
-        # Sizes: (32 channels * 4 * 4) + 34 scalars = 546
-        self.value_spatial_flat_size = 32 * 4 * 4 
+        # Sizes: (Distilled channels * 4 * 4 grid) + raw scalars
+        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * 4 * 4 
         self.value_combined_size = self.value_spatial_flat_size + NUM_INPUT_SCALARS
         
         # 3. Residual MLP Head
-        self.value_fc1 = nn.Linear(self.value_combined_size, 512)
-        self.value_res_block = nn.Linear(512, 512) # Hidden residual layer
-        self.value_fc_out = nn.Linear(512, VALUE_OUTPUT_SIZE)
+        self.value_fc1 = nn.Linear(self.value_combined_size, VALUE_FC_HIDDEN_CHANNELS)
+        self.value_res_block = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_HIDDEN_CHANNELS) # Hidden residual layer
+        self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_MID_CHANNELS)
+        self.value_fc_out = nn.Linear(VALUE_FC_MID_CHANNELS, NUM_VALUE_OUTPUTS)
 
         # --- Uncertainty Weighting Parameters (Poor Man's GradNorm) ---
         # These learnable scalars balance the Policy and Value losses dynamically.
@@ -194,19 +201,22 @@ class ChaturajiNN(nn.Module):
             x = block(x, global_embed)
 
         # --- Policy Head Forward ---
-        # 1. Spatial Processing with 3x3 Conv
-        p = self.policy_conv(x)
-        p = self.policy_bn(p)
-        p = F.silu(p)
-        p = p.flatten(1) 
+        # 1. Spatial Processing & Scalar Injection
+        p_spatial = F.silu(self.policy_bn(self.policy_conv(x)))
+        p_context = self.policy_context_projector(x_scalars).view(-1, POLICY_HEAD_CONV_CHANNELS, 1, 1)
+        p_spatial = p_spatial + p_context
         
-        # 2. Context Injection
-        # Concatenate global scalars to allow game-state (points, active players)
-        # to influence move selection.
-        p = torch.cat([p, x_scalars], dim=1)
+        # 2. Map to Move Planes (Batch, 64, 8, 8 -> Batch, 4096)
+        p_moves = self.policy_out(p_spatial).flatten(1)
         
-        # 3. Final Projection to Logits
-        p = self.policy_fc(p)
+        # 3. Resignation Logit (Spatial GAP + Scalars -> Batch, 1)
+        # Summary of board state mixed with global stats
+        p_spatial_gap = p_spatial.mean(dim=(2, 3)) 
+        p_resign_input = torch.cat([p_spatial_gap, x_scalars], dim=1)
+        p_resign = self.policy_resign_fc(p_resign_input)
+        
+        # 4. Final Policy (Index 4096 is Resignation)
+        p = torch.cat([p_moves, p_resign], dim=1)
 
         # --- Value Head Forward ---
         # 1. Distillation (8x8 -> 4x4)
@@ -216,17 +226,15 @@ class ChaturajiNN(nn.Module):
         
         # 2. Scalar Gating (Context-Aware Modulation)
         context_gate = torch.sigmoid(self.value_context_projector(x_scalars))
-        v = v * context_gate.view(-1, 32, 1, 1)
-
-        # 3. Flatten and Concat
-        v = v.flatten(1)
+        v = (v * context_gate.view(-1, VALUE_HEAD_CONV_CHANNELS, 1, 1)).flatten(1)
         
         # Concatenate Global Scalars
         v = torch.cat([v, x_scalars], dim=1)
         
-        # 4. Residual MLP (Bottleneck)
+        # 2. Residual MLP (Bottleneck)
         v = F.silu(self.value_fc1(v))
         v = F.silu(self.value_res_block(v) + v) # Skip connection
+        v = F.silu(self.value_fc_mid(v))
         v = self.value_fc_out(v)
         v = torch.tanh(v)
 
