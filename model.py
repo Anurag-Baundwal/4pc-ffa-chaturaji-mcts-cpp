@@ -36,12 +36,13 @@ NUM_CHANNELS = 64       # Width of the main trunk (Backbone)
 SE_REDUCTION = 2        # Squeeze ratio for SE blocks
 
 # Policy Head Configuration
-POLICY_HEAD_CONV_CHANNELS = 64 # Depth of the hidden layer in policy head
+POLICY_HEAD_CONV_CHANNELS = 24 # Depth of the hidden layer in policy head
 
 # Value Head Configuration
-VALUE_HEAD_CONV_CHANNELS = 32  # Spatial distillation depth
-VALUE_FC_HIDDEN_CHANNELS = 192 # First dense layer width
-VALUE_FC_MID_CHANNELS = 128    # Width of the intermediate dense layer
+# Optimized for 6x64 architecture to maintain >80% trunk parameter ratio.
+# Lc0 Standard: 1x1 Conv (No Stride) -> Flatten -> Dense -> Dense.
+VALUE_HEAD_CONV_CHANNELS = 12  # Reduced to 12 to keep the dense layer input manageable
+VALUE_FC_HIDDEN_CHANNELS = 96  # Reduced to 96 to prevent head parameter bloat
 NUM_VALUE_OUTPUTS = 4
 
 class GlobalSEBlock(nn.Module):
@@ -114,23 +115,23 @@ class ChaturajiNN(nn.Module):
       Each block uses the Global context to perform Channel Attention (SE).
     
     - Policy Head (Fully Convolutional / Spatial): 
-      1. Spatial Features -> 3x3 Conv(64) -> BN -> SiLU.
+      1. Spatial Features -> 3x3 Conv(24) -> BN -> SiLU.
          * Maintains spatial awareness across the board.
       2. 1x1 Conv(64 planes).
          * This creates a translational-invariant mapping. If a move pattern is 
            learned in one corner, it is automatically applied to all squares.
          * 64 Planes * 64 Squares = 4096 outputs.
       
-    - Value Head (Strided-Hybrid with Residual MLP): 
-      1. Spatial Features -> 3x3 Conv(32) with Stride 2 -> BN -> SiLU.
-         * Distills the 8x8 grid into a 4x4 representation.
-      2. Scalar Gating: Projecting 34 scalars to match 32 channels, gating spatial
+    - Value Head (Lc0 Standard 1x1 Conv + Dense): 
+      1. Spatial Features -> 1x1 Conv(12) Stride 1 -> BN -> SiLU.
+         * Preserves 8x8 spatial resolution (No downsampling).
+         * Reduces channels from Trunk(64) to Head(12).
+      2. Scalar Gating: Projecting 34 scalars to match 12 channels, gating spatial
          features via sigmoid multiplication.
-      3. Flatten (Size 512) -> Concatenate Scalars (Size 546 total).
-      4. Residual MLP: 
-         - Linear(546 -> 512)
-         - Residual Block: Linear(512 -> 512) with skip connection (Identity + Layer).
-         - Final Output: Linear(512 -> 4) -> Tanh.
+      3. Flatten (12 * 8 * 8 = 768) -> Concatenate Scalars (Size 802 total).
+      4. MLP: 
+         - Linear(802 -> 96) -> SiLU
+         - Final Output: Linear(96 -> 4) -> Tanh.
     """
     def __init__(self):
         super().__init__()
@@ -158,33 +159,31 @@ class ChaturajiNN(nn.Module):
         self.policy_conv = nn.Conv2d(NUM_CHANNELS, POLICY_HEAD_CONV_CHANNELS, kernel_size=3, padding=1, bias=False)
         self.policy_bn = nn.BatchNorm2d(POLICY_HEAD_CONV_CHANNELS)
         
-        # Project Scalars to match spatial channels (34 -> 64)
+        # Project Scalars to match spatial channels
         self.policy_context_projector = nn.Linear(NUM_INPUT_SCALARS, POLICY_HEAD_CONV_CHANNELS)
 
         # Final Projection: Maps hidden features to 64 "move type" planes.
         self.policy_out = nn.Conv2d(POLICY_HEAD_CONV_CHANNELS, NUM_POLICY_PLANES, kernel_size=1, bias=True)
 
         # A separate tiny head just for the Resignation logit
-        # Takes the 34 global scalars + 64 pooled spatial features -> 1 logit
+        # Takes the 34 global scalars + pooled spatial features -> 1 logit
         self.policy_resign_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS + NUM_INPUT_SCALARS, 1)
 
-        # --- Value Head ---
-        # 1. Spatial Distillation (8x8 -> 4x4)
-        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=3, stride=2, padding=1, bias=False)
+        # --- Value Head (Lc0 Style) ---
+        # 1. 1x1 Convolution (No spatial reduction)
+        self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, stride=1, padding=0, bias=False)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
         
         # 2. Scalar Gating Projector
         self.value_context_projector = nn.Linear(NUM_INPUT_SCALARS, VALUE_HEAD_CONV_CHANNELS)
 
-        # Sizes: (Distilled channels * 4 * 4 grid) + raw scalars
-        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * 4 * 4 
+        # Sizes: (12 channels * 8 * 8 grid) + raw scalars
+        self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_DIM * BOARD_DIM 
         self.value_combined_size = self.value_spatial_flat_size + NUM_INPUT_SCALARS
         
-        # 3. Residual MLP Head
+        # 3. Dense Head (Optimized for small model ratio)
         self.value_fc1 = nn.Linear(self.value_combined_size, VALUE_FC_HIDDEN_CHANNELS)
-        self.value_res_block = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_HIDDEN_CHANNELS) # Hidden residual layer
-        self.value_fc_mid = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, VALUE_FC_MID_CHANNELS)
-        self.value_fc_out = nn.Linear(VALUE_FC_MID_CHANNELS, NUM_VALUE_OUTPUTS)
+        self.value_fc_out = nn.Linear(VALUE_FC_HIDDEN_CHANNELS, NUM_VALUE_OUTPUTS)
 
         # --- Uncertainty Weighting Parameters (Poor Man's GradNorm) ---
         # These learnable scalars balance the Policy and Value losses dynamically.
@@ -219,22 +218,24 @@ class ChaturajiNN(nn.Module):
         p = torch.cat([p_moves, p_resign], dim=1)
 
         # --- Value Head Forward ---
-        # 1. Distillation (8x8 -> 4x4)
+        # 1. 1x1 Convolution
         v = self.value_conv(x)
         v = self.value_bn(v)
         v = F.silu(v)
         
         # 2. Scalar Gating (Context-Aware Modulation)
+        # Project scalars to [Batch, 12] -> View as [Batch, 12, 1, 1]
         context_gate = torch.sigmoid(self.value_context_projector(x_scalars))
-        v = (v * context_gate.view(-1, VALUE_HEAD_CONV_CHANNELS, 1, 1)).flatten(1)
+        v = v * context_gate.view(-1, VALUE_HEAD_CONV_CHANNELS, 1, 1)
         
-        # Concatenate Global Scalars
+        # Flatten [Batch, 12, 8, 8] -> [Batch, 768]
+        v = v.flatten(1)
+        
+        # 3. Concatenate Global Scalars
         v = torch.cat([v, x_scalars], dim=1)
         
-        # 2. Residual MLP (Bottleneck)
+        # 4. Dense MLP
         v = F.silu(self.value_fc1(v))
-        v = F.silu(self.value_res_block(v) + v) # Skip connection
-        v = F.silu(self.value_fc_mid(v))
         v = self.value_fc_out(v)
         v = torch.tanh(v)
 
