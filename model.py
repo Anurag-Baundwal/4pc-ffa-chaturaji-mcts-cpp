@@ -142,7 +142,8 @@ class ChaturajiNN(nn.Module):
             nn.Linear(NUM_INPUT_SCALARS, NUM_CHANNELS),
             nn.SiLU(),
             nn.Linear(NUM_CHANNELS, NUM_CHANNELS),
-            nn.SiLU()
+            nn.SiLU(),
+            nn.LayerNorm(NUM_CHANNELS)
         )
 
         # --- Backbone (Trunk) ---
@@ -173,9 +174,6 @@ class ChaturajiNN(nn.Module):
         # 1. 1x1 Convolution (No spatial reduction)
         self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, stride=1, padding=0, bias=False)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
-        
-        # 2. Scalar Gating Projector
-        self.value_context_projector = nn.Linear(NUM_INPUT_SCALARS, VALUE_HEAD_CONV_CHANNELS)
 
         # Sizes: (12 channels * 8 * 8 grid) + raw scalars
         self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_DIM * BOARD_DIM 
@@ -189,6 +187,30 @@ class ChaturajiNN(nn.Module):
         # These learnable scalars balance the Policy and Value losses dynamically.
         # log_vars[0] -> Policy, log_vars[1] -> Value.
         self.log_vars = nn.Parameter(torch.tensor([0.0, -2.0]))
+
+        # --- Manual Initialization ---
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            # Kaiming Init for the trunk and hidden layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        
+        # Special Init for Resignation:
+        # Start with a bias of -2.0 so probability of resigning starts low (~10%)
+        # rather than 50/50. We want the net to try playing first.
+        if m == self.policy_resign_fc:
+             nn.init.constant_(m.bias, -2.0)
+        
+        # Value Head Weights Initialization
+        # Force the final value layer weights to be tiny. 
+        # This ensures Tanh output starts near 0.0 (neutral evaluation).
+        if m == self.value_fc_out:
+            nn.init.uniform_(m.weight, -0.01, 0.01)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x_planes, x_scalars):
         # --- Global Encoding ---
@@ -222,11 +244,6 @@ class ChaturajiNN(nn.Module):
         v = self.value_conv(x)
         v = self.value_bn(v)
         v = F.silu(v)
-        
-        # 2. Scalar Gating (Context-Aware Modulation)
-        # Project scalars to [Batch, 12] -> View as [Batch, 12, 1, 1]
-        context_gate = torch.sigmoid(self.value_context_projector(x_scalars))
-        v = v * context_gate.view(-1, VALUE_HEAD_CONV_CHANNELS, 1, 1)
         
         # Flatten [Batch, 12, 8, 8] -> [Batch, 768]
         v = v.flatten(1)
