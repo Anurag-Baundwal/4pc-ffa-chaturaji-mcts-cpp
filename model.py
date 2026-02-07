@@ -31,7 +31,7 @@ POLICY_OUTPUT_SIZE = NUM_POLICY_PLANES * BOARD_AREA + 1 # Index 4096 is for resi
 VALUE_OUTPUT_SIZE = 4     
 
 # Network Architecture
-NUM_RES_BLOCKS = 6      # How many residual blocks in the trunk
+NUM_RES_BLOCKS = 4      # How many residual blocks in the trunk
 NUM_CHANNELS = 64       # Width of the main trunk (Backbone)
 SE_REDUCTION = 2        # Squeeze ratio for SE blocks
 
@@ -39,7 +39,7 @@ SE_REDUCTION = 2        # Squeeze ratio for SE blocks
 POLICY_HEAD_CONV_CHANNELS = 24 # Depth of the hidden layer in policy head
 
 # Value Head Configuration
-# Optimized for 6x64 architecture to maintain >80% trunk parameter ratio.
+# Optimized for 4x64 architecture to maintain >75% trunk parameter ratio.
 # Lc0 Standard: 1x1 Conv (No Stride) -> Flatten -> Dense -> Dense.
 VALUE_HEAD_CONV_CHANNELS = 12  # Reduced to 12 to keep the dense layer input manageable
 VALUE_FC_HIDDEN_CHANNELS = 96  # Reduced to 96 to prevent head parameter bloat
@@ -111,7 +111,7 @@ class ChaturajiNN(nn.Module):
     
     - Global Encoder: Linear projects 34 scalars to 64 context features (2 layer MLP).
     
-    - Trunk: Conv + BatchNorm + SiLU -> 6 Residual Blocks.
+    - Trunk: Conv + BatchNorm + SiLU -> 4 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
     
     - Policy Head (Fully Convolutional / Spatial): 
