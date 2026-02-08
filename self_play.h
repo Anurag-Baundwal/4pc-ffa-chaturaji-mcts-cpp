@@ -52,8 +52,8 @@ private:
         std::vector<GameDataStep>& local_buffer
     );
 
-    std::map<Move, double> get_action_probs(const MCTSNode& root, double temperature) const;
-    Move choose_move(const MCTSNode& root, double temperature);
+    std::map<Move, double> get_action_probs(const MCTSNode& root, double temperature, bool allow_resignation = true) const;
+    Move choose_move(const MCTSNode& root, double temperature, bool allow_resignation = true);
     
     void process_game_result(
         std::vector<std::tuple<Board, std::map<Move, double>, Player>>& game_data_temp,

@@ -267,7 +267,8 @@ void SelfPlay::run_game_simulation(
           }
 
           double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
-          std::map<Move, double> final_policy = get_action_probs(current_root_ref, current_temperature);
+          bool can_resign = (board.get_full_move_number() > 40);
+          std::map<Move, double> final_policy = get_action_probs(current_root_ref, current_temperature, can_resign);
 
           if (final_policy.empty()) {
               mcts_root_uptr = nullptr;
@@ -275,7 +276,8 @@ void SelfPlay::run_game_simulation(
           }
 
           game_history_for_rewards.emplace_back(board, final_policy, root_player);
-          Move chosen_move = choose_move(current_root_ref, current_temperature);
+
+          Move chosen_move = choose_move(current_root_ref, current_temperature, can_resign);
           board.make_move(chosen_move); 
 
           // --- Tree Reuse Logic (Linked List) ---
@@ -306,7 +308,7 @@ void SelfPlay::run_game_simulation(
   } 
 }
 
-std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double temperature) const {
+std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double temperature, bool allow_resignation) const {
     std::map<Move, double> probs;
     if (root.is_leaf()) { return probs; }
 
@@ -316,8 +318,18 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
     // Iterate linked list children
     MCTSNode* curr = root.get_first_child();
     while (curr) {
-        visit_counts.push_back(static_cast<double>(curr->get_visit_count()));
-        if (curr->get_move()) { moves.push_back(*curr->get_move()); }
+        if (curr->get_move()) {
+            Move m = *curr->get_move();
+            
+            // If resignation is forbidden and this is a resignation move, skip it entirely.
+            if (!allow_resignation && m.is_resignation()) {
+                curr = curr->get_next_sibling();
+                continue;
+            }
+
+            visit_counts.push_back(static_cast<double>(curr->get_visit_count()));
+            moves.push_back(m);
+        }
         curr = curr->get_next_sibling();
     }
     
@@ -353,9 +365,14 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
 }
 
 
-Move SelfPlay::choose_move(const MCTSNode& root, double temperature) {
-    std::map<Move, double> action_probs = get_action_probs(root, temperature);
-    if (action_probs.empty()) { throw std::runtime_error("Cannot choose move: No legal actions found."); }
+Move SelfPlay::choose_move(const MCTSNode& root, double temperature, bool allow_resignation) {
+    std::map<Move, double> action_probs = get_action_probs(root, temperature, allow_resignation);
+    
+    if (action_probs.empty()) { 
+        // Fallback: if we accidentally masked the only move, re-run allowing everything
+        if (!allow_resignation) return choose_move(root, temperature, true);
+        throw std::runtime_error("Cannot choose move: No legal actions found."); 
+    }
 
     std::vector<Move> moves;
     std::vector<double> probabilities;
