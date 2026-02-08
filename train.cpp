@@ -36,6 +36,7 @@ void train(
   double target_sampling_rate_param,
   int training_batch_size,
   int num_workers,        
+  int games_per_worker,
   int nn_batch_size,      
   int worker_batch_size, 
   double learning_rate,
@@ -131,6 +132,7 @@ void train(
           SelfPlay self_play_generator(
               network.get(), 
               num_workers, 
+              games_per_worker,
               simulations_per_move, 
               nn_batch_size, 
               worker_batch_size,

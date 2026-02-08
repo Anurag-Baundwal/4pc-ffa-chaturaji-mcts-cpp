@@ -17,6 +17,7 @@ void train(
     double target_sampling_rate = 1.5,
     int training_batch_size = 1024, 
     int num_workers = 12,            
+    int games_per_worker = 8,
     int nn_batch_size = 1024,       
     int worker_batch_size = 48,
     double learning_rate = 0.001,

@@ -12,9 +12,48 @@
 
 namespace chaturaji_cpp {
 
+/**
+ * Internal struct to manage the state of a single game session.
+ * Used to allow workers to cycle between multiple games while waiting for the GPU.
+ */
+struct GameSession {
+    int session_id;
+    Board board;
+    std::unique_ptr<MCTSNode> mcts_root;
+    std::vector<std::tuple<Board, std::map<Move, double>, Player>> history_for_rewards;
+    int move_count = 0;
+
+    bool is_active = false;
+    bool waiting_for_inference = false;
+    bool root_noise_applicable = true;
+    int target_visit_count = 0; 
+
+    std::vector<SimulationState> pending_batch;
+    std::vector<std::future<EvaluationResult>> pending_futures;
+
+    GameSession(int id) : session_id(id) {
+        pending_batch.reserve(128);
+        pending_futures.reserve(128);
+    }
+    
+    void reset_for_new_game() {
+        board = Board();
+        mcts_root = nullptr;
+        history_for_rewards.clear();
+        move_count = 0;
+        waiting_for_inference = false;
+        root_noise_applicable = true;
+        pending_batch.clear();
+        pending_futures.clear();
+        is_active = true;
+        target_visit_count = 0; 
+    }
+};
+
 SelfPlay::SelfPlay(
     Model* network,
     int num_workers,
+    int games_per_worker,
     int simulations_per_move,
     int nn_batch_size,
     int worker_batch_size,
@@ -25,6 +64,7 @@ SelfPlay::SelfPlay(
 ) :
     network_handle_(network), 
     num_workers_(num_workers),
+    games_per_worker_(games_per_worker),
     simulations_per_move_(simulations_per_move),
     worker_batch_size_(worker_batch_size), 
     mcts_c_puct_(c_puct),
@@ -46,76 +86,71 @@ SelfPlay::~SelfPlay() {
     }
 }
 
-void SelfPlay::process_worker_batch(
-  std::vector<SimulationState>& pending_batch,
-  Player root_player, 
-  bool& root_noise_applicable 
+void SelfPlay::submit_inference_batch(
+    std::vector<SimulationState>& batch,
+    std::vector<std::future<EvaluationResult>>& out_futures
 ) {
-  if (pending_batch.empty()) {
-      return;
-  }
+    out_futures.clear(); 
+    
+    for (size_t i = 0; i < batch.size(); ++i) {
+        MCTSNode* leaf_node = batch[i].current_node;
+        if (!leaf_node) continue;
 
-  size_t batch_size = pending_batch.size();
-  std::vector<std::future<EvaluationResult>> futures;
-  futures.reserve(batch_size);
+        EvaluationRequest req;
+        board_to_tensors(leaf_node->get_board(), req.input_planes, req.input_scalars);
+        // Emplace back into the reserved vector
+        out_futures.emplace_back(evaluator_->submit_request(std::move(req)));
+    }
+}
 
-  for (size_t i = 0; i < batch_size; ++i) {
-      MCTSNode* leaf_node = pending_batch[i].current_node;
-      if (!leaf_node) { 
-           std::cerr << "Error: Nullptr leaf_node found in pending worker batch." << std::endl;
-           continue;
-      }
-      EvaluationRequest req;
-      board_to_tensors(leaf_node->get_board(), req.input_planes, req.input_scalars);
-      futures.push_back(evaluator_->submit_request(std::move(req)));
-      pending_batch[i].pending_request_id = req.request_id; 
-  }
+void SelfPlay::process_inference_results(
+    std::vector<SimulationState>& batch,
+    std::vector<std::future<EvaluationResult>>& futures,
+    bool& root_noise_applicable 
+) {
+    for (size_t i = 0; i < batch.size(); ++i) {
+        MCTSNode* leaf_node = batch[i].current_node;
+        const std::vector<MCTSNode*>& path = batch[i].path;
 
-  for (size_t i = 0; i < batch_size; ++i) {
-      MCTSNode* leaf_node = pending_batch[i].current_node;
-      const std::vector<MCTSNode*>& path = pending_batch[i].path;
+        if (!leaf_node) continue; 
 
-      if (!leaf_node) continue; 
+        try {
+            EvaluationResult result = futures[i].get(); 
+            leaf_node->decrement_pending_visits();
 
-      try {
-          EvaluationResult result = futures[i].get(); 
-          leaf_node->decrement_pending_visits();
+            std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+            bool is_root_node_eval = (leaf_node == path[0]); 
 
-          // 1. Process Policy
-          std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
-          bool is_root_node_eval = (leaf_node == path[0]); 
+            if (!policy_probs.empty()) {
+                // Apply noise to root if this is the first expansion of a new move/game
+                if (is_root_node_eval && root_noise_applicable) {
+                    policy_probs = add_dirichlet_noise(policy_probs, dirichlet_alpha_, dirichlet_epsilon_);
+                    root_noise_applicable = false; 
+                }
+                if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
+                     leaf_node->expand(policy_probs);
+                }
+            }
+            
+            // Map relative NN values back to absolute player indices
+            std::array<double, 4> player_values_absolute;
+            Player cp = leaf_node->get_board().get_current_player();
+            int cp_idx = static_cast<int>(cp);
 
-          if (!policy_probs.empty()) {
-              if (is_root_node_eval && root_noise_applicable) {
-                  policy_probs = add_dirichlet_noise(policy_probs, dirichlet_alpha_, dirichlet_epsilon_);
-                  root_noise_applicable = false; 
-              }
-              if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
-                   leaf_node->expand(policy_probs);
-              }
-          }
-          
-          // 2. Process Value
-          std::array<double, 4> player_values_absolute;
-          Player cp = leaf_node->get_board().get_current_player();
-          int cp_idx = static_cast<int>(cp);
+            for(int rel_i = 0; rel_i < 4; ++rel_i) {
+                int abs_p_idx = (cp_idx + rel_i) % 4;
+                player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
+            }
 
-          for(int rel_i = 0; rel_i < 4; ++rel_i) {
-              int abs_p_idx = (cp_idx + rel_i) % 4;
-              player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
-          }
+            backpropagate_mcts_value(path, player_values_absolute); 
 
-          backpropagate_mcts_value(path, player_values_absolute); 
-
-      } catch (const std::future_error& e) {
-          std::cerr << "Future error processing worker batch item " << i << ": " << e.what() << std::endl;
-          if (leaf_node) leaf_node->decrement_pending_visits();
-      } catch (const std::exception& e) {
-          std::cerr << "Exception processing worker batch item " << i << ": " << e.what() << std::endl;
-           if (leaf_node) leaf_node->decrement_pending_visits();
-      }
-  } 
-  pending_batch.clear();
+        } catch (const std::exception& e) {
+            std::cerr << "Exception processing batch result: " << e.what() << std::endl;
+            if (leaf_node) leaf_node->decrement_pending_visits();
+        }
+    } 
+    batch.clear();
+    futures.clear();
 }
 
 std::map<Move, double> SelfPlay::add_dirichlet_noise(
@@ -196,115 +231,179 @@ void SelfPlay::run_game_simulation(
   std::vector<GameDataStep>& local_buffer
 ) {
   std::mt19937 thread_rng(std::random_device{}() + worker_id);
+  
+  std::vector<GameSession> sessions;
+  sessions.reserve(games_per_worker_);
+  for(int i=0; i<games_per_worker_; ++i) {
+      sessions.emplace_back(i);
+  }
 
   while (true) {
-      int game_idx = games_started_counter.fetch_add(1);
-      if (game_idx >= target_games) break;
+      if (games_completed_counter.load() >= target_games) {
+          bool any_active = false;
+          for(const auto& s : sessions) if(s.is_active) any_active = true;
+          if (!any_active) break;
+      }
 
-      Board board; 
-      std::unique_ptr<MCTSNode> mcts_root_uptr = nullptr;
+      int active_session_count = 0;
+      bool any_action_taken = false;
 
-      std::vector<std::tuple<Board, std::map<Move, double>, Player>> game_history_for_rewards;
-      int move_count = 0;
-
-      while (!board.is_game_over()) {
-          // Check for tree reuse
-          if (!mcts_root_uptr || mcts_root_uptr->get_board().get_position_key() != board.get_position_key()) {
-              mcts_root_uptr = std::make_unique<MCTSNode>(board);
-          }
-          MCTSNode& current_root_ref = *mcts_root_uptr; 
-
-          Player root_player = board.get_current_player(); 
-
-          std::vector<SimulationState> pending_worker_batch;
-          pending_worker_batch.reserve(worker_batch_size_);
-          
-          bool root_noise_applicable = true; 
-
-          // If the tree is REUSED, the root is not a leaf, so the batch processing noise logic
-          // won't trigger. We must inject noise manually here.
-          if (!current_root_ref.is_leaf()) {
-              current_root_ref.inject_noise(dirichlet_alpha_, dirichlet_epsilon_, thread_rng);
-              root_noise_applicable = false; 
-          }
-
-          for (int sim = 0; sim < simulations_per_move_; ++sim) {
-              SimulationState current_mcts_path;
-              current_mcts_path.current_node = &current_root_ref;
-              current_mcts_path.path.push_back(current_mcts_path.current_node);
-              bool selection_failed = false; 
-
-              while (!current_mcts_path.current_node->is_leaf()) {
-                  MCTSNode* next_node = current_mcts_path.current_node->select_child(mcts_c_puct_);
-                  if (next_node == nullptr || next_node == current_mcts_path.current_node) {
-                       selection_failed = true; 
-                       break; 
-                  }
-                  current_mcts_path.current_node = next_node;
-                  current_mcts_path.path.push_back(current_mcts_path.current_node);
-              } 
-
-              if (selection_failed) {
+      for (auto& session : sessions) {
+          if (!session.is_active) {
+              int game_idx = games_started_counter.fetch_add(1);
+              if (game_idx < target_games) {
+                  session.reset_for_new_game();
+                  session.mcts_root = std::make_unique<MCTSNode>(session.board);
+                  // Flag noise for application after the first expansion
+                  session.root_noise_applicable = true; 
+                  // Set initial target. Since new root has 0 visits:
+                  session.target_visit_count = simulations_per_move_;
+              } else {
                   continue; 
               }
+          }
+          
+          active_session_count++;
 
-              MCTSNode* leaf_node = current_mcts_path.current_node;
-              if (leaf_node->get_board().is_game_over()) {
-                  PlayerPointMap final_scores = leaf_node->get_board().get_game_result();
-                  std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-                  backpropagate_mcts_value(current_mcts_path.path, terminal_player_values);
-              } else {
-                  leaf_node->increment_pending_visits();
-                  pending_worker_batch.push_back(std::move(current_mcts_path));
-                  if (pending_worker_batch.size() >= static_cast<size_t>(worker_batch_size_)) {
-                      process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
+          if (session.waiting_for_inference) {
+              bool ready = false;
+              if (!session.pending_futures.empty()) {
+                  auto status = session.pending_futures[0].wait_for(std::chrono::seconds(0));
+                  if (status == std::future_status::ready) {
+                      ready = true;
                   }
               }
-          } 
 
-          if (!pending_worker_batch.empty()) {
-              process_worker_batch(pending_worker_batch, root_player, root_noise_applicable);
-          }
-
-          double current_temperature = (move_count < temperature_decay_move_) ? 1.0 : 0.0;
-          bool can_resign = (board.get_full_move_number() > 40);
-          std::map<Move, double> final_policy = get_action_probs(current_root_ref, current_temperature, can_resign);
-
-          if (final_policy.empty()) {
-              mcts_root_uptr = nullptr;
-              break; 
-          }
-
-          game_history_for_rewards.emplace_back(board, final_policy, root_player);
-
-          Move chosen_move = choose_move(current_root_ref, current_temperature, can_resign);
-          board.make_move(chosen_move); 
-
-          // --- Tree Reuse Logic (Linked List) ---
-          MCTSNode* chosen_child_raw_ptr = nullptr;
-          MCTSNode* curr = current_root_ref.get_first_child();
-          while (curr) {
-              if (curr->get_move() && curr->get_move().value() == chosen_move) {
-                  chosen_child_raw_ptr = curr;
-                  break;
+              if (ready) {
+                  process_inference_results(session.pending_batch, session.pending_futures, session.root_noise_applicable);
+                  session.waiting_for_inference = false;
+                  any_action_taken = true;
+              } else {
+                  continue; 
               }
-              curr = curr->get_next_sibling();
           }
 
-          if (chosen_child_raw_ptr) {
-              MCTSNode* new_root_raw = mcts_root_uptr->detach_child_and_clear_others(chosen_child_raw_ptr);
-              mcts_root_uptr.reset(new_root_raw);
-          } else {
-              mcts_root_uptr = std::make_unique<MCTSNode>(board); 
-          }
-          move_count++;
-      } 
+          // Inner MCTS loop: generate simulations until batch is full or move is decided
+          while (session.is_active && !session.waiting_for_inference) {
+              int current_visits = session.mcts_root->get_visit_count(); 
 
-      int completed_count = games_completed_counter.fetch_add(1) + 1;
+              if (current_visits >= session.target_visit_count) {
+                   MCTSNode& root = *session.mcts_root;
+                   double current_temperature = (session.move_count < temperature_decay_move_) ? 1.0 : 0.0;
+                   bool can_resign = (session.board.get_full_move_number() > 40);
+                   
+                   std::map<Move, double> final_policy = get_action_probs(root, current_temperature, can_resign);
+                   if (final_policy.empty()) {
+                       games_started_counter.fetch_sub(1);
+                       session.is_active = false;
+                       break;
+                   }
+
+                   session.history_for_rewards.emplace_back(session.board, final_policy, session.board.get_current_player());
+
+                   Move chosen_move = choose_move(root, current_temperature, can_resign);
+                   session.board.make_move(chosen_move);
+                   session.move_count++;
+
+                   // Tree Reuse
+                   MCTSNode* chosen_child = nullptr;
+                   MCTSNode* curr = root.get_first_child();
+                   while (curr) {
+                       if (curr->get_move() && curr->get_move().value() == chosen_move) {
+                           chosen_child = curr;
+                           break;
+                       }
+                       curr = curr->get_next_sibling();
+                   }
+
+                   if (chosen_child) {
+                       MCTSNode* new_root = session.mcts_root->detach_child_and_clear_others(chosen_child);
+                       session.mcts_root.reset(new_root);
+                   } else {
+                       session.mcts_root = std::make_unique<MCTSNode>(session.board);
+                   }
+                   
+                   // Update target for the next move
+                   // Target = (Visits carried over from reuse) + (New simulations to run)
+                   session.target_visit_count = session.mcts_root->get_visit_count() + simulations_per_move_;
+                   session.pending_batch.clear();
+
+                   if (session.board.is_game_over()) {
+                       process_game_result(session.history_for_rewards, session.board, local_buffer);
+                       int completed_count = games_completed_counter.fetch_add(1) + 1;
+                       std::cout << "Worker " << worker_id << " finished game " << completed_count 
+                                 << "/" << target_games << " (" << session.move_count << " moves)." << std::endl; 
+                       session.is_active = false;
+                   } else {
+                       if (!session.mcts_root->is_leaf()) {
+                           session.mcts_root->inject_noise(dirichlet_alpha_, dirichlet_epsilon_, thread_rng);
+                           session.root_noise_applicable = false; 
+                       } else {
+                           session.root_noise_applicable = true; 
+                       }
+                   }
+
+                   any_action_taken = true;
+                   break; // Move to next session
+              }
+
+              SimulationState current_sim_path;
+              current_sim_path.current_node = session.mcts_root.get();
+              current_sim_path.path.push_back(current_sim_path.current_node);
+              
+              bool selection_failed = false;
+              while (!current_sim_path.current_node->is_leaf()) {
+                  MCTSNode* next_node = current_sim_path.current_node->select_child(mcts_c_puct_);
+                  if (!next_node || next_node == current_sim_path.current_node) {
+                      selection_failed = true;
+                      break;
+                  }
+                  current_sim_path.current_node = next_node;
+                  current_sim_path.path.push_back(current_sim_path.current_node);
+              }
+
+              if (selection_failed) {
+                  // Fallback: If MCTS selection gets stuck, force evaluation of root to progress
+                  if (current_sim_path.current_node == session.mcts_root.get() && session.mcts_root->is_leaf()) {
+                      // Handled by batching below
+                  } else {
+                      break; 
+                  }
+              }
+
+              MCTSNode* leaf = current_sim_path.current_node;
+              if (leaf->get_board().is_game_over()) {
+                  PlayerPointMap scores = leaf->get_board().get_game_result();
+                  backpropagate_mcts_value(current_sim_path.path, get_reward_map_array(scores));
+              } else {
+                  leaf->increment_pending_visits();
+                  session.pending_batch.push_back(std::move(current_sim_path));
+
+                  // Submit if batch is full OR if we have enough simulations 
+                  // in flight to finish the search for this move.
+                  size_t in_flight = session.pending_batch.size();
+                  if (in_flight >= (size_t)worker_batch_size_ || (current_visits + in_flight) >= (size_t)session.target_visit_count) {
+                      submit_inference_batch(session.pending_batch, session.pending_futures);
+                      session.waiting_for_inference = true;
+                      any_action_taken = true;
+                      break;  
+                  }
+              }
+          }
+      }
+
+      if (active_session_count > 0 && !any_action_taken) {
+          for (auto& s : sessions) {
+              if (s.is_active && s.waiting_for_inference) {
+                  s.pending_futures[0].wait();
+                  break; 
+              }
+          }
+      }
       
-      std::cout << "Worker " << worker_id << " finished game " << completed_count << "/" << target_games << " (" << move_count << " moves)." << std::endl;
-      
-      process_game_result(game_history_for_rewards, board, local_buffer);
+      if (active_session_count == 0 && games_started_counter.load() >= target_games) {
+          break;
+      }
   } 
 }
 
@@ -315,25 +414,20 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
     std::vector<double> visit_counts;
     std::vector<Move> moves;
     
-    // Iterate linked list children
     MCTSNode* curr = root.get_first_child();
     while (curr) {
         if (curr->get_move()) {
             Move m = *curr->get_move();
-            
-            // If resignation is forbidden and this is a resignation move, skip it entirely.
             if (!allow_resignation && m.is_resignation()) {
                 curr = curr->get_next_sibling();
                 continue;
             }
-
             visit_counts.push_back(static_cast<double>(curr->get_visit_count()));
             moves.push_back(m);
         }
         curr = curr->get_next_sibling();
     }
     
-    // Safety check just in case node has children but no moves stored
     if (moves.empty()) return probs;
 
     if (temperature == 0.0) {
@@ -364,12 +458,10 @@ std::map<Move, double> SelfPlay::get_action_probs(const MCTSNode& root, double t
     return probs;
 }
 
-
 Move SelfPlay::choose_move(const MCTSNode& root, double temperature, bool allow_resignation) {
     std::map<Move, double> action_probs = get_action_probs(root, temperature, allow_resignation);
     
     if (action_probs.empty()) { 
-        // Fallback: if we accidentally masked the only move, re-run allowing everything
         if (!allow_resignation) return choose_move(root, temperature, true);
         throw std::runtime_error("Cannot choose move: No legal actions found."); 
     }

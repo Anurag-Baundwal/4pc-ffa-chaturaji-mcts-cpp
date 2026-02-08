@@ -178,6 +178,7 @@ int main(int argc, char* argv[]) {
         int training_batch_size = 1024;
         int sims_per_move = 128;
         int num_workers = 12;   
+        int games_per_worker = 8;
         int nn_batch_size = 1024;
         int worker_batch_size = 48;
         double learning_rate = 0.001;
@@ -208,6 +209,9 @@ int main(int argc, char* argv[]) {
         
         temp_str = get_cmd_option(argv, argv+argc, "--workers"); 
         if (!temp_str.empty()) num_workers = std::stoi(temp_str);
+        
+        temp_str = get_cmd_option(argv, argv+argc, "--games-per-worker"); 
+        if (!temp_str.empty()) games_per_worker = std::stoi(temp_str);
         
         temp_str = get_cmd_option(argv, argv+argc, "--nn-batch");
         if (!temp_str.empty()) nn_batch_size = std::stoi(temp_str);
@@ -246,6 +250,7 @@ int main(int argc, char* argv[]) {
                 target_sampling_rate,
                 training_batch_size,
                 num_workers,
+                games_per_worker,
                 nn_batch_size,
                 worker_batch_size,
                 learning_rate,

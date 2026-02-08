@@ -9,6 +9,7 @@
 #include <thread> 
 #include <atomic> 
 #include <array> 
+#include <future>
 
 #include "board.h"
 #include "mcts_node.h"
@@ -23,13 +24,13 @@ namespace chaturaji_cpp {
 class DataWriter;
 
 using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 4>>;
-using ReplayBuffer = std::deque<GameDataStep>;
 
 class SelfPlay {
 public:
     SelfPlay(
         Model* network, 
         int num_workers = 4,
+        int games_per_worker = 8,
         int simulations_per_move = 100,
         int nn_batch_size = NN_POLICY_SIZE, // (4096)
         int worker_batch_size = 16,
@@ -67,14 +68,24 @@ private:
       double epsilon
     );
 
-    void process_worker_batch(
-      std::vector<SimulationState>& pending_batch,
-      Player root_player, 
-      bool& apply_root_noise 
+    // --- Split Batch Processing for Async Execution ---
+    
+    // Submits a batch to the evaluator and populates out_futures with the returned futures
+    void submit_inference_batch(
+        std::vector<SimulationState>& batch,
+        std::vector<std::future<EvaluationResult>>& out_futures
+    );
+
+    // Waits for futures (if necessary), processes results, and updates the tree
+    void process_inference_results(
+        std::vector<SimulationState>& batch,
+        std::vector<std::future<EvaluationResult>>& futures,
+        bool& root_noise_applicable 
     );
 
     Model* network_handle_; // Non-owning pointer
     int num_workers_;
+    int games_per_worker_;
     int simulations_per_move_;
     double mcts_c_puct_;
     int temperature_decay_move_;
