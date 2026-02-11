@@ -84,14 +84,10 @@ namespace {
     const int KNIGHT_DC[] = {1, -1, 2, -2, 2, -2, 1, -1};
 }
 
-void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars) {
-    // 1. Prepare Buffers
-    if (out_planes.size() != NN_INPUT_PLANES_SIZE) out_planes.resize(NN_INPUT_PLANES_SIZE);
-    if (out_scalars.size() != NN_INPUT_SCALARS) out_scalars.resize(NN_INPUT_SCALARS);
+void board_to_tensors(const Board& board, float* out_planes, float* out_scalars) {
+    std::memset(out_planes, 0, NN_INPUT_PLANES_SIZE * sizeof(float));
+    std::memset(out_scalars, 0, NN_INPUT_SCALARS * sizeof(float));
     
-    std::fill(out_planes.begin(), out_planes.end(), 0.0f);
-    std::fill(out_scalars.begin(), out_scalars.end(), 0.0f);
-
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 

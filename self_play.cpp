@@ -94,11 +94,13 @@ void SelfPlay::submit_inference_batch(
     
     for (size_t i = 0; i < batch.size(); ++i) {
         MCTSNode* leaf_node = batch[i].current_node;
-        if (!leaf_node) continue;
-
+        if (!leaf_node) {
+            std::cerr << "Error: Null leaf node in batch!" << std::endl;
+            continue; 
+        }
         EvaluationRequest req;
-        board_to_tensors(leaf_node->get_board(), req.input_planes, req.input_scalars);
-        // Emplace back into the reserved vector
+        req.request_id = static_cast<RequestId>(i);
+        board_to_tensors(leaf_node->get_board(), req.input_planes.data(), req.input_scalars.data());
         out_futures.emplace_back(evaluator_->submit_request(std::move(req)));
     }
 }

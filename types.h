@@ -236,8 +236,8 @@ using RequestId = uint64_t;
  */
 struct EvaluationRequest {
     RequestId request_id;
-    std::vector<float> input_planes;  // Size: 28 * 8 * 8
-    std::vector<float> input_scalars; // Size: 18
+    std::array<float, NN_INPUT_PLANES_SIZE> input_planes;  // Size: 28 * 8 * 8
+    std::array<float, NN_INPUT_SCALARS> input_scalars; // Size: 18
 };
 
 /**

@@ -28,7 +28,7 @@ struct RunStats {
 
 // --- Tensor Conversion ---
 
-void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars);
+void board_to_tensors(const Board& board, float* out_planes, float* out_scalars);
 
 /**
  * @brief Compress a board state, policy, and rewards into a PackedSample struct.
