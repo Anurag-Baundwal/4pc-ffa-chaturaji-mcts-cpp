@@ -26,9 +26,24 @@ struct RunStats {
     static RunStats load(const std::string& filepath);
 };
 
+class TensorPool {
+public:
+    // Acquire re-usable memory (or allocate new if pool empty)
+    static std::unique_ptr<PlanesArray> acquire_planes();
+    static std::unique_ptr<ScalarsArray> acquire_scalars();
+    static std::unique_ptr<PolicyArray> acquire_policy();
+    static std::unique_ptr<ValueArray> acquire_value();
+
+    // Return memory to the pool
+    static void release_planes(std::unique_ptr<PlanesArray> ptr);
+    static void release_scalars(std::unique_ptr<ScalarsArray> ptr);
+    static void release_policy(std::unique_ptr<PolicyArray> ptr);
+    static void release_value(std::unique_ptr<ValueArray> ptr);
+};
+
 // --- Tensor Conversion ---
 
-void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars);
+void board_to_tensors(const Board& board, float* out_planes, float* out_scalars);
 
 /**
  * @brief Compress a board state, policy, and rewards into a PackedSample struct.

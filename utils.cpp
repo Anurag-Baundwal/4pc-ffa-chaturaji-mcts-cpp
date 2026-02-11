@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "magic_utils.h" 
+#include "thread_safe_queue.h"
 #include <stdexcept>
 #include <vector>
 #include <map>
@@ -11,8 +12,66 @@
 #include <memory>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 namespace chaturaji_cpp {
+
+// --- TensorPool Implementation ---
+
+// Global static queues for recycling
+static ThreadSafeQueue<std::unique_ptr<PlanesArray>>& get_planes_pool() {
+    static ThreadSafeQueue<std::unique_ptr<PlanesArray>> pool;
+    return pool;
+}
+static ThreadSafeQueue<std::unique_ptr<ScalarsArray>>& get_scalars_pool() {
+    static ThreadSafeQueue<std::unique_ptr<ScalarsArray>> pool;
+    return pool;
+}
+static ThreadSafeQueue<std::unique_ptr<PolicyArray>>& get_policy_pool() {
+    static ThreadSafeQueue<std::unique_ptr<PolicyArray>> pool;
+    return pool;
+}
+static ThreadSafeQueue<std::unique_ptr<ValueArray>>& get_value_pool() {
+    static ThreadSafeQueue<std::unique_ptr<ValueArray>> pool;
+    return pool;
+}
+
+std::unique_ptr<PlanesArray> TensorPool::acquire_planes() {
+    auto item = get_planes_pool().try_pop();
+    if (item) return std::move(*item);
+    return std::make_unique<PlanesArray>();
+}
+
+std::unique_ptr<ScalarsArray> TensorPool::acquire_scalars() {
+    auto item = get_scalars_pool().try_pop();
+    if (item) return std::move(*item);
+    return std::make_unique<ScalarsArray>();
+}
+
+std::unique_ptr<PolicyArray> TensorPool::acquire_policy() {
+    auto item = get_policy_pool().try_pop();
+    if (item) return std::move(*item);
+    return std::make_unique<PolicyArray>();
+}
+
+std::unique_ptr<ValueArray> TensorPool::acquire_value() {
+    auto item = get_value_pool().try_pop();
+    if (item) return std::move(*item);
+    return std::make_unique<ValueArray>();
+}
+
+void TensorPool::release_planes(std::unique_ptr<PlanesArray> ptr) {
+    if(ptr) get_planes_pool().push(std::move(ptr));
+}
+void TensorPool::release_scalars(std::unique_ptr<ScalarsArray> ptr) {
+    if(ptr) get_scalars_pool().push(std::move(ptr));
+}
+void TensorPool::release_policy(std::unique_ptr<PolicyArray> ptr) {
+    if(ptr) get_policy_pool().push(std::move(ptr));
+}
+void TensorPool::release_value(std::unique_ptr<ValueArray> ptr) {
+    if(ptr) get_value_pool().push(std::move(ptr));
+}
 
 // --- RunStats Implementation ---
 
@@ -84,14 +143,10 @@ namespace {
     const int KNIGHT_DC[] = {1, -1, 2, -2, 2, -2, 1, -1};
 }
 
-void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::vector<float>& out_scalars) {
-    // 1. Prepare Buffers
-    if (out_planes.size() != NN_INPUT_PLANES_SIZE) out_planes.resize(NN_INPUT_PLANES_SIZE);
-    if (out_scalars.size() != NN_INPUT_SCALARS) out_scalars.resize(NN_INPUT_SCALARS);
+void board_to_tensors(const Board& board, float* out_planes, float* out_scalars) {
+    std::memset(out_planes, 0, NN_INPUT_PLANES_SIZE * sizeof(float));
+    std::memset(out_scalars, 0, NN_INPUT_SCALARS * sizeof(float));
     
-    std::fill(out_planes.begin(), out_planes.end(), 0.0f);
-    std::fill(out_scalars.begin(), out_scalars.end(), 0.0f);
-
     Player current_p = board.get_current_player();
     int cp_idx = static_cast<int>(current_p);
 

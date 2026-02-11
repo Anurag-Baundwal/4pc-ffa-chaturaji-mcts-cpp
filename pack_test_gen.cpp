@@ -68,7 +68,7 @@ int main() {
         std::vector<float> ground_truth_scalars(NN_INPUT_SCALARS);
         
         // Populates the two separate vectors
-        board_to_tensors(board, ground_truth_planes, ground_truth_scalars);
+        board_to_tensors(board, ground_truth_planes.data(), ground_truth_scalars.data());
 
         std::vector<float> ground_truth_policy(NN_POLICY_SIZE, 0.0f);
         Player p = board.get_current_player();

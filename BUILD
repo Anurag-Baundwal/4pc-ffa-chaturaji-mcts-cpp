@@ -91,6 +91,7 @@ cc_library(
     }),
     deps = [
         ":chaturaji_types",
+        ":chaturaji_utils",
         "@onnxruntime//:onnxruntime",
     ],
 )
@@ -103,6 +104,7 @@ cc_library(
     deps = [
         ":chaturaji_model",
         ":chaturaji_types",
+        ":chaturaji_utils",
     ],
 )
 

@@ -4,6 +4,7 @@
 #include <array>
 #include "onnxruntime_cxx_api.h"
 #include "types.h"
+#include "utils.h"
 
 namespace chaturaji_cpp {
 

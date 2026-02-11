@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <memory>
 
 namespace chaturaji_cpp {
 
@@ -228,16 +229,24 @@ using MoveList = StaticVector<Move, 128>;
 
 // --- Structures for Asynchronous Evaluation ---
 
-// Unique identifier for an evaluation request (can be for a batch)
 using RequestId = uint64_t;
+using PolicyArray = std::array<float, NN_POLICY_SIZE>;
+using ValueArray = std::array<float, NN_VALUE_SIZE>;
+using PlanesArray = std::array<float, NN_INPUT_PLANES_SIZE>;
+using ScalarsArray = std::array<float, NN_INPUT_SCALARS>;
 
 /**
  * @brief Data sent from an MCTS worker to the evaluator.
  */
 struct EvaluationRequest {
     RequestId request_id;
-    std::vector<float> input_planes;  // Size: 28 * 8 * 8
-    std::vector<float> input_scalars; // Size: 18
+    std::unique_ptr<PlanesArray> input_planes;
+    std::unique_ptr<ScalarsArray> input_scalars;
+
+    EvaluationRequest() : input_planes(nullptr), input_scalars(nullptr) {}
+
+    EvaluationRequest(EvaluationRequest&&) = default;
+    EvaluationRequest& operator=(EvaluationRequest&&) = default;
 };
 
 /**
@@ -245,8 +254,13 @@ struct EvaluationRequest {
  */
 struct EvaluationResult {
     RequestId request_id;
-    std::array<float, NN_POLICY_SIZE> policy_logits; // Size: 4096
-    std::array<float, NN_VALUE_SIZE> value;          // Size: 4
+    std::unique_ptr<PolicyArray> policy_logits;
+    std::unique_ptr<ValueArray> value;
+
+    EvaluationResult() : policy_logits(nullptr), value(nullptr) {}
+    
+    EvaluationResult(EvaluationResult&&) = default;
+    EvaluationResult& operator=(EvaluationResult&&) = default;
 };
 
 // Maximum sparse policy entries to store (moves with very low prob are truncated)

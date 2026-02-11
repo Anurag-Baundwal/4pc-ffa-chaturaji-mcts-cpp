@@ -88,12 +88,9 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
     std::vector<float> scalars_buffer(batch_size * NN_INPUT_SCALARS);
     
     for (size_t i = 0; i < batch_size; ++i) {
-        // Copy Planes
-        std::copy(requests[i].input_planes.begin(), requests[i].input_planes.end(), 
+        std::copy(requests[i].input_planes->begin(), requests[i].input_planes->end(), 
                   planes_buffer.begin() + (i * NN_INPUT_PLANES_SIZE));
-        
-        // Copy Scalars
-        std::copy(requests[i].input_scalars.begin(), requests[i].input_scalars.end(),
+        std::copy(requests[i].input_scalars->begin(), requests[i].input_scalars->end(),
                   scalars_buffer.begin() + (i * NN_INPUT_SCALARS));
     }
 
@@ -130,13 +127,14 @@ std::vector<EvaluationResult> Model::evaluate_batch(const std::vector<Evaluation
         EvaluationResult res;
         res.request_id = requests[i].request_id;
         
-        // Copy policy (4096 floats)
-        std::copy(policy_ptr + (i * NN_POLICY_SIZE), policy_ptr + ((i + 1) * NN_POLICY_SIZE), res.policy_logits.begin());
+        res.policy_logits = TensorPool::acquire_policy();
+        res.value = TensorPool::acquire_value();
+
+        // Copy data
+        std::copy(policy_ptr + (i * NN_POLICY_SIZE), policy_ptr + ((i + 1) * NN_POLICY_SIZE), res.policy_logits->begin());
+        std::copy(value_ptr + (i * NN_VALUE_SIZE), value_ptr + ((i + 1) * NN_VALUE_SIZE), res.value->begin());
         
-        // Copy values (4 floats)
-        std::copy(value_ptr + (i * NN_VALUE_SIZE), value_ptr + ((i + 1) * NN_VALUE_SIZE), res.value.begin());
-        
-        results.push_back(res);
+        results.push_back(std::move(res));
     }
 
     return results;

@@ -94,11 +94,14 @@ void SelfPlay::submit_inference_batch(
     
     for (size_t i = 0; i < batch.size(); ++i) {
         MCTSNode* leaf_node = batch[i].current_node;
-        if (!leaf_node) continue;
-
+        if (!leaf_node) {
+            throw std::runtime_error("SelfPlay: Critical Error - Attempted to submit a null leaf node for inference.");
+        }
         EvaluationRequest req;
-        board_to_tensors(leaf_node->get_board(), req.input_planes, req.input_scalars);
-        // Emplace back into the reserved vector
+        req.request_id = static_cast<RequestId>(i);
+        req.input_planes = TensorPool::acquire_planes();
+        req.input_scalars = TensorPool::acquire_scalars();
+        board_to_tensors(leaf_node->get_board(), req.input_planes->data(), req.input_scalars->data());
         out_futures.emplace_back(evaluator_->submit_request(std::move(req)));
     }
 }
@@ -118,7 +121,7 @@ void SelfPlay::process_inference_results(
             EvaluationResult result = futures[i].get(); 
             leaf_node->decrement_pending_visits();
 
-            std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+            std::map<Move, double> policy_probs = process_policy(*result.policy_logits, leaf_node->get_board());
             bool is_root_node_eval = (leaf_node == path[0]); 
 
             if (!policy_probs.empty()) {
@@ -139,10 +142,14 @@ void SelfPlay::process_inference_results(
 
             for(int rel_i = 0; rel_i < 4; ++rel_i) {
                 int abs_p_idx = (cp_idx + rel_i) % 4;
-                player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
+                player_values_absolute[abs_p_idx] = static_cast<double>((*result.value)[rel_i]);
             }
 
             backpropagate_mcts_value(path, player_values_absolute); 
+
+            // Return the result memory to the pool
+            TensorPool::release_policy(std::move(result.policy_logits));
+            TensorPool::release_value(std::move(result.value));
 
         } catch (const std::exception& e) {
             std::cerr << "Exception processing batch result: " << e.what() << std::endl;

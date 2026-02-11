@@ -107,7 +107,11 @@ void evaluate_and_expand_batch_sync(
   for (size_t i = 0; i < pending_eval.size(); ++i) {
       EvaluationRequest req;
       req.request_id = static_cast<RequestId>(i); 
-      board_to_tensors(pending_eval[i].current_node->get_board(), req.input_planes, req.input_scalars);
+
+      req.input_planes = TensorPool::acquire_planes();
+      req.input_scalars = TensorPool::acquire_scalars();
+
+      board_to_tensors(pending_eval[i].current_node->get_board(), req.input_planes->data(), req.input_scalars->data());
       requests.push_back(std::move(req));
   }
 
@@ -115,7 +119,7 @@ void evaluate_and_expand_batch_sync(
   std::vector<EvaluationResult> results = network->evaluate_batch(requests);
 
   // 3. Process Results
-  for (const auto& result : results) {
+  for (auto& result : results) {
       size_t idx = static_cast<size_t>(result.request_id);
       if (idx >= pending_eval.size()) continue;
 
@@ -125,7 +129,7 @@ void evaluate_and_expand_batch_sync(
 
       if (!leaf_node) continue;
 
-      std::map<Move, double> policy_probs = process_policy(result.policy_logits, leaf_node->get_board());
+      std::map<Move, double> policy_probs = process_policy(*(result.policy_logits), leaf_node->get_board());
 
       if (leaf_node->is_leaf() && !leaf_node->get_board().is_game_over()) {
            if (!policy_probs.empty()) {
@@ -142,13 +146,23 @@ void evaluate_and_expand_batch_sync(
 
       for(int rel_i = 0; rel_i < 4; ++rel_i) {
           int abs_p_idx = (cp_idx + rel_i) % 4;
-          player_values_absolute[abs_p_idx] = static_cast<double>(result.value[rel_i]);
+          player_values_absolute[abs_p_idx] = static_cast<double>((*result.value)[rel_i]);
       }
 
       // --- APPLY PESSIMISM TO NN OUTPUT ---
       apply_pessimism(player_values_absolute, pessimism_factor);
 
       backpropagate_mcts_value(path, player_values_absolute);
+
+      // Return Output memory to the pool
+      TensorPool::release_policy(std::move(result.policy_logits));
+      TensorPool::release_value(std::move(result.value));
+  }
+
+  // 4. Return Input memory to the pool
+  for (auto& req : requests) {
+      TensorPool::release_planes(std::move(req.input_planes));
+      TensorPool::release_scalars(std::move(req.input_scalars));
   }
   pending_eval.clear();
 }

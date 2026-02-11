@@ -1,3 +1,4 @@
+#include "utils.h"
 #include "evaluator.h"
 #include <iostream>
 #include <chrono>   
@@ -131,8 +132,8 @@ void Evaluator::evaluation_loop() {
         // --- 3. Prepare requests for ONNX Model ---
         std::vector<EvaluationRequest> requests_for_nn;
         requests_for_nn.reserve(batch_with_promises.size());
-        for (const auto& pair : batch_with_promises) {
-            requests_for_nn.push_back(pair.first); 
+        for (auto& pair : batch_with_promises) {
+            requests_for_nn.push_back(std::move(pair.first));
         }
 
         // --- 4. Perform Batched Inference ---
@@ -145,6 +146,10 @@ void Evaluator::evaluation_loop() {
                 try {
                     pair.second.set_exception(std::current_exception());
                 } catch (...) { }
+            }
+            for (auto& req : requests_for_nn) {
+                TensorPool::release_planes(std::move(req.input_planes));
+                TensorPool::release_scalars(std::move(req.input_scalars));
             }
             continue; 
         }
@@ -163,6 +168,13 @@ void Evaluator::evaluation_loop() {
                     std::cerr << "Warning: std::future_error setting value: " << e.what() << std::endl;
                 }
             }
+        }
+
+        // --- 6. Recycle Inputs back to pool ---
+        // After fulfillng promises, the model is done with the input planes/scalars.
+        for (auto& req : requests_for_nn) {
+            TensorPool::release_planes(std::move(req.input_planes));
+            TensorPool::release_scalars(std::move(req.input_scalars));
         }
     } 
 
