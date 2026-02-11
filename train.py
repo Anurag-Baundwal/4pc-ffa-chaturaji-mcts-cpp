@@ -27,10 +27,6 @@ PACKED_DTYPE = np.dtype([
     
     # Hand-Crafted Heuristic Scalars 
     ('material',      np.float32, (4,)),
-    ('pawn_count',    np.float32, (4,)),
-    ('avg_pawn_dist', np.float32, (4,)),
-    ('king_safe',     np.float32, (4,)),
-    ('pawns_conn',    np.float32, (4,)),
 
     # Game State Scalars
     ('points',        np.int32,  (4,)),   
@@ -53,24 +49,20 @@ def unpack_batch_to_tensors(raw_batch):
     """
     Decompresses a batch of PackedSamples into PyTorch tensors.
     
-    Channel Map (28 Planes and 34 Scalars):
+    Channel Map (28 Planes and 18 Scalars):
     
     Planes (28 x 8x8):
     0-19:  Piece Bitboards (5 types * 4 players)
     20-23: X-Ray Attack Bitboards
     24-27: Standard Attack Bitboards
     
-    Scalars (34):
+    Scalars (18):
     0-3:   Material Score
-    4-7:   Pawn Count
-    8-11:  Connected Pawns
-    12-15: Avg Pawn Distance
-    16-19: King Safe Moves
-    20-23: Active Status
-    24-27: Points
-    28:    50-Move Clock
-    29-32: In-Check Flags
-    33:    Active Opponent Count
+    4-7:   Active Status
+    8-11:  Points
+    12:    50-Move Clock
+    13-16: In-Check Flags
+    17:    Active Opponent Count
     """
     batch_size = len(raw_batch)
     cp_raw = raw_batch['current_player']
@@ -156,13 +148,13 @@ def unpack_batch_to_tensors(raw_batch):
         if len(idx) > 0:
             planes[idx] = torch.rot90(planes[idx], k=k, dims=[-2, -1])
 
-    # --- 4. Construct SCALARS (Batch, 34) ---
+    # --- 4. Construct SCALARS (Batch, 18) ---
     scalars = torch.zeros((batch_size, NUM_INPUT_SCALARS), dtype=torch.float32)
     cur_scalar = 0
 
     # 4a. Heuristics [Material, PawnCnt, Conn, Dist, Safe] (0-19)
     # The order MUST match utils.cpp C++ logic!
-    heuristic_keys = ['material', 'pawn_count', 'pawns_conn', 'avg_pawn_dist', 'king_safe']
+    heuristic_keys = ['material']
     
     for key in heuristic_keys:
         data = raw_batch[key] # Shape (Batch, 4) absolute values
@@ -178,13 +170,8 @@ def unpack_batch_to_tensors(raw_batch):
                 diff = my_mat - data[np.arange(batch_size), abs_p]
                 scalars[:, cur_scalar] = torch.from_numpy(diff)
                 cur_scalar += 1
-        else:
-            for rel_i in range(4):
-                abs_p = (cp_raw + rel_i) % 4
-                scalars[:, cur_scalar] = torch.from_numpy(data[np.arange(batch_size), abs_p])
-                cur_scalar += 1
 
-    # 4b. Active Status (20-23)
+    # 4b. Active Status (4-7)
     active_mask = raw_batch['active_mask']
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
@@ -192,7 +179,7 @@ def unpack_batch_to_tensors(raw_batch):
         scalars[:, cur_scalar] = torch.from_numpy(is_active.astype(np.float32))
         cur_scalar += 1
 
-    # 4c. Points (24-27)
+    # 4c. Points (8-11)
     points = raw_batch['points'] # Shape (Batch, 4) absolute
     
     # --- RELATIVE POINTS LOGIC ---
@@ -207,13 +194,13 @@ def unpack_batch_to_tensors(raw_batch):
         scalars[:, cur_scalar] = torch.from_numpy(diff.astype(np.float32))
         cur_scalar += 1
 
-    # 4d. 50-Move Clock (28)
+    # 4d. 50-Move Clock (12)
     moves_since = raw_batch['full_move'] - raw_batch['last_reset']
     clock_val = np.clip(moves_since / 50.0, 0.0, 1.0)
     scalars[:, cur_scalar] = torch.from_numpy(clock_val.astype(np.float32))
     cur_scalar += 1
 
-    # 4e. In-Check Flags (29-32)
+    # 4e. In-Check Flags (13-16)
     for rel_i in range(4):
         abs_p = (cp_raw + rel_i) % 4
         # Need King Bitboard (Type index 4)
@@ -227,7 +214,7 @@ def unpack_batch_to_tensors(raw_batch):
         scalars[:, cur_scalar] = torch.from_numpy(in_check.astype(np.float32))
         cur_scalar += 1
 
-    # 4f. Active Opponent Count (33)
+    # 4f. Active Opponent Count (17)
     total_active = np.array([bin(m).count('1') for m in active_mask])
     opp_count_val = (total_active - 1) / 3.0
     scalars[:, cur_scalar] = torch.from_numpy(opp_count_val.astype(np.float32))

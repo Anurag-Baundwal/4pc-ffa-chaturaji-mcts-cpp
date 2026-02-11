@@ -9,39 +9,12 @@ namespace magic_utils {
 // --- Optimization Lookup Tables ---
 std::array<Bitboard, NUM_SQUARES> STATIC_ROOK_ATTACKS_EMPTY;
 std::array<Bitboard, NUM_SQUARES> STATIC_BISHOP_ATTACKS_EMPTY;
-std::array<Bitboard, NUM_SQUARES> STATIC_KING_ATTACKS;
-int CHEBYSHEV_DIST[NUM_SQUARES][NUM_SQUARES];
 
 void init_static_lookups() {
     // 1. Sliding Attacks on Empty Board (X-Ray)
     for (int sq = 0; sq < NUM_SQUARES; ++sq) {
         STATIC_ROOK_ATTACKS_EMPTY[sq] = calculate_rook_attacks_on_the_fly(sq, 0ULL);
         STATIC_BISHOP_ATTACKS_EMPTY[sq] = calculate_bishop_attacks_on_the_fly(sq, 0ULL);
-    }
-
-    // 2. King Attacks
-    for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-        STATIC_KING_ATTACKS[sq] = 0ULL;
-        BoardLocation loc = from_sq_idx(sq);
-        for (int dr = -1; dr <= 1; ++dr) {
-            for (int dc = -1; dc <= 1; ++dc) {
-                if (dr == 0 && dc == 0) continue;
-                int nr = loc.row + dr;
-                int nc = loc.col + dc;
-                if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
-                    set_bit(STATIC_KING_ATTACKS[sq], to_sq_idx(nr, nc));
-                }
-            }
-        }
-    }
-
-    // 3. Chebyshev Distances
-    for (int sq1 = 0; sq1 < NUM_SQUARES; ++sq1) {
-        BoardLocation loc1 = from_sq_idx(sq1);
-        for (int sq2 = 0; sq2 < NUM_SQUARES; ++sq2) {
-            BoardLocation loc2 = from_sq_idx(sq2);
-            CHEBYSHEV_DIST[sq1][sq2] = std::max(std::abs(loc1.row - loc2.row), std::abs(loc1.col - loc2.col));
-        }
     }
 }
 

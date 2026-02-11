@@ -75,52 +75,6 @@ namespace {
         }
     }
 
-    // --- Heuristic Helpers ---
-
-    // Constants for connectivity bit-flood
-    const Bitboard FILE_A = 0x0101010101010101ULL;
-    const Bitboard FILE_H = 0x8080808080808080ULL;
-    const Bitboard NOT_FILE_A = ~FILE_A;
-    const Bitboard NOT_FILE_H = ~FILE_H;
-
-    // Fast bitwise check if all pawns form a single connected component
-    // Replaces BFS with iterative flood fill
-    bool are_pawns_fully_connected(Bitboard pawns) {
-        if (pawns == 0) return false;
-        int count = magic_utils::pop_count(pawns);
-        if (count <= 1) return true; // Single pawn (or zero) is technically "connected" or trivial
-
-        // 1. Pick a start pawn (LSB)
-        Bitboard flood = (pawns & -static_cast<int64_t>(pawns)); 
-        Bitboard temp = 0;
-
-        // 2. Flood fill iteratively until stable
-        while (flood != temp) {
-            temp = flood;
-            // Expand in all 8 directions masked by actual pawns
-            // Shifts: +1 (East), -1 (West), +8 (South), -8 (North)
-            
-            // East (+1): Check wrapping H->A (mask NOT_FILE_A)
-            Bitboard east = (flood << 1) & NOT_FILE_A;
-            // West (-1): Check wrapping A->H (mask NOT_FILE_H)
-            Bitboard west = (flood >> 1) & NOT_FILE_H;
-            
-            Bitboard south = (flood << 8);
-            Bitboard north = (flood >> 8);
-
-            // Diagonals
-            Bitboard ne = (north << 1) & NOT_FILE_A;
-            Bitboard nw = (north >> 1) & NOT_FILE_H;
-            Bitboard se = (south << 1) & NOT_FILE_A;
-            Bitboard sw = (south >> 1) & NOT_FILE_H;
-
-            flood |= (east | west | north | south | ne | nw | se | sw);
-            flood &= pawns; // Constrain to pawns
-        }
-
-        return flood == pawns;
-    }
-
     // --- Spatial Move Plane Constants ---
     // Directions for Queen-like moves: N, S, E, W, NE, NW, SE, SW
     const int DR[] = {-1, 1, 0, 0, -1, -1, 1, 1};
@@ -201,7 +155,7 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
     }
 
     // ==========================================
-    // PART B: SCALARS (34 Total)
+    // PART B: SCALARS (18 Total)
     // ==========================================
     int current_scalar = 0;
 
@@ -227,48 +181,10 @@ void board_to_tensors(const Board& board, std::vector<float>& out_planes, std::v
         int abs_p_idx = (cp_idx + rel_i) % 4;
         Player p = static_cast<Player>(abs_p_idx);
 
-        Bitboard pawns = board.get_piece_bitboard(p, PieceType::PAWN);
-        Bitboard king = board.get_piece_bitboard(p, PieceType::KING);
-        int pawn_cnt = magic_utils::pop_count(pawns);
-
         // A. Material (4 scalars) -> RELATIVE (My - Theirs) / 20.0
         out_scalars[current_scalar + 0 + rel_i] = static_cast<float>(my_mat - mat_scores_abs[abs_p_idx]) / 20.0f;
-
-        // B. Pawn Count (4 scalars)
-        out_scalars[current_scalar + 4 + rel_i] = static_cast<float>(pawn_cnt) / 4.0f;
-
-        // C. Connected Pawns (4 scalars)
-        out_scalars[current_scalar + 8 + rel_i] = are_pawns_fully_connected(pawns) ? 1.0f : 0.0f;
-
-        // D. Avg Pawn Dist (4 scalars)
-        float avg_dist = 0.0f;
-        if (king && pawn_cnt > 0) {
-            int k_sq = magic_utils::get_lsb_index(king);
-            int total_dist = 0;
-            Bitboard temp_p = pawns;
-            while(temp_p) {
-                total_dist += magic_utils::CHEBYSHEV_DIST[k_sq][magic_utils::pop_lsb(temp_p)];
-            }
-            avg_dist = static_cast<float>(total_dist) / pawn_cnt;
-        }
-        out_scalars[current_scalar + 12 + rel_i] = avg_dist / 8.0f;
-
-        // E. King Safe Moves (4 scalars)
-        int safe_moves = 0;
-        if (king) {
-            int k_sq = magic_utils::get_lsb_index(king);
-            Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
-            Bitboard own_pieces = board.get_player_bitboard(p);
-            Bitboard enemy_attacks = 0ULL;
-            for(int i = 0; i < 4; ++i) {
-                if(i != abs_p_idx) enemy_attacks |= all_attacks[i];
-            }
-            Bitboard safe_squares = neighborhood & ~own_pieces & ~enemy_attacks;
-            safe_moves = magic_utils::pop_count(safe_squares);
-        }
-        out_scalars[current_scalar + 16 + rel_i] = static_cast<float>(safe_moves) / 8.0f;
     }
-    current_scalar += 20;
+    current_scalar += 4;
 
     // F. Active Status (4 scalars)
     uint8_t mask = board.get_active_mask();
@@ -365,43 +281,6 @@ PackedSample create_packed_sample(
         mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::ROOK)) * 5;
         mat += magic_utils::pop_count(board.get_piece_bitboard(pl, PieceType::KING)) * 3;
         sample.material_score[p] = static_cast<float>(mat) / 20.0f;
-
-        // B. Pawn Count
-        Bitboard pawns = board.get_piece_bitboard(pl, PieceType::PAWN);
-        int p_cnt = magic_utils::pop_count(pawns);
-        sample.pawn_count[p] = static_cast<float>(p_cnt) / 4.0f;
-
-        // C. Connected Pawns
-        sample.pawns_connected[p] = are_pawns_fully_connected(pawns) ? 1.0f : 0.0f;
-
-        // D. Average Pawn Distance
-        Bitboard kbb = board.get_piece_bitboard(pl, PieceType::KING);
-        float dist = 0.0f;
-        if(kbb && p_cnt > 0) {
-            int k_sq = magic_utils::get_lsb_index(kbb);
-            int total = 0;
-            Bitboard temp_p = pawns;
-            while(temp_p) {
-                total += magic_utils::CHEBYSHEV_DIST[k_sq][magic_utils::pop_lsb(temp_p)];
-            }
-            dist = static_cast<float>(total) / p_cnt;
-        }
-        sample.avg_pawn_dist[p] = dist / 8.0f;
-
-        // E. King Safe Moves
-        int safe = 0;
-        if(kbb) {
-            int k_sq = magic_utils::get_lsb_index(kbb);
-            Bitboard enemy_attacks = 0ULL;
-            for(int opp=0; opp<4; ++opp) {
-                if(opp != p) enemy_attacks |= all_attacks[opp];
-            }
-            Bitboard neighborhood = magic_utils::STATIC_KING_ATTACKS[k_sq];
-            Bitboard own_pieces = board.get_player_bitboard(pl);
-            Bitboard safe_mask = neighborhood & ~own_pieces & ~enemy_attacks;
-            safe = magic_utils::pop_count(safe_mask);
-        }
-        sample.king_safe_moves[p] = static_cast<float>(safe) / 8.0f;
     }
 
     // 4. Pack Policy (Sparse)

@@ -25,10 +25,9 @@ constexpr int BOARD_AREA = 64; // 8 * 8
 constexpr int NN_INPUT_PLANES = 28; 
 constexpr int NN_INPUT_PLANES_SIZE = NN_INPUT_PLANES * BOARD_AREA;
 
-// 2. Scalar Input: 34 global features total
-//    - 4(Material) + 4(PawnCount) + 4(ConnectedPawns) + 4(AvgDist) + 4(SafeSquares)
-//    - 4(ActiveStatus) + 4(Points) + 1(50MoveClock) + 4(InCheck) + 1(OpponentCount)
-constexpr int NN_INPUT_SCALARS = 34;
+// 2. Scalar Input: 18 global features total
+//    4(Material) + 4(ActiveStatus) + 4(Points) + 1(50MoveClock) + 4(InCheck) + 1(OpponentCount)
+constexpr int NN_INPUT_SCALARS = 18;
 
 // --- Spatial Policy Output Configuration ---
 // Output: Policy (Move probabilities) and Value (Win probabilities)
@@ -238,7 +237,7 @@ using RequestId = uint64_t;
 struct EvaluationRequest {
     RequestId request_id;
     std::vector<float> input_planes;  // Size: 28 * 8 * 8
-    std::vector<float> input_scalars; // Size: 34
+    std::vector<float> input_scalars; // Size: 18
 };
 
 /**
@@ -267,10 +266,6 @@ struct PackedSample {
 
     // --- Hand-crafted Supplemental Features ---
     float material_score[4];
-    float pawn_count[4];
-    float avg_pawn_dist[4];
-    float king_safe_moves[4];
-    float pawns_connected[4];
 
     // --- Game state scalars ---
     int32_t player_points[4];

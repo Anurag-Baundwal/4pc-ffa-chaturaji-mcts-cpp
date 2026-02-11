@@ -19,10 +19,9 @@ BOARD_AREA = 64
 # 20 (Pieces: 5 types * 4 players) + 4 (X-Ray Attacks) + 4 (Standard Attacks)
 NUM_INPUT_PLANES = 28 
 
-# Scalar Input: 34 Scalars
-# 4(Material) + 4(PawnCnt) + 4(Conn) + 4(Dist) + 4(NumSafeSq) + 
-# 4(Active) + 4(Points) + 1(50mv) + 4(Check) + 1(OppCnt)
-NUM_INPUT_SCALARS = 34
+# Scalar Input: 18 Scalars
+# 4(Material) + 4(Active) + 4(Points) + 1(50mv) + 4(Check) + 1(OppCnt)
+NUM_INPUT_SCALARS = 18
 
 # Policy Output: 64 Spatial Planes
 # 56 Queen-like moves (8 directions * 7 distances) + 8 Knight moves
@@ -109,9 +108,9 @@ class ChaturajiNN(nn.Module):
     
     Architecture:
     - Input 1 (Spatial): [Batch, 28, 8, 8] -> Processed by ResNet Backbone
-    - Input 2 (Scalars): [Batch, 34]       -> Injected into SE Blocks and Heads
+    - Input 2 (Scalars): [Batch, ]  18     -> Injected into SE Blocks and Heads
     
-    - Global Encoder: Linear projects 34 scalars to 256 context features (2 layer MLP).
+    - Global Encoder: Linear projects 18 scalars to 256 context features (2 layer MLP).
     
     - Trunk: Conv + BatchNorm + SiLU -> 6 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
@@ -128,7 +127,7 @@ class ChaturajiNN(nn.Module):
       1. Spatial Features -> 1x1 Conv(32) Stride 1 -> BN -> SiLU.
          * Preserves 8x8 spatial resolution (No downsampling).
          * Reduces channels from Trunk(256) to Head(32).
-      2. Scalar Gating: Projecting 34 scalars to match 32 channels, gating spatial
+      2. Scalar Gating: Projecting 18 scalars to match 32 channels, gating spatial
          features via sigmoid multiplication.
       3. Flatten (32 * 8 * 8 = 2048) -> Concatenate Scalars (Size 2082 total).
       4. MLP: 
@@ -169,7 +168,7 @@ class ChaturajiNN(nn.Module):
         self.policy_out = nn.Conv2d(POLICY_HEAD_CONV_CHANNELS, NUM_POLICY_PLANES, kernel_size=1, bias=True)
 
         # A separate tiny head just for the Resignation logit
-        # Takes the 34 global scalars + pooled spatial features -> 1 logit
+        # Takes the 18 global scalars + pooled spatial features -> 1 logit
         self.policy_resign_fc = nn.Linear(POLICY_HEAD_CONV_CHANNELS + NUM_INPUT_SCALARS, 1)
 
         # --- Value Head (Lc0 Style) ---
