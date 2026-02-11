@@ -53,6 +53,9 @@ private:
     std::thread evaluator_thread_;
     std::atomic<bool> stop_requested_;
     std::atomic<RequestId> next_request_id_;
+    
+    std::mutex signal_mutex_;
+    std::condition_variable signal_cv_;
 };
 
 } // namespace chaturaji_cpp

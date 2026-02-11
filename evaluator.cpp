@@ -43,6 +43,7 @@ void Evaluator::stop() {
         return; 
     }
     stop_requested_ = true;
+    signal_cv_.notify_all();
     evaluator_thread_.join();
     std::cout << "Evaluator thread stopped." << std::endl;
 }
@@ -62,6 +63,9 @@ std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest reques
     // 3. Push to the specific queue
     request_queues_[queue_idx]->push({std::move(request), std::move(result_promise)});
     
+    // Wake up the evaluator immediately
+    signal_cv_.notify_one(); 
+    
     return result_future;
 }
 
@@ -72,33 +76,45 @@ void Evaluator::evaluation_loop() {
     // Index to ensure we check all queues fairly (Round-Robin polling)
     int current_poll_queue_idx = 0;
 
-    while (!stop_requested_) {
+    while (true) {
         batch_with_promises.clear(); 
 
-        // --- 1. Fetch First Item (Non-Blocking Attempt) ---
-        // We iterate through all queues. If all are empty, we sleep briefly.
-        
+        // 1. Wait for work
         bool found_any = false;
         
-        // Try to find at least one item in any queue
-        for (int i = 0; i < NUM_INPUT_QUEUES; ++i) {
-            int idx = (current_poll_queue_idx + i) % NUM_INPUT_QUEUES;
-            std::optional<QueueItem> item = request_queues_[idx]->try_pop();
-            
-            if (item) {
-                batch_with_promises.push_back(std::move(*item));
-                found_any = true;
-                // Update start index for next time to ensure fairness
-                current_poll_queue_idx = (idx + 1) % NUM_INPUT_QUEUES;
-                break;
+        // --- Brief Spin-Wait ---
+        for (int spin = 0; spin < 100; ++spin) { 
+            for (int i = 0; i < NUM_INPUT_QUEUES; ++i) {
+                int idx = (current_poll_queue_idx + i) % NUM_INPUT_QUEUES;
+                auto item = request_queues_[idx]->try_pop();
+                if (item) {
+                    batch_with_promises.push_back(std::move(*item));
+                    current_poll_queue_idx = (idx + 1) % NUM_INPUT_QUEUES;
+                    found_any = true;
+                    break;
+                }
             }
+            if (found_any || stop_requested_) break;
+            std::this_thread::yield(); // Give other threads a tiny chance
         }
 
-        if (!found_any) {
-            if (stop_requested_) break;
-            // Sleep briefly to avoid busy waiting if all queues are empty
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
+        // --- Condition Variable Wait ---
+        if (!found_any && !stop_requested_) {
+            std::unique_lock<std::mutex> lock(signal_mutex_);
+            // Wait until either stop is requested or any queue has work. We use a timeout to periodically re-check conditions.
+            signal_cv_.wait_for(lock, std::chrono::milliseconds(10), [this] {
+                if (stop_requested_) return true;
+                for (auto& q : request_queues_) if (!q->empty()) return true;
+                return false;
+            });
+        }
+
+        if (stop_requested_ && batch_with_promises.empty()) {
+            // Final check of all queues
+            for (auto& q : request_queues_) {
+                if (auto item = q->try_pop()) batch_with_promises.push_back(std::move(*item));
+            }
+            if (batch_with_promises.empty()) break; 
         }
 
         // --- 2. Greedily fill the rest of the batch ---
