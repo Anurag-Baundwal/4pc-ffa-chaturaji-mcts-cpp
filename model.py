@@ -31,18 +31,20 @@ POLICY_OUTPUT_SIZE = NUM_POLICY_PLANES * BOARD_AREA + 1 # Index 4096 is for resi
 VALUE_OUTPUT_SIZE = 4     
 
 # Network Architecture
+# Optimized for 256 channels to achieve ~7.8M total params with >90% in trunk.
 NUM_RES_BLOCKS = 6      # How many residual blocks in the trunk
-NUM_CHANNELS = 64       # Width of the main trunk (Backbone)
-SE_REDUCTION = 2        # Squeeze ratio for SE blocks
+NUM_CHANNELS = 256      # Width of the main trunk (Backbone) - Increased from 64
+SE_REDUCTION = 8        # Squeeze ratio for SE blocks - Increased for 256 channels
 
 # Policy Head Configuration
-POLICY_HEAD_CONV_CHANNELS = 24 # Depth of the hidden layer in policy head
+# Reduced relative to trunk width to minimize parameter bloat in the head.
+POLICY_HEAD_CONV_CHANNELS = 32 # Depth of the hidden layer in policy head
 
 # Value Head Configuration
-# Optimized for 6x64 architecture to maintain >80% trunk parameter ratio.
+# Optimized for 6x256 architecture to maintain >90% trunk parameter ratio.
 # Lc0 Standard: 1x1 Conv (No Stride) -> Flatten -> Dense -> Dense.
-VALUE_HEAD_CONV_CHANNELS = 12  # Reduced to 12 to keep the dense layer input manageable
-VALUE_FC_HIDDEN_CHANNELS = 96  # Reduced to 96 to prevent head parameter bloat
+VALUE_HEAD_CONV_CHANNELS = 32  # Reduced to keep the dense layer input manageable
+VALUE_FC_HIDDEN_CHANNELS = 256 # Balanced capacity for 4-player evaluation
 NUM_VALUE_OUTPUTS = 4
 
 class GlobalSEBlock(nn.Module):
@@ -109,13 +111,13 @@ class ChaturajiNN(nn.Module):
     - Input 1 (Spatial): [Batch, 28, 8, 8] -> Processed by ResNet Backbone
     - Input 2 (Scalars): [Batch, 34]       -> Injected into SE Blocks and Heads
     
-    - Global Encoder: Linear projects 34 scalars to 64 context features (2 layer MLP).
+    - Global Encoder: Linear projects 34 scalars to 256 context features (2 layer MLP).
     
     - Trunk: Conv + BatchNorm + SiLU -> 6 Residual Blocks.
       Each block uses the Global context to perform Channel Attention (SE).
     
     - Policy Head (Fully Convolutional / Spatial): 
-      1. Spatial Features -> 3x3 Conv(24) -> BN -> SiLU.
+      1. Spatial Features -> 3x3 Conv(32) -> BN -> SiLU.
          * Maintains spatial awareness across the board.
       2. 1x1 Conv(64 planes).
          * This creates a translational-invariant mapping. If a move pattern is 
@@ -123,15 +125,15 @@ class ChaturajiNN(nn.Module):
          * 64 Planes * 64 Squares = 4096 outputs.
       
     - Value Head (Lc0 Standard 1x1 Conv + Dense): 
-      1. Spatial Features -> 1x1 Conv(12) Stride 1 -> BN -> SiLU.
+      1. Spatial Features -> 1x1 Conv(32) Stride 1 -> BN -> SiLU.
          * Preserves 8x8 spatial resolution (No downsampling).
-         * Reduces channels from Trunk(64) to Head(12).
-      2. Scalar Gating: Projecting 34 scalars to match 12 channels, gating spatial
+         * Reduces channels from Trunk(256) to Head(32).
+      2. Scalar Gating: Projecting 34 scalars to match 32 channels, gating spatial
          features via sigmoid multiplication.
-      3. Flatten (12 * 8 * 8 = 768) -> Concatenate Scalars (Size 802 total).
+      3. Flatten (32 * 8 * 8 = 2048) -> Concatenate Scalars (Size 2082 total).
       4. MLP: 
-         - Linear(802 -> 96) -> SiLU
-         - Final Output: Linear(96 -> 4) -> Tanh.
+         - Linear(2082 -> 256) -> SiLU
+         - Final Output: Linear(256 -> 4) -> Tanh.
     """
     def __init__(self):
         super().__init__()
@@ -175,7 +177,7 @@ class ChaturajiNN(nn.Module):
         self.value_conv = nn.Conv2d(NUM_CHANNELS, VALUE_HEAD_CONV_CHANNELS, kernel_size=1, stride=1, padding=0, bias=False)
         self.value_bn = nn.BatchNorm2d(VALUE_HEAD_CONV_CHANNELS)
 
-        # Sizes: (12 channels * 8 * 8 grid) + raw scalars
+        # Sizes: (32 channels * 8 * 8 grid) + raw scalars
         self.value_spatial_flat_size = VALUE_HEAD_CONV_CHANNELS * BOARD_DIM * BOARD_DIM 
         self.value_combined_size = self.value_spatial_flat_size + NUM_INPUT_SCALARS
         
@@ -245,7 +247,7 @@ class ChaturajiNN(nn.Module):
         v = self.value_bn(v)
         v = F.silu(v)
         
-        # Flatten [Batch, 12, 8, 8] -> [Batch, 768]
+        # Flatten [Batch, 32, 8, 8] -> [Batch, 2048]
         v = v.flatten(1)
         
         # 3. Concatenate Global Scalars
