@@ -32,18 +32,18 @@ VALUE_OUTPUT_SIZE = 4
 # Network Architecture
 # Optimized for 256 channels to achieve ~7.8M total params with >90% in trunk.
 NUM_RES_BLOCKS = 6      # How many residual blocks in the trunk
-NUM_CHANNELS = 256      # Width of the main trunk (Backbone) - Increased from 64
-SE_REDUCTION = 8        # Squeeze ratio for SE blocks - Increased for 256 channels
+NUM_CHANNELS = 64      # Width of the main trunk (Backbone) - Increased from 64
+SE_REDUCTION = 2        # Squeeze ratio for SE blocks - Increased for 256 channels
 
 # Policy Head Configuration
 # Reduced relative to trunk width to minimize parameter bloat in the head.
-POLICY_HEAD_CONV_CHANNELS = 32 # Depth of the hidden layer in policy head
+POLICY_HEAD_CONV_CHANNELS = 24 # Depth of the hidden layer in policy head
 
 # Value Head Configuration
 # Optimized for 6x256 architecture to maintain >90% trunk parameter ratio.
 # Lc0 Standard: 1x1 Conv (No Stride) -> Flatten -> Dense -> Dense.
-VALUE_HEAD_CONV_CHANNELS = 32  # Reduced to keep the dense layer input manageable
-VALUE_FC_HIDDEN_CHANNELS = 256 # Balanced capacity for 4-player evaluation
+VALUE_HEAD_CONV_CHANNELS = 12  # Reduced to keep the dense layer input manageable
+VALUE_FC_HIDDEN_CHANNELS = 96 # Balanced capacity for 4-player evaluation
 NUM_VALUE_OUTPUTS = 4
 
 class GlobalSEBlock(nn.Module):
