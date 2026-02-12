@@ -7,7 +7,8 @@
 #include <condition_variable>
 #include <map>
 #include <atomic>
-#include <memory>   
+#include <memory> 
+#include <deque> // Added for pipeline queue
 
 #include "model.h" 
 #include "types.h" 

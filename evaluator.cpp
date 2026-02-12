@@ -70,139 +70,88 @@ std::future<EvaluationResult> Evaluator::submit_request(EvaluationRequest reques
 }
 
 void Evaluator::evaluation_loop() {
-    std::vector<QueueItem> batch_with_promises;
-    batch_with_promises.reserve(max_batch_size_); 
+    struct InFlightBatch {
+        std::future<std::vector<EvaluationResult>> result_future;
+        std::vector<QueueItem> promises;
+        int context_idx; // Track which buffer this batch is using
+    };
 
-    // Index to ensure we check all queues fairly (Round-Robin polling)
+    std::deque<InFlightBatch> pipeline;
+    std::deque<int> available_contexts = {0, 1, 2}; // Managed pool of indices
+    
     int current_poll_queue_idx = 0;
 
-    while (true) {
-        batch_with_promises.clear(); 
+    while (!stop_requested_ || !pipeline.empty()) {
+        bool activity_in_this_loop = false;
 
-        // 1. Wait for work
-        bool found_any = false;
-        
-        // --- Brief Spin-Wait ---
-        for (int spin = 0; spin < 100; ++spin) { 
-            for (int i = 0; i < NUM_INPUT_QUEUES; ++i) {
-                int idx = (current_poll_queue_idx + i) % NUM_INPUT_QUEUES;
-                auto item = request_queues_[idx]->try_pop();
-                if (item) {
-                    batch_with_promises.push_back(std::move(*item));
-                    current_poll_queue_idx = (idx + 1) % NUM_INPUT_QUEUES;
-                    found_any = true;
-                    break;
-                }
-            }
-            if (found_any || stop_requested_) break;
-            std::this_thread::yield(); // Give other threads a tiny chance
-        }
-
-        // --- Condition Variable Wait ---
-        if (!found_any && !stop_requested_) {
-            std::unique_lock<std::mutex> lock(signal_mutex_);
-            // Wait until either stop is requested or any queue has work. We use a timeout to periodically re-check conditions.
-            signal_cv_.wait_for(lock, std::chrono::milliseconds(10), [this] {
-                if (stop_requested_) return true;
-                for (auto& q : request_queues_) if (!q->empty()) return true;
-                return false;
-            });
-        }
-
-        if (stop_requested_ && batch_with_promises.empty()) {
-            // Final check of all queues
-            for (auto& q : request_queues_) {
-                if (auto item = q->try_pop()) batch_with_promises.push_back(std::move(*item));
-            }
-            if (batch_with_promises.empty()) break; 
-        }
-
-        // --- 2. Greedily fill the rest of the batch ---
-        // Continue checking queues until batch is full or queues are drained
-        int empty_queues_count = 0;
-        
-        while (batch_with_promises.size() < static_cast<size_t>(max_batch_size_)) {
-            // Check the current queue
-            std::optional<QueueItem> next_pair = request_queues_[current_poll_queue_idx]->try_pop();
+        // --- STAGE 1: LAUNCH (CPU -> GPU) ---
+        // Launch if we have room in pipeline AND a free buffer context
+        if (!stop_requested_ && !available_contexts.empty()) {
+            std::vector<QueueItem> batch_items;
+            int consecutive_empty = 0;
             
-            if (next_pair) {
-                batch_with_promises.push_back(std::move(*next_pair));
-                empty_queues_count = 0; // Reset consecutive empty count since we found something
-            } else {
-                empty_queues_count++;
-            }
-
-            // Move to next queue
-            current_poll_queue_idx = (current_poll_queue_idx + 1) % NUM_INPUT_QUEUES;
-
-            // If we've checked all queues and found nothing consecutively, stop filling
-            if (empty_queues_count >= NUM_INPUT_QUEUES) {
-                break;
-            }
-        }
-
-        if (batch_with_promises.empty()) {
-            continue;
-        }
-
-        // --- 3. Prepare requests for ONNX Model ---
-        std::vector<EvaluationRequest> requests_for_nn;
-        requests_for_nn.reserve(batch_with_promises.size());
-        for (auto& pair : batch_with_promises) {
-            requests_for_nn.push_back(std::move(pair.first));
-        }
-
-        // --- 4. Perform Batched Inference ---
-        std::vector<EvaluationResult> batch_results;
-        try {
-            batch_results = network_->evaluate_batch(requests_for_nn);
-        } catch (const std::exception& e) {
-            std::cerr << "!!! EXCEPTION during ONNX batch evaluation: " << e.what() << std::endl;
-            for (auto& pair : batch_with_promises) {
-                try {
-                    pair.second.set_exception(std::current_exception());
-                } catch (...) { }
-            }
-            for (auto& req : requests_for_nn) {
-                TensorPool::release_planes(std::move(req.input_planes));
-                TensorPool::release_scalars(std::move(req.input_scalars));
-            }
-            continue; 
-        }
-
-        if (batch_results.size() != batch_with_promises.size()) {
-            std::cerr << "Error: Model output batch size mismatch!" << std::endl;
-            continue;
-        }
-
-        // --- 5. Fulfill Promises (Return Results) ---
-        for (size_t i = 0; i < batch_results.size(); ++i) {
-            try {
-                batch_with_promises[i].second.set_value(std::move(batch_results[i]));
-            } catch (const std::future_error& e) {
-                 if (e.code() != std::future_errc::promise_already_satisfied && e.code() != std::future_errc::no_state) {
-                    std::cerr << "Warning: std::future_error setting value: " << e.what() << std::endl;
+            while (batch_items.size() < static_cast<size_t>(max_batch_size_)) {
+                auto item = request_queues_[current_poll_queue_idx]->try_pop();
+                if (item) {
+                    batch_items.push_back(std::move(*item));
+                    consecutive_empty = 0;
+                } else {
+                    consecutive_empty++;
                 }
+                current_poll_queue_idx = (current_poll_queue_idx + 1) % NUM_INPUT_QUEUES;
+                if (consecutive_empty >= NUM_INPUT_QUEUES) break;
+            }
+
+            if (!batch_items.empty()) {
+                int ctx_idx = available_contexts.front();
+                available_contexts.pop_front();
+
+                std::vector<EvaluationRequest> requests;
+                requests.reserve(batch_items.size());
+                for (auto& it : batch_items) requests.push_back(std::move(it.first));
+
+                // Dispatch to GPU using the specific context index
+                auto future = network_->evaluate_batch_async(requests, ctx_idx);
+                pipeline.push_back({std::move(future), std::move(batch_items), ctx_idx});
+                activity_in_this_loop = true;
             }
         }
 
-        // --- 6. Recycle Inputs back to pool ---
-        // After fulfillng promises, the model is done with the input planes/scalars.
-        for (auto& req : requests_for_nn) {
-            TensorPool::release_planes(std::move(req.input_planes));
-            TensorPool::release_scalars(std::move(req.input_scalars));
-        }
-    } 
+        // --- STAGE 2: COLLECT (GPU -> CPU) ---
+        if (!pipeline.empty()) {
+            auto& oldest = pipeline.front();
+            
+            // Logic for blocking:
+            // 1. If pipeline is full or we are stopping, we MUST block (backpressure).
+            // 2. Otherwise, we just peek (wait_for 0) to keep the loop moving.
+            bool force_block = (available_contexts.empty() || stop_requested_);
+            
+            auto status = force_block ? 
+                oldest.result_future.wait_for(std::chrono::hours(1)) : // Effectively blocking
+                oldest.result_future.wait_for(std::chrono::microseconds(0));
 
-    // Cleanup: Drain all queues on stop
-    if (stop_requested_) {
-        for (auto& queue_ptr : request_queues_) {
-            std::optional<QueueItem> remaining_pair_opt;
-            while((remaining_pair_opt = queue_ptr->try_pop())) {
+            if (status == std::future_status::ready) {
                 try {
-                    remaining_pair_opt->second.set_exception(std::make_exception_ptr(std::runtime_error("Evaluator shutting down.")));
-                } catch (...) {}
+                    std::vector<EvaluationResult> results = oldest.result_future.get();
+                    for (size_t i = 0; i < results.size(); ++i) {
+                        oldest.promises[i].second.set_value(std::move(results[i]));
+                    }
+                } catch (...) {
+                    for (auto& p : oldest.promises) p.second.set_exception(std::current_exception());
+                }
+                
+                // CRITICAL: Return the context index to the pool for reuse
+                available_contexts.push_back(oldest.context_idx);
+                pipeline.pop_front();
+                activity_in_this_loop = true;
             }
+        }
+
+        // --- STAGE 3: IDLE ---
+        if (!activity_in_this_loop && !stop_requested_) {
+            std::unique_lock<std::mutex> lock(signal_mutex_);
+            // Sleep until new requests arrive or a short timeout for GPU polling
+            signal_cv_.wait_for(lock, std::chrono::milliseconds(1));
         }
     }
 }

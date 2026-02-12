@@ -2,8 +2,9 @@
 #include <string>
 #include <vector>
 #include <array>
-#include <memory> // Added for std::unique_ptr
-#include <mutex>  // Added for std::mutex
+#include <memory> 
+#include <mutex>  
+#include <future> 
 #include "onnxruntime_cxx_api.h"
 #include "types.h"
 #include "utils.h"
@@ -22,35 +23,55 @@ public:
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
 
-    // Synchronous batched evaluation
-    std::vector<EvaluationResult> evaluate_batch(const std::vector<EvaluationRequest>& requests);
+    // Synchronous batched evaluation (Legacy / Fallback)
+    std::vector<EvaluationResult> evaluate_batch(std::vector<EvaluationRequest>& requests);
+
+    // Asynchronous batched evaluation (Pipelined)
+    // Returns a future that resolves to the results.
+    // NOTE: This performs the CPU memory copy synchronously, then launches the GPU inference asynchronously.
+    std::future<std::vector<EvaluationResult>> evaluate_batch_async(std::vector<EvaluationRequest>& requests, int context_idx);
 
 private:
-    // Helper to resize persistent buffers if the batch size exceeds current capacity
-    void check_and_grow_buffers(size_t batch_size);
+    // Structure to hold state for a single pipeline stage (Triple Buffering)
+    struct BatchContext {
+        std::unique_ptr<Ort::IoBinding> io_binding;
+        
+        // Raw pointers for persistent buffers (pinned memory)
+        float* planes_buffer = nullptr;
+        float* scalars_buffer = nullptr;
+        float* policy_buffer = nullptr;
+        float* value_buffer = nullptr;
+        
+        size_t buffer_capacity = 0;
+        size_t last_batch_size = 0;
+
+        // Persistent handles to the tensors. 
+        // These must stay alive as long as the io_binding is using them.
+        Ort::Value planes_val{nullptr};
+        Ort::Value scalars_val{nullptr};
+        Ort::Value policy_val{nullptr};
+        Ort::Value value_val{nullptr};
+    };
+
+    // Helper to resize persistent buffers for a specific context
+    void check_and_grow_context(BatchContext& ctx, size_t batch_size);
 
     Ort::Env env_;
     Ort::Session session_;
     Ort::MemoryInfo memory_info_;
 
-    // --- Optimization: Persistent Buffers & IoBinding ---
-    // Protects the shared stateful buffers (io_binding_, planes_buffer_, etc.) 
-    // to allow safe concurrent access if the Model instance is shared.
-    std::mutex model_mutex_;
+    // --- Optimization: Triple-Buffered Pipeline ---
+    // We use three contexts to maximize device saturation. While the GPU is executing 
+    // Context A, the Evaluator can be processing the completed results of Context B 
+    // while simultaneously prepping the next batch in Context C.
+    static constexpr int NUM_CONTEXTS = 3;
+    std::array<BatchContext, NUM_CONTEXTS> contexts_;
 
-    // IOBinding interface to avoid intermediate copies within ORT
-    std::unique_ptr<Ort::IoBinding> io_binding_;
+    // Protects access to the context selection and buffer growth logic
+    std::mutex model_mutex_;
 
     // Aligned memory allocator (Pointer used to handle runtime initialization)
     std::unique_ptr<Ort::Allocator> allocator_;
-
-    // Raw pointers for persistent buffers
-    float* planes_buffer_ = nullptr;
-    float* scalars_buffer_ = nullptr;
-    float* policy_buffer_ = nullptr;
-    float* value_buffer_ = nullptr;
-    size_t buffer_capacity_ = 0;
-    size_t last_batch_size_ = 0;
 
     // Input/Output names for the ONNX graph
     std::array<const char*, 2> input_names_ = {"input_planes", "input_scalars"};
