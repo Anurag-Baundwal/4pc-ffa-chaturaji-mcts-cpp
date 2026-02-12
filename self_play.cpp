@@ -121,6 +121,9 @@ void SelfPlay::process_inference_results(
             EvaluationResult result = futures[i].get(); 
             leaf_node->decrement_pending_visits();
 
+            std::array<float, 16> leaf_logits = *result.value;
+            apply_value_softmax(leaf_logits);
+
             std::map<Move, double> policy_probs = process_policy(*result.policy_logits, leaf_node->get_board());
             bool is_root_node_eval = (leaf_node == path[0]); 
 
@@ -136,13 +139,16 @@ void SelfPlay::process_inference_results(
             }
             
             // Map relative NN values back to absolute player indices
-            std::array<double, 4> player_values_absolute;
+            std::array<double, 16> player_values_absolute;
+            player_values_absolute.fill(0.0);
             Player cp = leaf_node->get_board().get_current_player();
             int cp_idx = static_cast<int>(cp);
 
-            for(int rel_i = 0; rel_i < 4; ++rel_i) {
-                int abs_p_idx = (cp_idx + rel_i) % 4;
-                player_values_absolute[abs_p_idx] = static_cast<double>((*result.value)[rel_i]);
+            for(int rel_p = 0; rel_p < 4; ++rel_p) {
+                int abs_p = (cp_idx + rel_p) % 4;
+                for(int rank = 0; rank < 4; ++rank) {
+                    player_values_absolute[abs_p * 4 + rank] = static_cast<double>(leaf_logits[rel_p * 4 + rank]);
+                }
             }
 
             backpropagate_mcts_value(path, player_values_absolute); 
@@ -381,7 +387,7 @@ void SelfPlay::run_game_simulation(
               MCTSNode* leaf = current_sim_path.current_node;
               if (leaf->get_board().is_game_over()) {
                   PlayerPointMap scores = leaf->get_board().get_game_result();
-                  backpropagate_mcts_value(current_sim_path.path, get_reward_map_array(scores));
+                  backpropagate_mcts_value(current_sim_path.path, get_rank_probabilities_target(scores));
               } else {
                   leaf->increment_pending_visits();
                   session.pending_batch.push_back(std::move(current_sim_path));
@@ -492,7 +498,7 @@ void SelfPlay::process_game_result(
     std::vector<GameDataStep>& output_buffer 
 ) {
     std::array<int, 4> final_scores = final_board.get_game_result();
-    std::array<double, 4> game_rewards_array = get_reward_map_array(final_scores);
+    std::array<double, 16> game_rewards_array = get_rank_probabilities_target(final_scores);
 
     for (const auto& history_step : game_history_for_rewards) {
         const Board& board_state = std::get<0>(history_step);

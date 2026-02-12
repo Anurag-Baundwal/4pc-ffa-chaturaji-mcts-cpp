@@ -42,7 +42,7 @@ PACKED_DTYPE = np.dtype([
     ('num_policy',    np.int32),
     ('move_indices',  np.uint16, (MAX_STORED_MOVES,)),
     ('move_probs',    np.float32,(MAX_STORED_MOVES,)),
-    ('values',        np.float32,(4,))
+    ('values',        np.float32,(16,))
 ])
 
 def unpack_batch_to_tensors(raw_batch):
@@ -90,14 +90,16 @@ def unpack_batch_to_tensors(raw_batch):
     # The C++ struct stores Absolute values [Red, Blue, Yellow, Green].
     # The Network expects Relative values [Current, Next, Partner, Prev].
     
-    abs_values = raw_batch['values']       # Shape (Batch, 4)
+    abs_values = raw_batch['values']       # Shape (Batch, 16)
+    abs_values = abs_values.reshape(-1, 4, 4) # Reshape to (Batch, 4, 4) to handle rotation easily
 
     # Create indices: [[cp, cp+1, cp+2, cp+3], ...] % 4
     rel_indices = (cp_raw[:, None] + np.arange(4)) % 4
 
-    # Gather values in relative order
-    rel_values = np.take_along_axis(abs_values, rel_indices, axis=1)
-    value_target = torch.from_numpy(rel_values)
+    # Gather the player dimensions in relative order
+    # target will be [Batch, 4 (RelPlayer), 4 (RankProb)]
+    rel_values = np.take_along_axis(abs_values, rel_indices[:, :, None], axis=1)
+    value_target = torch.from_numpy(rel_values).reshape(-1, 16)
 
     # --- 3. Construct PLANES (Batch, 28, 64) ---
     # We construct flattened planes first, then reshape.
@@ -396,24 +398,20 @@ def train_loop(args):
             # 1. Policy: Cross Entropy (maximize log prob of target)
             # 2. Value: MSE
             
-            # --- MASKING ILLEGAL MOVES ---
-            # Apply a large negative mask to illegal move logits. This ensures that the 
-            # subsequent softmax operation assigns near-zero probability to these moves, 
-            # concentrating the network's predictive mass on the legal action space.
+            # 1. Policy Loss
             p_masked = torch.where(mask, p, torch.full_like(p, MASK_VALUE))
-            
-            # Calculate the log-softmax of the masked logits.
             log_p = F.log_softmax(p_masked, dim=1)
-
-            # Zero out the log-probabilities of illegal moves before the loss calculation.
-            # This prevents numerical 'NaN' errors that occur when a zero target probability 
-            # is multiplied by a negative infinity log-probability.
             log_p_safe = torch.where(mask, log_p, torch.zeros_like(log_p))
-            
-            # Policy uses Cross-Entropy (Negative Log Likelihood)
             loss_policy_raw = -torch.sum(tp * log_p_safe, dim=1).mean()
-            # Value uses Mean Squared Error
-            loss_value_raw = F.mse_loss(v, tv)
+
+            # 2. Value Loss (RANK PROBABILITIES)
+            # v shape: [Batch, 16], tv shape: [Batch, 16]
+            # Reshape to [Batch * 4 players, 4 ranks]
+            v_reshaped = v.view(-1, 4) 
+            tv_reshaped = tv.view(-1, 4)
+            
+            # Cross Entropy between prediction logits and target probabilities
+            loss_value_raw = F.cross_entropy(v_reshaped, tv_reshaped)
 
             # --- DYNAMIC LOSS WEIGHTING (Uncertainty Weighting) ---
             # Multi-Task Learning using Uncertainty (Kendall et al.)

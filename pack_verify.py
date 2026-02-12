@@ -22,6 +22,13 @@ def verify():
     truth_scalars = np.fromfile("test_truth_scalars.bin", dtype=np.float32)
     truth_policy = np.fromfile("test_truth_policy.bin", dtype=np.float32)
     truth_value_abs = np.fromfile("test_truth_value.bin", dtype=np.float32)
+    
+    if truth_value_abs.size != 16:
+        print(f"Error: test_truth_value.bin size mismatch. Expected 16, got {truth_value_abs.size}")
+        sys.exit(1)
+    
+    # Reshape to [Player, Rank]
+    truth_value_abs = truth_value_abs.reshape(4, 4)
 
     # Sanity check file sizes
     expected_planes = NUM_INPUT_PLANES * BOARD_AREA
@@ -55,9 +62,11 @@ def verify():
     cp = raw_packed['current_player'][0]
     print(f"Current Player detected as: {cp}")
 
-    # Re-order the Truth Value to be Relative [CP, CP+1, CP+2, CP+3] % 4
+    # Re-order the players to be Relative: [CP, CP+1, CP+2, CP+3] % 4
     rel_indices = (int(cp) + np.arange(4)) % 4
-    truth_value_rel = torch.from_numpy(truth_value_abs[rel_indices]).view(1, 4)
+    
+    # Gather the player rows in the correct order, then flatten back to 16
+    truth_value_rel = torch.from_numpy(truth_value_abs[rel_indices]).reshape(1, 16)
 
     truth_planes = torch.from_numpy(truth_planes).view(1, NUM_INPUT_PLANES, 8, 8)
     truth_scalars = torch.from_numpy(truth_scalars).view(1, NUM_INPUT_SCALARS)

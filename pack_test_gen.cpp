@@ -61,7 +61,11 @@ int main() {
         policy[m1] = 1.0;
 
         // --- 3. CREATE FAKE REWARDS ---
-        std::array<double, 4> rewards = {0.5, -0.5, 1.0, 0.0};
+        std::array<double, 16> rewards;
+        // Fill with a unique pattern (0.0, 0.1, 0.2...) to verify rotation logic
+        for (int i = 0; i < 16; ++i) {
+            rewards[i] = i * 0.0625; 
+        }
 
         // --- 4. GROUND TRUTH (Planes & Scalars) ---
         std::vector<float> ground_truth_planes(NN_INPUT_PLANES_SIZE);
@@ -82,7 +86,10 @@ int main() {
         write_raw_floats("test_truth_planes.bin", ground_truth_planes);
         write_raw_floats("test_truth_scalars.bin", ground_truth_scalars);
         write_raw_floats("test_truth_policy.bin", ground_truth_policy);
-        write_raw_floats("test_truth_value.bin", { (float)rewards[0], (float)rewards[1], (float)rewards[2], (float)rewards[3] });
+        std::vector<float> value_floats;
+        for(double r : rewards) value_floats.push_back(static_cast<float>(r));
+        write_raw_floats("test_truth_value.bin", value_floats);
+
         write_packed_struct("test_packed.bin", packed);
 
         std::cout << "Successfully wrote test files." << std::endl;

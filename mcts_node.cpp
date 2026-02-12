@@ -1,4 +1,5 @@
 #include "mcts_node.h"
+#include "utils.h"
 #include <stdexcept>
 #include <algorithm>
 #include <iostream>
@@ -31,10 +32,12 @@ MCTSNode::MCTSNode(Board board_state, MCTSNode* parent, std::optional<Move> move
     first_child_(nullptr),   
     next_sibling_(nullptr),  
     visit_count_(0),
-    total_player_values_({0.0, 0.0, 0.0, 0.0}),
+    total_player_values_(),
     prior_(prior),
     pending_visits_(0) 
-{}
+{
+    total_player_values_.fill(0.0);
+}
 
 // --- Destructor (Iterative / Stack-Safe) ---
 MCTSNode::~MCTSNode() {
@@ -104,7 +107,7 @@ const std::optional<Move>& MCTSNode::get_move() const { return move_; }
 
 // --- MCTS Operations ---
 
-MCTSNode* MCTSNode::select_child(double c_puct) const {
+MCTSNode* MCTSNode::select_child(double c_puct, double pessimism_factor) const {
     if (is_leaf()) return nullptr; 
 
     MCTSNode* best_child = nullptr;
@@ -112,7 +115,7 @@ MCTSNode* MCTSNode::select_child(double c_puct) const {
 
     MCTSNode* child = first_child_;
     while (child) {
-        double score = calculate_uct_score(child, c_puct);
+        double score = calculate_uct_score(child, c_puct, pessimism_factor);
         if (score > best_score) {
             best_score = score;
             best_child = child;
@@ -149,9 +152,9 @@ void MCTSNode::expand(const std::map<Move, double>& policy_probs) {
     }
 }
 
-void MCTSNode::update_stats(const std::array<double, 4>& values_for_players) { 
+void MCTSNode::update_stats(const std::array<double, 16>& values_for_players) { 
     visit_count_++;
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < 16; ++i) {
         total_player_values_[i] += values_for_players[i];
     }
 }
@@ -227,11 +230,11 @@ MCTSNode* MCTSNode::detach_child_and_clear_others(MCTSNode* target_child) {
 
 // --- Accessors ---
 int MCTSNode::get_visit_count() const { return visit_count_; }
-const std::array<double, 4>& MCTSNode::get_total_player_values() const { return total_player_values_; }
+const std::array<double, 16>& MCTSNode::get_total_player_values() const { return total_player_values_; }
 double MCTSNode::get_prior() const { return prior_; }
 int MCTSNode::get_pending_visits() const { return pending_visits_; }
 
-double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const {
+double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct, double pessimism_factor) const {
     const double epsilon = 1e-8; 
     const double cpuct_base = 6144.0;
     
@@ -241,18 +244,17 @@ double MCTSNode::calculate_uct_score(const MCTSNode* child, double c_puct) const
     double pb_c = std::log((parent_visits + cpuct_base + 1.0) / cpuct_base) + c_puct;
 
     Player parent_player_enum = this->board_state_.get_current_player();
-    int parent_player_idx = static_cast<int>(parent_player_enum);
+    int parent_player_idx = static_cast<int>(this->board_state_.get_current_player());
 
-    double child_total_value_for_parent = child->total_player_values_[parent_player_idx];
-    double effective_value = child_total_value_for_parent - (static_cast<double>(child->pending_visits_) * VIRTUAL_LOSS_VALUE);
+    double q_value = get_expected_value(child->total_player_values_, parent_player_idx, child->visit_count_, pessimism_factor);
 
-    double q_value = 0.0;
-    if (child_visits > epsilon) { 
-       q_value = effective_value / child_visits;
+    if (child->pending_visits_ > 0) {
+        q_value = (q_value * child->visit_count_ - (child->pending_visits_ * VIRTUAL_LOSS_VALUE)) / (child->visit_count_ + child->pending_visits_);
     }
 
     double u_value = pb_c * child->prior_ * std::sqrt(parent_visits + epsilon) / (1.0 + child_visits);
     return q_value + u_value;
 }
+
 
 } // namespace chaturaji_cpp

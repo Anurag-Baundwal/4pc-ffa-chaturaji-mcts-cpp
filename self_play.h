@@ -23,7 +23,7 @@ namespace chaturaji_cpp {
 
 class DataWriter;
 
-using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 4>>;
+using GameDataStep = std::tuple<Board, std::map<Move, double>, Player, std::array<double, 16>>;
 
 class SelfPlay {
 public:

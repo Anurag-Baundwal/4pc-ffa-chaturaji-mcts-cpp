@@ -131,7 +131,7 @@ void run_strength_test(
                 
                 bool is_fair = true;
                 for (int i = 0; i < 4; ++i) {
-                    double avg_reward = total_vals[i] / visits;
+                    double avg_reward = get_expected_value(total_vals, i, analysis_root->get_visit_count());
                     // Check range [-0.15, 0.15]
                     if (avg_reward < -0.15 || avg_reward > 0.15) {
                         is_fair = false;

@@ -13,7 +13,7 @@
 
 namespace chaturaji_cpp {
 
-const double VIRTUAL_LOSS_VALUE = 1.0; 
+const double VIRTUAL_LOSS_VALUE = 1.00; 
 
 class MCTSNode {
 public:
@@ -46,10 +46,10 @@ public:
     const std::optional<Move>& get_move() const; 
 
     // --- MCTS Operations ---
-    MCTSNode* select_child(double c_puct = 1.0) const;
+    MCTSNode* select_child(double c_puct = 1.0, double pessimism_factor = 1.0) const;
     void expand(const std::map<Move, double>& policy_probs);
 
-    void update_stats(const std::array<double, 4>& values_for_players); 
+    void update_stats(const std::array<double, 16>& values_for_players);  
     void increment_pending_visits();
     void decrement_pending_visits();
     void inject_noise(double alpha, double epsilon, std::mt19937& rng);
@@ -62,7 +62,7 @@ public:
 
     // --- Accessors for Node Statistics ---
     int get_visit_count() const;
-    const std::array<double, 4>& get_total_player_values() const; 
+    const std::array<double, 16>& get_total_player_values() const; 
     double get_prior() const;
     int get_pending_visits() const; 
 
@@ -77,11 +77,11 @@ private:
 
     // MCTS statistics
     int visit_count_;           
-    std::array<double, 4> total_player_values_; 
+    std::array<double, 16> total_player_values_; 
     double prior_;              
     int pending_visits_; 
 
-    double calculate_uct_score(const MCTSNode* child, double c_puct) const;
+    double calculate_uct_score(const MCTSNode* child, double c_puct, double pessimism_factor) const;
 
     static MCTSNodePool s_node_pool; 
 };
