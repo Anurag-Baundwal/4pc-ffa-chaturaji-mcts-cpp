@@ -76,27 +76,43 @@ std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& p
     return policy_probs;
 }
 
-void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players) {
+void apply_value_softmax(std::array<float, 16>& logits) {
+    for (int p = 0; p < 4; ++p) {
+        // Find max for numerical stability
+        float max_l = -std::numeric_limits<float>::infinity();
+        for (int r = 0; r < 4; ++r) {
+            max_l = std::max(max_l, logits[p * 4 + r]);
+        }
+        
+        float sum = 0.0f;
+        for (int r = 0; r < 4; ++r) {
+            logits[p * 4 + r] = std::exp(logits[p * 4 + r] - max_l);
+            sum += logits[p * 4 + r];
+        }
+        
+        for (int r = 0; r < 4; ++r) {
+            logits[p * 4 + r] /= (sum + 1e-9f);
+        }
+    }
+}
+
+/**
+ * @brief Backpropagates a vector of player-specific values up the MCTS path.
+ * @param path The path from root to leaf (inclusive, leaf is at path.back()).
+ * @param leaf_values_for_players The array of 16 values of the leaf state,
+ *                                  for each of the 4 players (RED, BLUE, YELLOW, GREEN) 
+ *                                  and each of the 4 ranks.
+ */
+void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 16>& leaf_values_for_players) {
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         MCTSNode* node = *it;
         node->update_stats(leaf_values_for_players);
     }
 }
 
-// --- Helper for Pessimism ---
-void apply_pessimism(std::array<double, 4>& values, double factor) {
-    if (factor == 1.0) return; // Optimization for default case
-    for (int i = 0; i < 4; ++i) {
-        if (values[i] < 0.0) {
-            values[i] *= factor;
-        }
-    }
-}
-
 void evaluate_and_expand_batch_sync(
   std::vector<SimulationState>& pending_eval,
-  Model* network,
-  double pessimism_factor)
+  Model* network)
 {
   if (pending_eval.empty()) return;
 
@@ -137,20 +153,24 @@ void evaluate_and_expand_batch_sync(
            }
       } 
       
-      // --- Un-rotate the values ---
-      // The NN returns values [Relative0, Relative1, Relative2, Relative3]
-      // where 0 is "Current Player". Map this back to [Red, Blue, Yellow, Green]
-      std::array<double, 4> player_values_absolute;
+      // 1. Get the raw values from the result
+      std::array<float, 16> leaf_logits = *result.value;
+      
+      // 2. APPLY SOFTMAX to convert logits to probabilities
+      apply_value_softmax(leaf_logits);
+
+      // 3. Un-rotate the probabilities (Relative -> Absolute)
+      std::array<double, 16> player_values_absolute;
+      player_values_absolute.fill(0.0);
       Player cp = leaf_node->get_board().get_current_player();
       int cp_idx = static_cast<int>(cp);
 
-      for(int rel_i = 0; rel_i < 4; ++rel_i) {
-          int abs_p_idx = (cp_idx + rel_i) % 4;
-          player_values_absolute[abs_p_idx] = static_cast<double>((*result.value)[rel_i]);
+      for(int rel_p = 0; rel_p < 4; ++rel_p) {
+          int abs_p = (cp_idx + rel_p) % 4;
+          for(int rank = 0; rank < 4; ++rank) {
+              player_values_absolute[abs_p * 4 + rank] = static_cast<double>(leaf_logits[rel_p * 4 + rank]);
+          }
       }
-
-      // --- APPLY PESSIMISM TO NN OUTPUT ---
-      apply_pessimism(player_values_absolute, pessimism_factor);
 
       backpropagate_mcts_value(path, player_values_absolute);
 
@@ -181,7 +201,7 @@ void run_mcts_simulations_sync(
       root_state.current_node = &root;
       root_state.path.push_back(&root);
       initial_eval.push_back(std::move(root_state));
-      evaluate_and_expand_batch_sync(initial_eval, network, pessimism_factor);
+      evaluate_and_expand_batch_sync(initial_eval, network);
       return; 
   }
 
@@ -195,21 +215,16 @@ void run_mcts_simulations_sync(
 
       // Traversal using select_child
       while (!current_sim.current_node->is_leaf()) {
-           MCTSNode* next_node = current_sim.current_node->select_child(c_puct);
+           MCTSNode* next_node = current_sim.current_node->select_child(c_puct, pessimism_factor);
           if (next_node == nullptr || next_node == current_sim.current_node) {
-                 if (current_sim.current_node->get_board().is_game_over()){
-                    MCTSNode* terminal_leaf = current_sim.current_node; 
-                    std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();
-                    std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-                    
-                    // --- APPLY PESSIMISM TO TERMINAL STATE ---
-                    apply_pessimism(terminal_player_values, pessimism_factor);
-
-                    backpropagate_mcts_value(current_sim.path, terminal_player_values);
-                 } else {
-                     std::array<double, 4> neutral_values = {0.0, 0.0, 0.0, 0.0};
-                     backpropagate_mcts_value(current_sim.path, neutral_values);
-                 }
+            if (current_sim.current_node->get_board().is_game_over()){
+                auto scores = current_sim.current_node->get_board().get_game_result();
+                backpropagate_mcts_value(current_sim.path, get_rank_probabilities_target(scores));
+            } else {
+                std::array<double, 16> neutral;
+                neutral.fill(0.25); // 25% chance for each rank
+                backpropagate_mcts_value(current_sim.path, neutral);
+            }
                  goto next_simulation_sync; 
           }
           current_sim.current_node = next_node;
@@ -219,21 +234,17 @@ void run_mcts_simulations_sync(
       if (current_sim.current_node->get_board().is_game_over()) {
           MCTSNode* terminal_leaf = current_sim.current_node;
           std::array<int, 4> final_scores = terminal_leaf->get_board().get_game_result();         
-          std::array<double, 4> terminal_player_values = get_reward_map_array(final_scores);
-          
-          // --- APPLY PESSIMISM TO TERMINAL STATE ---
-          apply_pessimism(terminal_player_values, pessimism_factor);
-          
-          backpropagate_mcts_value(current_sim.path, terminal_player_values);
+          std::array<double, 16> terminal_values = get_rank_probabilities_target(final_scores);
+          backpropagate_mcts_value(current_sim.path, terminal_values);
       } else {
           pending_evaluation.push_back(std::move(current_sim)); 
           if (pending_evaluation.size() >= static_cast<size_t>(batch_size)) {
-              evaluate_and_expand_batch_sync(pending_evaluation, network, pessimism_factor);
+              evaluate_and_expand_batch_sync(pending_evaluation, network);
           }
       }
       next_simulation_sync:; 
   } 
-  evaluate_and_expand_batch_sync(pending_evaluation, network, pessimism_factor);
+  evaluate_and_expand_batch_sync(pending_evaluation, network);
 }
 
 
@@ -267,19 +278,29 @@ std::optional<Move> get_best_move_mcts_sync(
         int root_visits = current_mcts_root_shptr->get_visit_count();
         auto root_values = current_mcts_root_shptr->get_total_player_values();
 
-        std::cout << "Root Expected Rewards (Scaled):" << std::endl;
+        std::cout << "Root Outcome Probabilities & Expected Rewards:" << std::endl;
         const char* player_colors[] = {"RED", "BLUE", "YELLOW", "GREEN"};
         const char* color_codes[] = {"\033[31m", "\033[34m", "\033[33m", "\033[32m"}; 
         const char* reset_code = "\033[0m";
 
         for (int i = 0; i < 4; ++i) {
-            double avg_val = root_values[i] / std::max(1, root_visits);
-            std::cout << "  " << color_codes[i] << std::left << std::setw(7) << player_colors[i] 
-                      << reset_code << ": " << std::showpos << std::fixed << std::setprecision(4) 
-                      << avg_val << std::noshowpos;
-            if (i < 3) std::cout << "  ";
+            // Scalar EV for overview
+            double ev = get_expected_value(root_values, i, root_visits, pessimism_factor);
+            
+            // Calculate individual rank percentages (1st, 2nd, 3rd, 4th)
+            double p1 = (root_values[i * 4 + 0] / std::max(1, root_visits)) * 100.0;
+            double p2 = (root_values[i * 4 + 1] / std::max(1, root_visits)) * 100.0;
+            double p3 = (root_values[i * 4 + 2] / std::max(1, root_visits)) * 100.0;
+            double p4 = (root_values[i * 4 + 3] / std::max(1, root_visits)) * 100.0;
+
+            std::cout << "  " << color_codes[i] << std::left << std::setw(7) << player_colors[i] << reset_code 
+                      << ": EV: " << std::showpos << std::fixed << std::setprecision(3) << ev << std::noshowpos
+                      << " | 1st: " << std::setw(5) << std::fixed << std::setprecision(1) << p1 << "%"
+                      << " 2nd: " << std::setw(5) << p2 << "%"
+                      << " 3rd: " << std::setw(5) << p3 << "%"
+                      << " 4th: " << std::setw(5) << p4 << "%" << std::endl;
         }
-        std::cout << std::endl << std::endl;
+        std::cout << std::endl;
 
         // Collect children pointers
         std::vector<MCTSNode*> children_ptrs;
@@ -296,7 +317,7 @@ std::optional<Move> get_best_move_mcts_sync(
             return a->get_visit_count() > b->get_visit_count();
         });
 
-        std::cout << "Top Candidate Moves:" << std::endl;
+        std::cout << "Top Candidate Moves (Expected Utility):" << std::endl;
         std::cout << "  # | Move     | Visits | Prior | CurPlayer Val | Full Values [R, B, Y, G]" << std::endl;
         std::cout << "-------------------------------------------------------------------------------" << std::endl;
 
@@ -312,7 +333,9 @@ std::optional<Move> get_best_move_mcts_sync(
             int visits = child->get_visit_count();
             double prior = child->get_prior();
             auto c_values = child->get_total_player_values();
-            double cp_val = c_values[static_cast<int>(cp)] / std::max(1, visits);
+            
+            // Expected value for current player specifically
+            double cp_val = get_expected_value(c_values, static_cast<int>(cp), visits, pessimism_factor);
 
             std::cout << std::right << std::setw(3) << count << " | "
                       << std::left << std::setw(8) << get_uci_string(m) 
@@ -322,7 +345,8 @@ std::optional<Move> get_best_move_mcts_sync(
                       << " | [";
             
             for(int i=0; i<4; ++i) {
-                double v = c_values[i] / std::max(1, visits);
+                // Calculate EV for each player for the candidate list
+                double v = get_expected_value(c_values, i, visits, pessimism_factor);
                 std::cout << std::fixed << std::setprecision(3) << std::showpos << v << std::noshowpos;
                 if(i<3) std::cout << " ";
             }
@@ -397,54 +421,6 @@ std::optional<Move> get_best_move_mcts_sync(
         current_mcts_root_shptr = nullptr; 
         return fallback;
     }
-}
-
-
-std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points) {
-    // 1. Create pairs of (PlayerIndex, Score)
-    struct PScore { int p_idx; int score; };
-    std::array<PScore, 4> sorted_scores;
-    
-    for(int i=0; i<4; ++i) {
-        sorted_scores[i] = {i, final_points[i]};
-    }
-
-    // 2. Sort by score descending
-    std::sort(sorted_scores.begin(), sorted_scores.end(), 
-              [](const PScore& a, const PScore& b) {
-                  return a.score > b.score;
-              });
-
-    std::array<double, 4> result_rewards; 
-    
-    // Base rewards: 1st=+1, 2nd=+0.33, 3rd=-0.33, 4th=-1
-    // Note: Pessimism is applied inside run_mcts_simulations_sync, not here
-    const double rank_rewards[] = {+1.0, +0.333, -0.333, -1.0};
-
-    size_t i = 0;
-    while (i < 4) {
-        size_t j = i;
-        // Find end of tie group
-        while (j < 4 && sorted_scores[j].score == sorted_scores[i].score) {
-            j++;
-        }
-        
-        // Calculate average reward for this group
-        double sum_rewards = 0.0;
-        for (size_t k = i; k < j; ++k) {
-            sum_rewards += rank_rewards[k];
-        }
-        double avg_reward = sum_rewards / (j - i);
-
-        // Assign to players
-        for (size_t k = i; k < j; ++k) {
-            int p_idx = sorted_scores[k].p_idx;
-            result_rewards[p_idx] = avg_reward;
-        }
-        i = j;
-    }
-
-    return result_rewards;
 }
 
 } // namespace chaturaji_cpp

@@ -285,7 +285,7 @@ void board_to_tensors(const Board& board, float* out_planes, float* out_scalars)
 PackedSample create_packed_sample(
     const Board& board, 
     const std::map<Move, double>& policy, 
-    const std::array<double, 4>& rewards
+    const std::array<double, 16>& rewards
 ) {
     PackedSample sample;
     // Clear memory to ensure padding bytes are 0 (avoids junk data)
@@ -299,7 +299,11 @@ PackedSample create_packed_sample(
         }
         sample.attack_bitboards[p] = board.get_squares_attacked_by(pl);
         sample.player_points[p] = board.get_player_points_array()[p];
-        sample.values[p] = static_cast<float>(rewards[p]);
+    }
+    
+    // Copy all 16 values into the packed sample
+    for(int i=0; i<16; ++i) {
+        sample.values[i] = static_cast<float>(rewards[i]);
     }
 
     // 2. Pack Game State Scalars
@@ -485,6 +489,46 @@ Move policy_index_to_move(int index, const Board& board) {
     }
 
     return m;
+}
+
+// --- Rank Probability & Expected Value ---
+
+/**
+ * @brief Calculates the ground-truth rank probabilities for a finished game.
+ * Handles ties by distributing probability mass equally across tied ranks.
+ * @param final_points The absolute points of all 4 players.
+ * @return std::array<double, 16> Target rank probabilities (One-hot or split).
+ */
+std::array<double, 16> get_rank_probabilities_target(const std::array<int, 4>& final_points) {
+    std::array<double, 16> target;
+    target.fill(0.0);
+
+    struct PScore { int p_idx; int score; };
+    std::vector<PScore> sorted_scores;
+    for(int i=0; i<4; ++i) sorted_scores.push_back({i, final_points[i]});
+
+    // Sort descending by score
+    std::sort(sorted_scores.begin(), sorted_scores.end(), [](auto& a, auto& b){ return a.score > b.score; });
+
+    int i = 0;
+    while (i < 4) {
+        int j = i;
+        // Find group of players with tied scores
+        while (j < 4 && sorted_scores[j].score == sorted_scores[i].score) j++;
+
+        int num_tied = j - i;
+        // Calculate probability mass for this rank group (e.g., if 2 players tie for 1st, they share 1st and 2nd)
+        double prob_per_rank = 1.0 / num_tied;
+
+        for (int k = i; k < j; ++k) {
+            int p_idx = sorted_scores[k].p_idx;
+            for (int r = i; r < j; ++r) {
+                target[p_idx * 4 + r] = prob_per_rank;
+            }
+        }
+        i = j;
+    }
+    return target;
 }
 
 // --- Notation Utilities ---

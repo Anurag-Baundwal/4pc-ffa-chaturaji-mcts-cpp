@@ -43,7 +43,7 @@ constexpr int NN_INPUT_SCALARS = 18;
 constexpr int NN_POLICY_PLANES = 64;
 constexpr int NN_POLICY_INDEX_RESIGN = 4096;
 constexpr int NN_POLICY_SIZE = (NN_POLICY_PLANES * BOARD_AREA) + 1; // 4097 total indices
-constexpr int NN_VALUE_SIZE = 4;     // One value per player (Relative order)
+constexpr int NN_VALUE_SIZE = 16;     // 4 players * 4 possible ranks
 
 using Bitboard = uint64_t;
 
@@ -297,7 +297,7 @@ struct PackedSample {
     float move_probs[MAX_STORED_MOVES];      // Probabilities associated with indices
 
     // --- Value ---
-    float values[4]; // Final game result
+    float values[16]; // Final game result
 };
 
 #pragma pack(pop)

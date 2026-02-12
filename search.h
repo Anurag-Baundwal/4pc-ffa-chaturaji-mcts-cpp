@@ -26,13 +26,17 @@ struct SimulationState {
 };
 
 /**
- * @brief Backpropagates a vector of player-specific values up the MCTS path.
- * @param path The path from root to leaf (inclusive, leaf is at path.back()).
- * @param leaf_values_for_players The array of 4 values of the leaf state,
- *                                  for each of the 4 players (RED, BLUE, YELLOW, GREEN).
+ * @brief Applies softmax to the 4 rank logits for each of the 4 players.
+ * @param logits 16 raw values from the NN.
  */
-void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 4>& leaf_values_for_players);
+void apply_value_softmax(std::array<float, 16>& logits);
 
+/**
+ * @brief Backpropagates a 16-element rank probability distribution up the tree.
+ * @param path The path from root to leaf.
+ * @param leaf_values_for_players Array of 16 values (4 players * 4 rank probs).
+ */
+void backpropagate_mcts_value(const std::vector<MCTSNode*>& path, const std::array<double, 16>& leaf_values_for_players);
 
 std::map<Move, double> process_policy(const std::array<float, NN_POLICY_SIZE>& policy_logits, const Board& board);
 
@@ -56,8 +60,6 @@ std::optional<Move> get_best_move_mcts_sync(
     bool verbose = false,
     double pessimism_factor = 1.0 // Default 1.0 = Risk Neutral
 );
-
-std::array<double, 4> get_reward_map_array(const std::array<int, 4>& final_points);
 
 std::array<double, 4> convert_reward_map_to_array(const std::map<Player, double>& reward_map, double default_value = 0.0);
 

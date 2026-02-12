@@ -44,7 +44,7 @@ POLICY_HEAD_CONV_CHANNELS = 24 # Depth of the hidden layer in policy head
 # Lc0 Standard: 1x1 Conv (No Stride) -> Flatten -> Dense -> Dense.
 VALUE_HEAD_CONV_CHANNELS = 12  # Reduced to keep the dense layer input manageable
 VALUE_FC_HIDDEN_CHANNELS = 96 # Balanced capacity for 4-player evaluation
-NUM_VALUE_OUTPUTS = 4
+NUM_VALUE_OUTPUTS = 16
 
 class GlobalSEBlock(nn.Module):
     """
@@ -255,8 +255,7 @@ class ChaturajiNN(nn.Module):
         # 4. Dense MLP
         v = F.silu(self.value_fc1(v))
         v = self.value_fc_out(v)
-        v = torch.tanh(v)
-
+        
         return p, v
 
 def force_patch_onnx_batch_size(model_path):

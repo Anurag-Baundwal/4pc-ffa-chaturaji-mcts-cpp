@@ -27,11 +27,10 @@ public:
         if (!outfile_.is_open()) return;
 
         for (const auto& step : data) {
-            // Extract data
             const Board& board = std::get<0>(step);
             const auto& policy_map = std::get<1>(step);
-            // const Player move_player = std::get<2>(step); // Packed inside board logic
-            const std::array<double, 4>& abs_rewards = std::get<3>(step);
+            // Extract data
+            const std::array<double, 16>& abs_rewards = std::get<3>(step); 
 
             // Pack it
             PackedSample sample = create_packed_sample(board, policy_map, abs_rewards);

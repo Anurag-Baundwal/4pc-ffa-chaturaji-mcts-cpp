@@ -117,6 +117,7 @@ cc_library(
         ":chaturaji_board",
         ":chaturaji_types",
         ":chaturaji_mcts_node_pool",
+        ":chaturaji_utils",
     ],
 )
 
